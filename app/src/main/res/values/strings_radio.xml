@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="radio_browse_genres">Browse by Genre</string>
+    <string name="radio_for_you">For You</string>
+    <string name="radio_recent">Recently Played</string>
+</resources>

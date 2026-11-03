@@ -168,8 +168,44 @@ internal fun resolveActiveLyricAnchor(
     return candidate
 }
 
+internal data class LyricTextSizes(
+    val lyric: Float,
+    val lyricLine: Float,
+    val pronunciation: Float,
+    val pronunciationLine: Float,
+)
+
+/** Shared by painted text and viewport estimates, so a preference cannot leave stale row geometry. */
+internal fun lyricTextSizes(
+    line: LyricLine,
+    pronunciationLarger: Boolean,
+    background: Boolean = false,
+): LyricTextSizes {
+    val hasPronunciation = if (background) !line.backgroundPronunciationText.isNullOrBlank() ||
+        line.backgroundWords.any { !it.pronunciationText.isNullOrBlank() }
+    else !line.pronunciationText.isNullOrBlank() || line.words.any { !it.pronunciationText.isNullOrBlank() }
+    val compact = hasPronunciation && !(if (background) line.backgroundTranslation else line.translation).isNullOrBlank()
+    val sizes = when {
+        line.isStatic || line.timing == LyricTiming.None -> if (compact)
+            LyricTextSizes(22f, 29f, 15f, 19f) else LyricTextSizes(24f, 32f, 17f, 22f)
+        background -> if (compact) LyricTextSizes(22f, 27f, 15f, 18f) else LyricTextSizes(24f, 29f, 16f, 20f)
+        else -> if (compact) LyricTextSizes(31f, 37f, 15f, 19f) else LyricTextSizes(34f, 41f, 17f, 22f)
+    }
+    val displayedPronunciation = hasPronunciation && (line.isStatic || line.timing != LyricTiming.Line ||
+        !(if (background) line.backgroundPronunciationText else line.pronunciationText).isNullOrBlank())
+    return if (pronunciationLarger && displayedPronunciation) {
+        LyricTextSizes(sizes.pronunciation, sizes.pronunciationLine, sizes.lyric, sizes.lyricLine)
+    } else sizes
+}
+
 /** Estimates are never painted; mounted rows replace them with exact Compose measurements. */
-internal fun estimateLyricRowHeight(line: LyricLine, widthPx: Float, density: Float, fontScale: Float): Float {
+internal fun estimateLyricRowHeight(
+    line: LyricLine,
+    widthPx: Float,
+    density: Float,
+    fontScale: Float,
+    pronunciationLarger: Boolean = false,
+): Float {
     val sp = density * fontScale
     fun textWidth(text: String, sizeSp: Float): Float {
         var width = 0f
@@ -231,10 +267,11 @@ internal fun estimateLyricRowHeight(line: LyricLine, widthPx: Float, density: Fl
         val hasPronunciation = !line.pronunciationText.isNullOrBlank() ||
             line.words.any { !it.pronunciationText.isNullOrBlank() }
         val compactLocalization = hasPronunciation && !line.translation.isNullOrBlank()
-        val mainSizeSp = if (compactLocalization) 22f else 24f
-        val mainLineHeightSp = if (compactLocalization) 29f else 32f
-        val pronunciationSizeSp = if (compactLocalization) 15f else 17f
-        val pronunciationLineHeightSp = if (compactLocalization) 19f else 22f
+        val sizes = lyricTextSizes(line, pronunciationLarger)
+        val mainSizeSp = sizes.lyric
+        val mainLineHeightSp = sizes.lyricLine
+        val pronunciationSizeSp = sizes.pronunciation
+        val pronunciationLineHeightSp = sizes.pronunciationLine
         val translationSizeSp = if (compactLocalization) 17f else 19f
         val translationLineHeightSp = if (compactLocalization) 22f else 25f
         val localizationGapPx = if (compactLocalization) 2f * density else 4f * density
@@ -268,10 +305,11 @@ internal fun estimateLyricRowHeight(line: LyricLine, widthPx: Float, density: Fl
     val hasWordPronunciation = line.words.any { !it.pronunciationText.isNullOrBlank() }
     val hasMainPronunciation = !line.pronunciationText.isNullOrBlank() || hasWordPronunciation
     val compactMainLocalization = hasMainPronunciation && !line.translation.isNullOrBlank()
-    val mainSizeSp = if (compactMainLocalization) 31f else 34f
-    val mainLineHeightSp = if (compactMainLocalization) 37f else 41f
-    val mainPronunciationSizeSp = if (compactMainLocalization) 15f else 17f
-    val mainPronunciationLineHeightSp = if (compactMainLocalization) 19f else 22f
+    val mainSizes = lyricTextSizes(line, pronunciationLarger)
+    val mainSizeSp = mainSizes.lyric
+    val mainLineHeightSp = mainSizes.lyricLine
+    val mainPronunciationSizeSp = mainSizes.pronunciation
+    val mainPronunciationLineHeightSp = mainSizes.pronunciationLine
     val mainTranslationSizeSp = if (compactMainLocalization) 21f else 24f
     val mainTranslationLineHeightSp = if (compactMainLocalization) 25f else 29f
     val mainGap = if (compactMainLocalization) 2f * density else 4f * density
@@ -302,10 +340,11 @@ internal fun estimateLyricRowHeight(line: LyricLine, widthPx: Float, density: Fl
             hasBackgroundWordPronunciation
         val compactBackgroundLocalization = hasBackgroundPronunciation &&
             !line.backgroundTranslation.isNullOrBlank()
-        val backgroundSizeSp = if (compactBackgroundLocalization) 22f else 24f
-        val backgroundLineHeightSp = if (compactBackgroundLocalization) 27f else 29f
-        val backgroundPronunciationSizeSp = if (compactBackgroundLocalization) 15f else 16f
-        val backgroundPronunciationLineHeightSp = if (compactBackgroundLocalization) 18f else 20f
+        val backgroundSizes = lyricTextSizes(line, pronunciationLarger, background = true)
+        val backgroundSizeSp = backgroundSizes.lyric
+        val backgroundLineHeightSp = backgroundSizes.lyricLine
+        val backgroundPronunciationSizeSp = backgroundSizes.pronunciation
+        val backgroundPronunciationLineHeightSp = backgroundSizes.pronunciationLine
         val backgroundGap = if (compactBackgroundLocalization) 2f * density else 4f * density
         if (!line.backgroundPronunciationText.isNullOrBlank() && !hasBackgroundWordPronunciation) {
             height += textRows(

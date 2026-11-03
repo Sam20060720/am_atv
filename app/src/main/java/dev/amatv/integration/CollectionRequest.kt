@@ -7,19 +7,48 @@ import dev.amatv.model.CatalogKind
 import dev.amatv.model.Track
 import java.net.URI
 
-internal data class CollectionRequest(val endpoint: String, val needsUserToken: Boolean) {
-    val firstPage: String get() = "$endpoint?limit=100" + if (needsUserToken) "&include=catalog" else ""
+/** Null track retains an unverifiable draw for resolution against the complete population. */
+internal data class CollectionShuffleSample(val track: Track?, val rawIndex: Int, val total: Int, val firstPage: String)
 
-    fun nextPage(href: String): String {
+/** Original resource identity survives catalog relinking; raw index distinguishes repeats. */
+internal fun collectionOccurrenceKey(track: Track): String =
+    "${track.resourceType ?: "songs"}:${track.resourceId ?: track.catalogId ?: track.id}"
+
+internal data class CollectionRequest(
+    val endpoint: String,
+    val needsUserToken: Boolean,
+    val pageSize: Int? = 100,
+    val includeCatalog: Boolean = needsUserToken,
+) {
+    val firstPage: String
+        get() = buildList {
+            pageSize?.let { add("limit=$it") }
+            if (includeCatalog) add("include=catalog")
+        }.joinToString("&").let { query -> endpoint + if (query.isNotEmpty()) "?$query" else "" }
+
+    fun nextPage(href: String): String = nextPage(href, retainPageSize = false)
+
+    fun singleOccurrence(rawIndex: Int): String {
+        require(rawIndex >= 0)
+        return "$endpoint?offset=$rawIndex&limit=1" + if (includeCatalog) "&include=catalog" else ""
+    }
+
+    fun nextPage(href: String, retainPageSize: Boolean): String {
         val uri = URI("https://api.music.apple.com").resolve(href)
         check(uri.scheme == "https" && uri.host == "api.music.apple.com" &&
             uri.port == -1 && uri.userInfo == null && uri.rawPath == endpoint && uri.fragment == null) {
             AppText.text(R.string.services_collection_next_page_failed)
         }
         val query = uri.rawQuery.orEmpty()
-        return endpoint + if (needsUserToken && !query.contains("include=")) {
-            "?${if (query.isEmpty()) "" else "$query&"}include=catalog"
-        } else if (query.isNotEmpty()) "?$query" else ""
+        val names = query.split('&').map { it.substringBefore('=') }.toSet()
+        val additions = buildList {
+            // Follow the server's offset/cursor verbatim. Reapplying an
+            // omitted limit is supported by Apple's pagination contract.
+            if (retainPageSize && pageSize != null && "limit" !in names) add("limit=$pageSize")
+            if (includeCatalog && "include" !in names) add("include=catalog")
+        }
+        return listOf(query, additions.joinToString("&")).filter { it.isNotEmpty() }
+            .joinToString("&").let { endpoint + if (it.isNotEmpty()) "?$it" else "" }
     }
 }
 
@@ -36,5 +65,7 @@ internal fun Track.collectionRequest(storefront: String): CollectionRequest {
     val library = resourceType?.startsWith("library-")
         ?: (id.startsWith("p.") || id.startsWith("l."))
     val base = if (library) "/v1/me/library" else "/v1/catalog/$storefront"
-    return CollectionRequest("$base/$type/$id/tracks", library)
+    // Catalog playlist tracks allow 300 per page; Library tracks cap at 100.
+    val pageSize = if (!library && catalogKind == CatalogKind.Playlist) 300 else 100
+    return CollectionRequest("$base/$type/$id/tracks", library, pageSize)
 }

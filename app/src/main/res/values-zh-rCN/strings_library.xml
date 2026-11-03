@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_albums">专辑</string>
+    <string name="library_artists">艺人</string>
+    <string name="library_item_count">%1$d 项</string>
+    <string name="library_empty">目前没有内容</string>
+    <string name="library_load_failed">无法载入资料库，请重试。</string>
+    <string name="library_addition_title">资料库</string>
+    <string name="library_addition_playlists">加入播放列表时也加入资料库</string>
+    <string name="library_addition_favorites">加入喜好时也加入资料库</string>
+    <string name="library_addition_on">开启</string>
+    <string name="library_addition_off">关闭</string>
+    <string name="actions_library_addition_pending">主要操作已完成，加入资料库的结果仍待确认。</string>
+    <string name="actions_retry_library_addition">重试加入资料库</string>
+</resources>

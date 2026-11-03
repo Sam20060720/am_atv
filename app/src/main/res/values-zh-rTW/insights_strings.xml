@@ -1,0 +1,23 @@
+<resources>
+    <string name="insights_show_all">顯示全部</string>
+    <string name="insights_recent_tracks">最近播放的歌曲</string>
+    <string name="insights_recent_resources">最近播放的收藏</string>
+    <string name="insights_heavy_rotation">經常聆聽</string>
+    <string name="insights_replay">Replay 回顧</string>
+    <string name="insights_recommendations">為你推薦</string>
+    <string name="insights_recent_stations">最近播放的電台</string>
+    <string name="insights_top_songs">最常聆聽的歌曲</string>
+    <string name="insights_top_albums">最常聆聽的專輯</string>
+    <string name="insights_top_artists">最常聆聽的藝人</string>
+    <string name="insights_period_year">年度</string>
+    <string name="insights_period_month">月份</string>
+    <string name="insights_period_label">%1$s · %2$s</string>
+    <string name="insights_empty">目前還沒有可顯示的項目。</string>
+    <string name="insights_no_replay">目前還沒有你的 Replay 回顧。</string>
+    <string name="insights_replay_view_missing">目前還沒有這個項目的回顧。</string>
+    <string name="insights_replay_summary_missing">這份回顧已不在最新結果中。</string>
+    <string name="insights_sign_in">登入 Apple Music 後即可查看聆聽紀錄。</string>
+    <string name="insights_unavailable">目前無法取得這個項目。</string>
+    <string name="insights_request_failed">無法載入聆聽紀錄。</string>
+    <string name="insights_partial">部分項目暫時無法顯示。</string>
+</resources>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="recovery_sign_in_required">请重新登录后继续。</string>
+    <string name="recovery_more_sign_in_required">请重新登录以加载更多内容。</string>
+    <string name="recovery_content_unavailable">此内容目前无法获取，或未在你的地区提供。</string>
+    <string name="recovery_more_unavailable">其余内容目前无法获取，或未在你的地区提供。</string>
+    <string name="recovery_connection_failed">暂时无法连接，请稍后重试。</string>
+    <string name="recovery_more_connection_failed">更多内容加载失败，当前内容仍可使用。</string>
+    <string name="recovery_sign_in">重新登录</string>
+    <string name="recovery_retry">重试</string>
+</resources>

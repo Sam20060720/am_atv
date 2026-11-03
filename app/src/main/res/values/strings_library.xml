@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_albums">Albums</string>
+    <string name="library_artists">Artists</string>
+    <string name="library_item_count">%1$d items</string>
+    <string name="library_empty">Nothing here yet</string>
+    <string name="library_load_failed">Unable to load your library. Try again.</string>
+    <string name="library_addition_title">Library</string>
+    <string name="library_addition_playlists">Add playlist songs to Library</string>
+    <string name="library_addition_favorites">Add favorites to Library</string>
+    <string name="library_addition_on">On</string>
+    <string name="library_addition_off">Off</string>
+    <string name="actions_library_addition_pending">The main change is saved. The Library addition is not yet confirmed.</string>
+    <string name="actions_retry_library_addition">Retry Library Addition</string>
+</resources>

@@ -32,11 +32,14 @@ internal class PlaybackSessionPersistence private constructor(
     private data class Structure(
         val persistenceId: String,
         val ids: List<Long>,
+        val sourceIds: List<Long>,
         val autoplay: Set<Int>,
         val played: Set<Long>,
         val contextIds: List<Long>,
+        val deferredLastIds: Set<Long>,
         val catalogIds: List<String?>,
         val contextCatalogIds: List<String?>,
+        val pendingCollection: dev.amatv.playback.CollectionPlaybackCheckpoint?,
     )
 
     fun save(session: PlaybackSession, synchronous: Boolean) {
@@ -62,9 +65,9 @@ internal class PlaybackSessionPersistence private constructor(
                 } ?: break
                 try {
                     val session = next.session
-                    val structure = Structure(session.persistenceId, session.queueEntryIds, session.autoplayEntryIndices,
-                        session.playedEntryIds, session.contextEntryIds,
-                        session.queue.map { it.catalogId }, session.contextQueue.map { it.catalogId })
+                    val structure = Structure(session.persistenceId, session.queueEntryIds, session.queueSourceEntryIds,
+                        session.autoplayEntryIndices, session.playedEntryIds, session.contextEntryIds, session.deferredLastEntryIds,
+                        session.queue.map { it.catalogId }, session.contextQueue.map { it.catalogId }, session.pendingCollection)
                     // A repaired library catalog mapping is metadata worth saving,
                     // while an unchanged five-second cursor update needs no full JSON.
                     if (synchronized(fileLock) {

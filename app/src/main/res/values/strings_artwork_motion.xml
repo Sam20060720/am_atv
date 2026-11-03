@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="artwork_motion_title">Animated artwork</string>
+    <string name="artwork_motion_hint">Animate covers on browsing and Now Playing screens.</string>
+    <string name="artwork_motion_on">Animated artwork: On</string>
+    <string name="artwork_motion_off">Animated artwork: Off</string>
+</resources>

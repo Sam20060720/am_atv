@@ -1,5 +1,7 @@
 package dev.amatv.integration
 
+import dev.amatv.R
+import dev.amatv.i18n.AppText
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.Track
 import kotlinx.coroutines.CancellationException
@@ -66,11 +68,12 @@ internal suspend fun resolvePlayableSongTrack(
     resolveId: suspend (String) -> String,
 ): Track {
     if (track.catalogKind != CatalogKind.Song) return track
-    val original = checkNotNull(track.catalogId)
-    val libraryId = track.resourceId?.takeIf { it.startsWith("i.") }
-        ?: original.takeIf { it.startsWith("i.") }
+    val libraryId = track.resourceId?.takeIf { track.resourceType == "library-songs" && it.startsWith("i.") }
+        ?: track.catalogId?.takeIf { it.startsWith("i.") }
+    val original = track.catalogId ?: libraryId ?: throw CatalogRequestException(
+        CatalogFailureReason.Unavailable, AppText.text(R.string.services_track_unavailable))
     val resolved = resolveId(libraryId ?: original)
-    if (resolved == original) return track
+    if (resolved == track.catalogId) return track
     return track.copy(
         id = "apple:$resolved",
         catalogId = resolved,

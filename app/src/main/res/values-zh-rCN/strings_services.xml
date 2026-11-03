@@ -10,7 +10,6 @@
     <string name="services_recommended_for_you">推荐给你</string>
     <string name="services_top_picks_for_you">为你精选</string>
     <string name="services_library_song_catalog_missing">找不到资料库歌曲 %1$s 的目录信息。</string>
-    <string name="services_uploaded_song_lyrics_unavailable">此歌曲为个人上传音频，没有对应的同步歌词。</string>
     <string name="services_playlist_page_repeated">歌单分页重复，请稍后重试。</string>
     <string name="services_playlist_tracks_unavailable">无法读取歌单曲目，请重试。</string>
     <string name="services_sign_in_apple_music">请先登录 Apple Music。</string>
@@ -42,8 +41,7 @@
     <string name="services_apple_connection_failed">暂时无法连接到 Apple Music，请重试。</string>
     <string name="services_playback_failed">无法完成播放，请重试。</string>
     <string name="services_sdk_unavailable">此版本无法使用 Apple Music 播放功能。</string>
-    <string name="services_auth_failed">Apple Music 登录失败：%1$s</string>
-    <string name="services_catalog_id_missing">这首歌曲没有 Apple Music 目录标识符。</string>
+    <string name="services_catalog_id_missing">这首歌曲目前无法播放。</string>
     <string name="services_video_unsupported">此版本尚不支持音乐视频播放。</string>
     <string name="services_container_unsupported">此项目无法作为歌单或专辑播放。</string>
     <string name="services_station_unsupported">此版本尚不支持电台播放。</string>
@@ -80,7 +78,6 @@
     <string name="services_auth_retry">重新尝试登录 Apple Music</string>
     <string name="services_auth_invalid_token_format">Apple Music 返回的授权格式无效。</string>
     <string name="services_auth_incomplete">Apple Music 登录尚未完成\n%1$s\n\n按返回键可回到 App 后重试。</string>
-    <string name="services_auth_webview_incomplete">Apple 登录表单没有加载完整。\n系统网页组件：%1$s\n\n按确认键重新加载，或按返回键离开。</string>
     <string name="services_auth_renderer_stopped">加载 Apple 登录时，系统网页组件已停止运行（%1$s）。请返回 App 后重试。</string>
     <string name="services_playback_channel_name">媒体播放</string>
     <string name="services_playback_channel_desc">后台媒体播放通知</string>

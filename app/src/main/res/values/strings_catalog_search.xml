@@ -1,0 +1,18 @@
+<resources>
+    <string name="catalog_search_scope_catalog">Apple Music</string>
+    <string name="catalog_search_scope_library">My Library</string>
+    <string name="catalog_search_artists">Artists</string>
+    <string name="catalog_search_songs">Songs</string>
+    <string name="catalog_search_albums">Albums</string>
+    <string name="catalog_search_playlists">Playlists</string>
+    <string name="catalog_search_videos">Music Videos</string>
+    <string name="catalog_search_stations">Stations</string>
+    <string name="catalog_search_curators">Curators</string>
+    <string name="catalog_search_apple_curators">Apple Music Curators</string>
+    <string name="catalog_search_labels">Record Labels</string>
+    <string name="catalog_search_activities">Activities</string>
+    <string name="catalog_search_empty_library">Enter a name to search your library</string>
+    <string name="catalog_search_start">Search for songs, artists, and more</string>
+    <string name="catalog_search_empty">No results</string>
+    <string name="catalog_search_more">More Results</string>
+</resources>

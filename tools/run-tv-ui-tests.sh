@@ -7,6 +7,15 @@ if [ -z "$device_serial" ]; then
     echo "Usage: $0 DEVICE_SERIAL [TEST_CLASS_OR_COMMA_SEPARATED_CLASSES]" >&2
     exit 2
 fi
+allow_player_playback=${AMATV_ALLOW_PLAYER_PLAYBACK:-0}
+allow_playback_seed=${AMATV_ALLOW_PLAYBACK_SEED:-0}
+case "$allow_player_playback:$allow_playback_seed" in
+    0:0|1:0|1:1) ;;
+    *)
+        echo "AMATV_ALLOW_PLAYER_PLAYBACK and AMATV_ALLOW_PLAYBACK_SEED must be 0 or 1; seed also requires playback." >&2
+        exit 2
+        ;;
+esac
 case "${2:-all}" in
     all) test_classes=dev.amatv.benchmark.TvNavigationTest,dev.amatv.benchmark.TvProductJourneyTest,dev.amatv.benchmark.KaraokeGradientRenderingTest,dev.amatv.benchmark.TvNavigationBenchmark,dev.amatv.benchmark.PlayerRenderingBenchmark ;;
     functional) test_classes=dev.amatv.benchmark.TvNavigationTest,dev.amatv.benchmark.TvProductJourneyTest,dev.amatv.benchmark.KaraokeGradientRenderingTest ;;
@@ -22,6 +31,8 @@ ANDROID_SERIAL="$device_serial" ./gradlew :benchmark:connectedBenchmarkAndroidTe
     "-Pandroid.testInstrumentationRunnerArguments.class=$test_classes" \
     "-Pandroid.testInstrumentationRunnerArguments.androidx.benchmark.compilation.enabled=false" \
     "-Pandroid.testInstrumentationRunnerArguments.benchmarkIterations=${AMATV_BENCHMARK_ITERATIONS:-3}" \
+    "-Pandroid.testInstrumentationRunnerArguments.allow_player_playback=$allow_player_playback" \
+    "-Pandroid.testInstrumentationRunnerArguments.allow_playback_seed=$allow_playback_seed" \
     > "$output_dir/gradle.log" 2>&1 || test_status=$?
 for artifact in androidTest-results connected_android_test_additional_output; do
     if [ -d "benchmark/build/outputs/$artifact" ]; then

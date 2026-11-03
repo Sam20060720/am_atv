@@ -2,6 +2,7 @@ package dev.amatv.integration
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import org.json.JSONArray
 import org.json.JSONObject
 
 /** HTTP catalog failures carry service meaning, unlike MusicKit's native component codes. */
@@ -11,7 +12,31 @@ internal class CatalogRequestException(
     val reason: CatalogFailureReason,
     message: String,
     val httpStatus: Int? = null,
+    /** Apple service code, distinct from HTTP status and native MusicKit error codes. */
+    val serviceCode: String? = null,
 ) : IllegalStateException(message)
+
+/** Retain a uniform API error code without exposing the response body or credentials to UI. */
+internal fun catalogRequestFailure(status: Int, body: String, message: String): CatalogRequestException {
+    val serviceCode = runCatching {
+        val errors = JSONObject(body).optJSONArray("errors") ?: return@runCatching null
+        val codes = (0 until errors.length()).map { index ->
+            errors.optJSONObject(index)?.optString("code")?.takeIf { it.isNotBlank() && it != "null" }
+        }
+        if (codes.isEmpty() || codes.any { it == null }) null else codes.distinct().singleOrNull()
+    }.getOrNull()
+    return CatalogRequestException(catalogHttpFailure(status), message, status, serviceCode)
+}
+
+/** A missing optional relation is not a missing artist or a failed connection. */
+internal suspend fun requestRelationshipData(fetch: suspend () -> JSONObject): JSONObject = try {
+    fetch()
+} catch (error: CatalogRequestException) {
+    // Only use inside an already validated relationship/view request. Other
+    // 404s (missing resources), authorization and network failures remain errors.
+    if (error.httpStatus != 404 || error.serviceCode != "40403") throw error
+    JSONObject().put("data", JSONArray())
+}
 
 internal fun catalogHttpFailure(status: Int): CatalogFailureReason = when (status) {
     404, 410 -> CatalogFailureReason.Unavailable

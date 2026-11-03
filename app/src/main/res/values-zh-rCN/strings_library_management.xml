@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_management_edit_playlist">编辑歌单</string>
+    <string name="library_management_edit_folder">编辑文件夹</string>
+    <string name="library_management_rename">重命名</string>
+    <string name="library_management_name">名称</string>
+    <string name="library_management_save_name">保存名称</string>
+    <string name="library_management_order">调整顺序</string>
+    <string name="library_management_save_order">保存顺序</string>
+    <string name="library_management_move">移到文件夹</string>
+    <string name="library_management_move_here">移入“%1$s”</string>
+    <string name="library_management_root">资料库</string>
+    <string name="library_management_delete_playlist">删除歌单</string>
+    <string name="library_management_delete_folder">删除文件夹</string>
+    <string name="library_management_delete_confirm">要删除“%1$s”吗？</string>
+    <string name="library_management_cancel">取消</string>
+    <string name="library_management_pending">变更仍待确认，请先确认当前状态。</string>
+    <string name="library_management_check">确认状态</string>
+    <string name="library_management_failed">无法更新此项目。</string>
+    <string name="library_management_conflict">歌单已有变更，请重新加载后编辑。</string>
+    <string name="library_management_entry">%1$d. %2$s</string>
+    <string name="library_management_unavailable">无法播放的项目</string>
+    <string name="library_management_read_only">此项目无法编辑。</string>
+    <string name="library_management_remove_song">从资料库移除</string>
+    <string name="library_management_remove_song_confirm">要从资料库移除“%1$s”吗？</string>
+    <string name="library_management_remove_favorite">取消喜好</string>
+    <string name="library_management_favorite_removed">已取消喜好</string>
+</resources>

@@ -3,14 +3,11 @@ package dev.amatv.ui
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -18,9 +15,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.amatv.integration.AudioSpectrum
 import kotlin.math.abs
 import kotlin.math.exp
@@ -33,17 +27,7 @@ internal fun AudioBandIndicator(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
-    var started by remember(lifecycle) {
-        mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-    }
-    DisposableEffect(lifecycle) {
-        val observer = LifecycleEventObserver { _, _ ->
-            started = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
-        }
-        lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer) }
-    }
+    val started = rememberMotionLifecycleStarted()
 
     val envelope = remember { AudioBandEnvelope() }
     val redraw = remember { mutableIntStateOf(0) }

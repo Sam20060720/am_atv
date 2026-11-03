@@ -10,14 +10,21 @@ import dev.amatv.model.LyricLine
 import dev.amatv.model.LyricTimeline
 import dev.amatv.model.LyricTiming
 import dev.amatv.model.LyricWord
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Request
 import org.json.JSONObject
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import org.xml.sax.InputSource
 import java.io.StringReader
 import java.net.HttpURLConnection
+import java.net.ProtocolException
 import java.net.URI
 import java.net.URLEncoder
 import java.time.Instant
@@ -290,55 +297,50 @@ internal object AppleLocaleUtil {
 }
 
 /** Refreshes the public JWT shipped by music.apple.com without exposing it. */
-class AppleWebPlaybackTokenClient {
-    @Volatile
-    private var cachedToken: String? = null
+class AppleWebPlaybackTokenClient internal constructor(private val fetch: suspend (String) -> String) {
+    constructor() : this({ url -> fetchResource(url) })
 
-    @Volatile
+    private val tokenMutex = Mutex()
+    private var cachedToken: String? = null
     private var cachedExpiryEpochSeconds: Long = 0L
 
     suspend fun token(forceRefresh: Boolean = false): String = withContext(Dispatchers.IO) {
-        tokenBlocking(forceRefresh)
+        tokenMutex.withLock {
+            currentCoroutineContext().ensureActive()
+            val now = Instant.now().epochSecond
+            if (!forceRefresh && cachedExpiryEpochSeconds > now + EXPIRY_MARGIN_SECONDS) {
+                cachedToken?.let { return@withLock it }
+            }
+
+            val html = fetch("$MUSIC_ORIGIN/us/browse")
+            val assetPaths = extractAssetPaths(html)
+            check(assetPaths.isNotEmpty()) { AppText.text(R.string.services_web_player_unavailable) }
+
+            var found: String? = null
+            for (asset in assetPaths) {
+                currentCoroutineContext().ensureActive()
+                val assetUrl = if (asset.startsWith("http")) asset else "$MUSIC_ORIGIN$asset"
+                val candidate = runCatching { JWT.find(fetch(assetUrl))?.value }.getOrElse { failure ->
+                    if (failure is CancellationException) throw failure
+                    currentCoroutineContext().ensureActive()
+                    null
+                }
+                if (candidate != null) { found = candidate; break }
+            }
+            val token = found ?: error(AppText.text(R.string.services_web_token_changed))
+            currentCoroutineContext().ensureActive()
+            cachedToken = token
+            cachedExpiryEpochSeconds = jwtExpiry(token) ?: (now + DEFAULT_CACHE_SECONDS)
+            token
+        }
     }
 
-    @Synchronized
-    private fun tokenBlocking(forceRefresh: Boolean): String {
-        val now = Instant.now().epochSecond
-        if (!forceRefresh && cachedExpiryEpochSeconds > now + EXPIRY_MARGIN_SECONDS) {
-            cachedToken?.let { return it }
-        }
-
-        val html = get("$MUSIC_ORIGIN/us/browse")
-        val assetPaths = ASSET_SCRIPT.findAll(html)
-            .map { it.groupValues[1].replace("&amp;", "&") }
-            .distinct()
-            .toList()
-        check(assetPaths.isNotEmpty()) { AppText.text(R.string.services_web_player_unavailable) }
-
-        val token = assetPaths.asSequence().mapNotNull { asset ->
-            val assetUrl = if (asset.startsWith("http")) asset else "$MUSIC_ORIGIN$asset"
-            runCatching { JWT.find(get(assetUrl))?.value }.getOrNull()
-        }.firstOrNull() ?: error(AppText.text(R.string.services_web_token_changed))
-
-        cachedToken = token
-        cachedExpiryEpochSeconds = jwtExpiry(token) ?: (now + DEFAULT_CACHE_SECONDS)
-        return token
-    }
-
-    private fun get(url: String): String {
-        val connection = URI(url).toURL().openConnection() as HttpURLConnection
-        return try {
-            connection.requestMethod = "GET"
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 18_000
-            connection.setRequestProperty("Accept", "text/html,application/javascript,*/*")
-            connection.setRequestProperty("User-Agent", WEB_USER_AGENT)
-            val status = connection.responseCode
-            check(status in 200..299) { AppText.text(R.string.services_music_website_http_error, status) }
-            connection.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            connection.disconnect()
-        }
+    /** Preserve source order/de-duplication without re-copying whole HTML for each ICU match. */
+    internal fun extractAssetPaths(html: String): List<String> {
+        val matcher = ASSET_SCRIPT.matcher(html)
+        val paths = linkedSetOf<String>()
+        while (matcher.find()) paths.add(matcher.group(1).replace("&amp;", "&"))
+        return paths.toList()
     }
 
     private fun jwtExpiry(token: String): Long? = runCatching {
@@ -348,12 +350,36 @@ class AppleWebPlaybackTokenClient {
     }.getOrNull()
 
     private companion object {
+        private suspend fun fetchResource(url: String): String {
+            val transport = CatalogHttpTransport()
+            var request = Request.Builder().url(url)
+                .header("Accept", "text/html,application/javascript,*/*")
+                .header("User-Agent", WEB_USER_AGENT).get().build()
+            var redirects = 0
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val reply = transport.execute(request)
+                if (reply.status in 200..299) return reply.body
+                // HttpURLConnection followed same-protocol GET redirects, including
+                // relative Locations. Keep this local to the unauthenticated web GET.
+                val target = if (reply.status in REDIRECT_STATUSES) {
+                    reply.location?.let { request.url.resolve(it) }
+                        ?.takeIf { it.scheme == request.url.scheme }
+                } else null
+                if (target == null) error(AppText.text(R.string.services_music_website_http_error, reply.status))
+                if (redirects++ >= MAX_REDIRECTS) throw ProtocolException("Too many redirects")
+                request = request.newBuilder().url(target).build()
+            }
+        }
+
         const val MUSIC_ORIGIN = "https://music.apple.com"
         const val WEB_USER_AGENT = "Mozilla/5.0 (Linux; Android 12; TV) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142 Safari/537.36"
         const val EXPIRY_MARGIN_SECONDS = 60L * 60L
         const val DEFAULT_CACHE_SECONDS = 60L * 60L
-        val ASSET_SCRIPT = Regex("""src=["']([^"']*/assets/[^"']+\.js)["']""")
+        const val MAX_REDIRECTS = 20
+        val REDIRECT_STATUSES = setOf(300, 301, 302, 303, 307, 308)
+        val ASSET_SCRIPT = Regex("""src=["']([^"']*/assets/[^"']+\.js)["']""").toPattern()
         val JWT = Regex("""eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+""")
     }
 }

@@ -4,9 +4,14 @@ import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import coil3.compose.asPainter
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,32 +24,35 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
@@ -52,11 +60,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import dev.amatv.R
+import dev.amatv.BuildConfig
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -67,10 +78,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -81,32 +90,119 @@ import dev.amatv.model.CatalogKind
 import dev.amatv.model.ContentShelf
 import dev.amatv.model.Destination
 import dev.amatv.model.Track
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
 
 /** The shelf retains its existing cards while one continuation page is requested. */
 data class LibraryShelfPagination(
     val hasMore: Boolean,
     val loading: Boolean = false,
     val failed: Boolean = false,
+    val total: Int? = null,
+    val empty: Boolean = false,
+    val loadedPages: Int = 0,
 ) {
-    val showAction: Boolean get() = hasMore || loading || failed
+    val showAction: Boolean get() = hasMore || loading || failed || empty
+}
+
+/** Viewport/cursor state survives tabs; attached feeds cache bounded neighboring rows. */
+@OptIn(ExperimentalFoundationApi::class)
+internal class HomeShelfRetention {
+    // A symmetric window keeps both sides attached when DPAD reverses direction.
+    // Zero ahead would immediately trim the rows that were behind before that
+    // reversal. Only lazy shells may prefetch; visible-card grants still gate
+    // first-time artwork/text content through HomeCardWarmup.
+    val column = androidx.compose.foundation.lazy.LazyListState(
+        cacheWindow = LazyLayoutCacheWindow(aheadFraction = 1f, behindFraction = 1f),
+    )
+    val rows = mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>()
+    var focused: ShelfFocusPosition? = null
+    var focusAnchor: ShelfFocusAnchor? = null
+    var activatedAnchor by mutableStateOf<ShelfFocusAnchor?>(null)
+    var headerAction by mutableStateOf<Pair<String, String>?>(null)
+    // Automatic first focus is not permission to pin an early network source
+    // when higher-priority shelves are inserted above it a moment later.
+    var userNavigated = false
+    val requesters = mutableMapOf<String, MutableMap<String, FocusRequester>>()
+}
+internal val LocalHomeShelfRetention = staticCompositionLocalOf<HomeShelfRetention?> { null }
+
+internal data class HomeInsightsLink(
+    val source: ListeningInsightsSource,
+    val recommendationId: String? = null,
+    val title: String? = null,
+)
+
+private sealed interface HomeHeadingAction {
+    val key: String
+    data class Insights(val link: HomeInsightsLink) : HomeHeadingAction {
+        override val key = "insights-${link.source.name.lowercase()}"
+    }
+    data class Resource(val track: Track) : HomeHeadingAction { override val key = "see-all" }
+    data object StationGenres : HomeHeadingAction { override val key = "station-genres" }
+}
+
+/** Home's source-qualified IDs retain the real recommendation identity, never a translated title. */
+internal fun homeShelfInsightsLink(shelfId: String, title: String? = null): HomeInsightsLink? {
+    val source = when (shelfId) {
+        "recent-tracks", "recent-tracks:recent-tracks" -> ListeningInsightsSource.RecentTracks
+        "recent", "recent:recent" -> ListeningInsightsSource.RecentResources
+        "heavy-rotation", "heavy-rotation:heavy-rotation" -> ListeningInsightsSource.HeavyRotation
+        "recommendations", "recommendations:recommendations" -> ListeningInsightsSource.Recommendations
+        else -> null
+    }
+    if (source != null) return HomeInsightsLink(source, title = title)
+    val recommendation = shelfId.removePrefix("recommendations:")
+        .takeIf { it.startsWith("recommendation:") }?.removePrefix("recommendation:")?.takeIf(String::isNotBlank)
+    return recommendation?.let { HomeInsightsLink(ListeningInsightsSource.Recommendations, it, title) }
+}
+
+private fun ContentShelf.cardWidth() = when {
+    id == BrowseInlineSection.Genres.shelfId -> 190.dp
+    featured -> BrowseTokens.ShowcaseWidth
+    else -> BrowseTokens.CardWidth
+}
+
+private fun ContentShelf.rowHeight() = when {
+    id == BrowseInlineSection.Genres.shelfId -> 76.dp + BrowseTokens.RowVerticalPadding * 2
+    featured -> BrowseTokens.ShowcaseRowHeight
+    else -> BrowseTokens.CardRowHeight
+}
+
+/** Same text-first genre tile as the catalog root, inside the shared shelf. */
+@Composable
+private fun InlineGenreCard(track: Track, onClick: () -> Unit, modifier: Modifier) {
+    val menu = catalogMenuFor(track)
+    FocusSurface(onClick,
+        modifier.width(190.dp).height(76.dp).catalogMenuKey(track),
+        cornerRadius = 12.dp, focusedScale = 1.025f,
+        background = Color.White.copy(alpha = 0.055f), focusedBackground = Color.White.copy(alpha = 0.86f),
+        padding = PaddingValues(horizontal = 17.dp, vertical = 18.dp),
+        onLongClick = menu?.let { open -> { open(track) } },
+        onLongClickLabel = stringResource(R.string.actions_menu),
+    ) {
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(track.title, color = focusSurfaceContentColor(Color.White.copy(alpha = 0.91f), Color(0xFF1B1B1F)),
+                fontSize = 17.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Icon(Icons.Rounded.ChevronRight, null, Modifier.size(17.dp),
+                focusSurfaceContentColor(Color.White.copy(alpha = 0.35f), Color(0xFF1B1B1F).copy(alpha = 0.45f)))
+        }
+    }
 }
 
 @Composable
-fun HomeScreen(
+internal fun HomeScreen(
     destination: Destination,
     currentTrack: Track,
-    tracks: List<Track> = emptyList(),
-    searchLoading: Boolean = false,
-    recentTracks: List<Track> = emptyList(),
     homeShelves: List<ContentShelf> = emptyList(),
     homeLoading: Boolean = false,
     homeShelfPagination: Map<String, LibraryShelfPagination> = emptyMap(),
     onLoadMoreShelf: (String) -> Unit = {},
+    onSelectLibrarySection: (String) -> Unit = {},
     connectionState: MusicConnectionState = MusicConnectionState.Demo,
     setupMessage: String? = null,
     onSignIn: () -> Unit = {},
@@ -117,8 +213,10 @@ fun HomeScreen(
     onYtmSignOut: () -> Unit = {},
     onSignOut: () -> Unit = {},
     onRetry: () -> Unit = {},
-    onSearch: (String) -> Unit = {},
     onOpenTrack: (Track, List<Track>) -> Unit = { _, _ -> },
+    onOpenInsights: ((HomeInsightsLink) -> Unit)? = null,
+    onOpenGenres: (() -> Unit)? = null,
+    onRegisterReturnToTop: ((() -> Boolean)?) -> Unit = {},
     lyricOffsetMs: Long = 0L,
     onLyricOffsetChange: (Long) -> Unit = {},
     autoplaySource: dev.amatv.integration.AutoplaySource = dev.amatv.integration.AutoplaySource.AppleMusic,
@@ -129,6 +227,10 @@ fun HomeScreen(
     navigationFocusRequester: FocusRequester? = null,
     modifier: Modifier = Modifier,
     cacheSettingsContent: @Composable () -> Unit = {},
+    searchContent: @Composable (FocusRequester?, FocusRequester?) -> Unit,
+    onPhoneSignIn: (() -> Unit)? = null,
+    onLibrarySearch: () -> Unit = {},
+    contentAuthorizationRequired: Boolean = false,
 ) {
     Column(modifier.fillMaxSize().automationId("browse-${destination.name.lowercase()}")) {
         when (destination) {
@@ -137,6 +239,7 @@ fun HomeScreen(
                     connectionState = connectionState,
                     setupMessage = setupMessage,
                     onSignIn = onSignIn,
+                    onPhoneSignIn = onPhoneSignIn,
                     ytmSignedIn = ytmSignedIn,
                     ytmPairing = ytmPairing,
                     ytmPairingConfigured = ytmPairingConfigured,
@@ -162,6 +265,7 @@ fun HomeScreen(
                         connectionState = connectionState,
                         setupMessage = setupMessage,
                         onSignIn = onSignIn,
+                        onPhoneSignIn = onPhoneSignIn,
                         onSignOut = onSignOut,
                         onRetry = onRetry,
                         firstContentFocusRequester = firstContentFocusRequester,
@@ -169,34 +273,20 @@ fun HomeScreen(
                         headingOverride = stringResource(R.string.browse_library_sign_in),
                     )
                 } else {
-                    HomeShelves(
+                    LibraryScreen(
                         shelves = homeShelves,
-                        loading = homeLoading,
-                        connectionState = connectionState,
-                        setupMessage = setupMessage,
-                        onSignIn = onSignIn,
-                        onRetry = onRetry,
-                        onOpenTrack = onOpenTrack,
                         pagination = homeShelfPagination,
-                        onLoadMoreShelf = onLoadMoreShelf,
-                        firstContentFocusRequester = firstContentFocusRequester,
-                        navigationFocusRequester = navigationFocusRequester,
+                        onSelectSection = onSelectLibrarySection,
+                        onLoadMore = onLoadMoreShelf,
+                        onOpen = onOpenTrack,
+                        firstFocus = firstContentFocusRequester,
+                        menuFocus = navigationFocusRequester,
+                        onLibrarySearch = onLibrarySearch,
                     )
                 }
             }
 
-            Destination.Search -> {
-                SearchScreen(
-                    tracks = tracks,
-                    recentTracks = recentTracks,
-                    loading = searchLoading,
-                    setupMessage = setupMessage,
-                    onSearch = onSearch,
-                    onOpenTrack = onOpenTrack,
-                    firstContentFocusRequester = firstContentFocusRequester,
-                    navigationFocusRequester = navigationFocusRequester,
-                )
-            }
+            Destination.Search -> searchContent(firstContentFocusRequester, navigationFocusRequester)
 
             else -> {
                 HomeShelves(
@@ -204,11 +294,19 @@ fun HomeScreen(
                     loading = homeLoading,
                     connectionState = connectionState,
                     setupMessage = setupMessage,
+                    authorizationRequired = contentAuthorizationRequired,
                     onSignIn = onSignIn,
                     onRetry = onRetry,
                     onOpenTrack = onOpenTrack,
+                    pagination = homeShelfPagination,
+                    onLoadMoreShelf = onLoadMoreShelf,
                     firstContentFocusRequester = firstContentFocusRequester,
                     navigationFocusRequester = navigationFocusRequester,
+                    onRegisterReturnToTop = onRegisterReturnToTop,
+                    onOpenInsights = onOpenInsights.takeIf {
+                        destination == Destination.Home && connectionState == MusicConnectionState.SignedIn
+                    },
+                    onOpenStationGenres = onOpenGenres.takeIf { destination == Destination.Radio },
                 )
             }
         }
@@ -237,31 +335,37 @@ private fun AccountScreen(
     navigationFocusRequester: FocusRequester?,
     headingOverride: String? = null,
     cacheSettingsContent: @Composable () -> Unit = {},
+    onPhoneSignIn: (() -> Unit)? = null,
 ) {
     val connected = connectionState == MusicConnectionState.SignedIn
-    val primaryFocus = firstContentFocusRequester ?: remember { FocusRequester() }
+    val phoneFocus = firstContentFocusRequester ?: remember { FocusRequester() }
+    val primaryFocus = if (onPhoneSignIn == null) phoneFocus else remember { FocusRequester() }
     val secondaryFocus = remember { FocusRequester() }
+    val offsetFocus = remember { List(5) { FocusRequester() } }
+    val autoplayFocus = remember { List(2) { FocusRequester() } }
+    val performanceFocus = remember { List(2) { FocusRequester() } }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 18.dp),
+            .padding(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text(
             text = headingOverride
                 ?: if (connected) stringResource(R.string.browse_apple_connected) else stringResource(R.string.browse_apple_sign_in),
             color = Color.White,
-            fontSize = 32.sp,
+            fontSize = 30.sp,
+            lineHeight = 36.sp,
             fontWeight = FontWeight.Bold,
         )
         if (!setupMessage.isNullOrBlank()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color.White.copy(alpha = 0.07f))
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(BrowseTokens.Surface)
                     .padding(horizontal = 18.dp, vertical = 14.dp),
             ) {
                 Text(
@@ -273,6 +377,26 @@ private fun AccountScreen(
             }
         }
         Spacer(Modifier.height(6.dp))
+        if (onPhoneSignIn != null && connectionState != MusicConnectionState.Demo) {
+            FocusSurface(
+                onClick = onPhoneSignIn,
+                modifier = Modifier.width(280.dp).height(52.dp).focusRequester(phoneFocus)
+                    .automationId("account-phone-sign-in").focusProperties {
+                        if (navigationFocusRequester != null) up = navigationFocusRequester
+                        if (navigationFocusRequester != null) left = navigationFocusRequester
+                        right = FocusRequester.Cancel; down = primaryFocus
+                    },
+                cornerRadius = 12.dp, focusedScale = 1.025f,
+                background = Color.White.copy(alpha = .10f), focusedBackground = Color.White.copy(alpha = .90f),
+                padding = PaddingValues(horizontal = 20.dp),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(stringResource(R.string.phone_sign_in_title),
+                        color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
+                        fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
         Row(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -282,22 +406,24 @@ private fun AccountScreen(
                     onClick = if (connected) onRetry else onSignIn,
                     modifier = Modifier
                         .width(280.dp)
-                        .height(54.dp)
+                        .height(52.dp)
                         .focusRequester(primaryFocus)
                         .focusProperties {
-                            if (navigationFocusRequester != null) up = navigationFocusRequester
+                            if (onPhoneSignIn != null) up = phoneFocus
+                            else if (navigationFocusRequester != null) up = navigationFocusRequester
+                            if (navigationFocusRequester != null) left = navigationFocusRequester
                             right = secondaryFocus
                         },
-                    cornerRadius = 27.dp,
-                    focusedScale = 1.03f,
-                    background = Color.White.copy(alpha = 0.9f),
-                    focusedBackground = Color.White,
+                    cornerRadius = 12.dp,
+                    focusedScale = 1.025f,
+                    background = Color.White.copy(alpha = 0.10f),
+                    focusedBackground = Color.White.copy(alpha = 0.90f),
                     padding = PaddingValues(horizontal = 20.dp),
-                ) {
+                ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             text = if (connected) stringResource(R.string.browse_refresh_apple) else stringResource(R.string.browse_sign_in_tv),
-                            color = Color(0xFF111713),
+                            color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -307,22 +433,24 @@ private fun AccountScreen(
                     onClick = if (connected) onSignOut else onRetry,
                     modifier = Modifier
                         .width(240.dp)
-                        .height(54.dp)
+                        .height(52.dp)
                         .focusRequester(secondaryFocus)
                         .focusProperties {
-                            if (navigationFocusRequester != null) up = navigationFocusRequester
+                            if (onPhoneSignIn != null) up = phoneFocus
+                            else if (navigationFocusRequester != null) up = navigationFocusRequester
                             left = primaryFocus
+                            right = FocusRequester.Cancel
                         },
-                    cornerRadius = 27.dp,
-                    focusedScale = 1.03f,
-                    background = Color.White.copy(alpha = 0.14f),
-                    focusedBackground = Color.White.copy(alpha = 0.26f),
+                    cornerRadius = 12.dp,
+                    focusedScale = 1.025f,
+                    background = BrowseTokens.Surface,
+                    focusedBackground = Color.White.copy(alpha = 0.9f),
                     padding = PaddingValues(horizontal = 20.dp),
-                ) {
+                ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             text = if (connected) stringResource(R.string.browse_sign_out_tv) else stringResource(R.string.browse_retry_connection),
-                            color = Color.White,
+                            color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -351,15 +479,18 @@ private fun AccountScreen(
             if (ytmPairingConfigured) {
                 FocusSurface(
                     onClick = if (ytmSignedIn) onYtmSignOut else onYtmSignIn,
-                    modifier = Modifier.width(280.dp).height(50.dp),
-                    cornerRadius = 25.dp,
-                    background = Color.White.copy(alpha = 0.14f),
-                    focusedBackground = Color.White.copy(alpha = 0.27f),
-                ) {
+                    modifier = Modifier.width(280.dp).height(48.dp).focusProperties {
+                        if (navigationFocusRequester != null) left = navigationFocusRequester
+                        right = FocusRequester.Cancel
+                    },
+                    cornerRadius = 12.dp,
+                    background = BrowseTokens.Surface,
+                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             if (ytmSignedIn) stringResource(R.string.browse_ytm_sign_out) else stringResource(R.string.browse_ytm_pair),
-                            color = Color.White,
+                            color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
                             fontSize = 16.sp,
                         )
                     }
@@ -385,31 +516,36 @@ private fun AccountScreen(
             ) {
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs - 100L).coerceAtLeast(-3000L)) },
-                    modifier = Modifier.width(96.dp).height(46.dp),
-                    cornerRadius = 23.dp,
-                    background = Color.White.copy(alpha = 0.14f),
-                    focusedBackground = Color.White.copy(alpha = 0.28f),
-                ) {
+                    modifier = Modifier.width(96.dp).height(48.dp).focusRequester(offsetFocus[0]).focusProperties {
+                        if (navigationFocusRequester != null) left = navigationFocusRequester
+                        right = offsetFocus[1]
+                    },
+                    cornerRadius = 12.dp,
+                    background = BrowseTokens.Surface,
+                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, -100), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.browse_offset_value, -100), color = focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs - 50L).coerceAtLeast(-3000L)) },
-                    modifier = Modifier.width(90.dp).height(46.dp),
-                    cornerRadius = 23.dp,
-                    background = Color.White.copy(alpha = 0.14f),
-                    focusedBackground = Color.White.copy(alpha = 0.28f),
-                ) {
+                    modifier = Modifier.width(90.dp).height(48.dp).focusRequester(offsetFocus[1]).focusProperties {
+                        left = offsetFocus[0]; right = offsetFocus[2]
+                    },
+                    cornerRadius = 12.dp,
+                    background = BrowseTokens.Surface,
+                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, -50), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.browse_offset_value, -50), color = focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
                 Box(
                     modifier = Modifier
-                        .height(46.dp)
-                        .clip(RoundedCornerShape(23.dp))
-                        .background(Color.White.copy(alpha = 0.22f))
+                        .height(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.06f))
                         .padding(horizontal = 20.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -426,37 +562,49 @@ private fun AccountScreen(
                 }
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs + 50L).coerceAtMost(3000L)) },
-                    modifier = Modifier.width(90.dp).height(46.dp),
-                    cornerRadius = 23.dp,
-                    background = Color.White.copy(alpha = 0.14f),
-                    focusedBackground = Color.White.copy(alpha = 0.28f),
-                ) {
+                    modifier = Modifier.width(90.dp).height(48.dp).focusRequester(offsetFocus[2]).focusProperties {
+                        left = offsetFocus[1]; right = offsetFocus[3]
+                    },
+                    cornerRadius = 12.dp,
+                    background = BrowseTokens.Surface,
+                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, 50), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.browse_offset_value, 50), color = focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs + 100L).coerceAtMost(3000L)) },
-                    modifier = Modifier.width(96.dp).height(46.dp),
-                    cornerRadius = 23.dp,
-                    background = Color.White.copy(alpha = 0.14f),
-                    focusedBackground = Color.White.copy(alpha = 0.28f),
-                ) {
+                    modifier = Modifier.width(96.dp).height(48.dp).focusRequester(offsetFocus[3]).focusProperties {
+                        left = offsetFocus[2]
+                        right = if (lyricOffsetMs != 0L) offsetFocus[4] else FocusRequester.Cancel
+                    },
+                    cornerRadius = 12.dp,
+                    background = BrowseTokens.Surface,
+                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, 100), color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.browse_offset_value, 100), color = focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
                 if (lyricOffsetMs != 0L) {
                     FocusSurface(
-                        onClick = { onLyricOffsetChange(0L) },
-                        modifier = Modifier.height(46.dp),
-                        cornerRadius = 23.dp,
-                        background = Color.White.copy(alpha = 0.10f),
-                        focusedBackground = Color.White.copy(alpha = 0.25f),
+                        onClick = {
+                            // Reset removes itself; retain an existing control
+                            // before that recomposition rather than losing focus.
+                            runCatching { offsetFocus[3].requestFocus() }
+                            onLyricOffsetChange(0L)
+                        },
+                        modifier = Modifier.height(48.dp).focusRequester(offsetFocus[4]).focusProperties {
+                            left = offsetFocus[3]; right = FocusRequester.Cancel
+                        },
+                        cornerRadius = 12.dp,
+                        background = BrowseTokens.Surface,
+                        focusedBackground = Color.White.copy(alpha = 0.9f),
                         padding = PaddingValues(horizontal = 16.dp),
-                    ) {
+                    ) { focused ->
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(stringResource(R.string.browse_reset), color = Color.White.copy(alpha = 0.85f), fontSize = 14.sp)
+                            Text(stringResource(R.string.browse_reset), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.85f), Color(0xFF171717)), fontSize = 14.sp)
                         }
                     }
                 }
@@ -473,39 +621,24 @@ private fun AccountScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val isYtm = autoplaySource == dev.amatv.integration.AutoplaySource.YouTubeMusic
-                FocusSurface(
+                AccountChoiceButton(
+                    label = stringResource(R.string.browse_ytm_name),
+                    selected = isYtm,
                     onClick = { onAutoplaySourceChange(dev.amatv.integration.AutoplaySource.YouTubeMusic) },
-                    modifier = Modifier.width(220.dp).height(46.dp),
-                    cornerRadius = 23.dp,
-                    background = if (isYtm) Color.White.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.12f),
-                    focusedBackground = Color.White.copy(alpha = 0.38f),
-                ) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (isYtm) stringResource(R.string.browse_selected_source, stringResource(R.string.browse_ytm_name)) else stringResource(R.string.browse_ytm_name),
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = if (isYtm) FontWeight.Bold else FontWeight.Medium,
-                        )
-                    }
-                }
+                    modifier = Modifier.focusRequester(autoplayFocus[0]).focusProperties {
+                        if (navigationFocusRequester != null) left = navigationFocusRequester
+                        right = autoplayFocus[1]
+                    },
+                )
                 val isAm = autoplaySource == dev.amatv.integration.AutoplaySource.AppleMusic
-                FocusSurface(
+                AccountChoiceButton(
+                    label = stringResource(R.string.browse_apple_name),
+                    selected = isAm,
                     onClick = { onAutoplaySourceChange(dev.amatv.integration.AutoplaySource.AppleMusic) },
-                    modifier = Modifier.width(220.dp).height(46.dp),
-                    cornerRadius = 23.dp,
-                    background = if (isAm) Color.White.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.12f),
-                    focusedBackground = Color.White.copy(alpha = 0.38f),
-                ) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (isAm) stringResource(R.string.browse_selected_source, stringResource(R.string.browse_apple_name)) else stringResource(R.string.browse_apple_name),
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = if (isAm) FontWeight.Bold else FontWeight.Medium,
-                        )
-                    }
-                }
+                    modifier = Modifier.focusRequester(autoplayFocus[1]).focusProperties {
+                        left = autoplayFocus[0]; right = FocusRequester.Cancel
+                    },
+                )
             }
             Spacer(Modifier.height(18.dp))
             Text(
@@ -523,38 +656,23 @@ private fun AccountScreen(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                FocusSurface(
+                AccountChoiceButton(
+                    label = stringResource(R.string.browse_performance_standard),
+                    selected = !lowPerformanceMode,
                     onClick = { onLowPerformanceModeChange(false) },
-                    modifier = Modifier.width(220.dp).height(46.dp),
-                    cornerRadius = 23.dp,
-                    background = if (!lowPerformanceMode) Color.White.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.12f),
-                    focusedBackground = Color.White.copy(alpha = 0.38f),
-                ) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (!lowPerformanceMode) stringResource(R.string.browse_selected_source, stringResource(R.string.browse_performance_standard)) else stringResource(R.string.browse_performance_standard),
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = if (!lowPerformanceMode) FontWeight.Bold else FontWeight.Medium,
-                        )
-                    }
-                }
-                FocusSurface(
+                    modifier = Modifier.focusRequester(performanceFocus[0]).focusProperties {
+                        if (navigationFocusRequester != null) left = navigationFocusRequester
+                        right = performanceFocus[1]
+                    },
+                )
+                AccountChoiceButton(
+                    label = stringResource(R.string.browse_performance_low),
+                    selected = lowPerformanceMode,
                     onClick = { onLowPerformanceModeChange(true) },
-                    modifier = Modifier.width(220.dp).height(46.dp),
-                    cornerRadius = 23.dp,
-                    background = if (lowPerformanceMode) Color.White.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.12f),
-                    focusedBackground = Color.White.copy(alpha = 0.38f),
-                ) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (lowPerformanceMode) stringResource(R.string.browse_selected_source, stringResource(R.string.browse_performance_low)) else stringResource(R.string.browse_performance_low),
-                            color = Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = if (lowPerformanceMode) FontWeight.Bold else FontWeight.Medium,
-                        )
-                    }
-                }
+                    modifier = Modifier.focusRequester(performanceFocus[1]).focusProperties {
+                        left = performanceFocus[0]; right = FocusRequester.Cancel
+                    },
+                )
             }
         }
         cacheSettingsContent()
@@ -562,243 +680,26 @@ private fun AccountScreen(
 }
 
 @Composable
-private fun SearchScreen(
-    tracks: List<Track>,
-    recentTracks: List<Track>,
-    loading: Boolean,
-    setupMessage: String?,
-    onSearch: (String) -> Unit,
-    onOpenTrack: (Track, List<Track>) -> Unit,
-    firstContentFocusRequester: FocusRequester?,
-    navigationFocusRequester: FocusRequester?,
+private fun AccountChoiceButton(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier,
 ) {
-    val mandopopTerm = stringResource(R.string.browse_quick_mandopop)
-    val quickTerms = remember(mandopopTerm) {
-        listOf(mandopopTerm, "Doja Cat", "Ado", "YOASOBI", "周杰倫", "BLACKPINK", "Laufey", "Taylor Swift")
-    }
-    var query by remember { mutableStateOf("") }
-    var lastExecutedQuery by remember { mutableStateOf("") }
-    var isInputActive by remember { mutableStateOf(false) }
-    var textFieldFocused by remember { mutableStateOf(false) }
-    val keyboardController = LocalSoftwareKeyboardController.current
-
-    val textFieldFocus = firstContentFocusRequester ?: remember { FocusRequester() }
-    val chipFocus = remember { List(quickTerms.size) { FocusRequester() } }
-    var lastChip by remember { mutableIntStateOf(0) }
-    val chipRowState = rememberLazyListState()
-    val resultRowState = rememberLazyListState()
-    val isSearching = lastExecutedQuery.isNotBlank()
-    val shownTracks = if (isSearching) tracks else recentTracks
-    val resultFocus = remember(shownTracks) { List(shownTracks.size) { FocusRequester() } }
-    var lastResult by remember(shownTracks) { mutableIntStateOf(0) }
-    val scope = rememberCoroutineScope()
-    fun focusResult(): Boolean {
-        if (shownTracks.isEmpty()) return false
-        val index = lastResult.coerceIn(shownTracks.indices)
-        scope.launch {
-            if (resultRowState.layoutInfo.visibleItemsInfo.none { it.index == index }) {
-                resultRowState.scrollToItem(index)
-            }
-            withFrameNanos { }
-            runCatching { resultFocus[index].requestFocus() }
-        }
-        return true
-    }
-
-    LaunchedEffect(query) {
-        val trimmed = query.trim()
-        if (trimmed.isNotEmpty() && trimmed != lastExecutedQuery) {
-            delay(400L)
-            lastExecutedQuery = trimmed
-            onSearch(trimmed)
-        }
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        FocusTrackingRow(
-            state = chipRowState,
-            modifier = Modifier.fillMaxWidth().height(46.dp),
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            itemsIndexed(quickTerms, key = { _, term -> term }) { index, term ->
-                FocusSurface(
-                    onClick = {
-                        query = term
-                        lastExecutedQuery = term
-                        onSearch(term)
-                    },
-                    modifier = Modifier
-                        .automationId("search-term-$index")
-                        .focusRequester(chipFocus[index])
-                        .onFocusChanged { if (it.isFocused) lastChip = index }
-                        .focusProperties {
-                            if (index == 0) left = FocusRequester.Cancel
-                            if (index == quickTerms.lastIndex) right = FocusRequester.Cancel
-                            if (navigationFocusRequester != null) up = navigationFocusRequester
-                            down = textFieldFocus
-                        }
-                        .height(38.dp),
-                    cornerRadius = 19.dp,
-                    focusedScale = 1.04f,
-                    padding = PaddingValues(horizontal = 16.dp),
-                    background = Color.White.copy(alpha = 0.10f),
-                    focusedBackground = Color.White.copy(alpha = 0.92f),
-                ) { focused ->
-                    Box(Modifier.height(38.dp), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = term,
-                            color = if (focused) Color(0xFF111713) else Color.White.copy(alpha = 0.88f),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            enabled = LocalFocusTargetsEnabled.current,
-            value = query,
-            onValueChange = { query = it },
-            readOnly = !isInputActive,
-            modifier = Modifier
-                .automationId("search-field")
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp)
-                .focusRequester(textFieldFocus)
-                .focusFrameTarget(textFieldFocused, "search-field", 5.dp)
-                .onFocusChanged { textFieldFocused = it.isFocused }
-                .onPreviewKeyEvent { event ->
-                    if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
-                    when (event.nativeKeyEvent.keyCode) {
-                        KeyEvent.KEYCODE_DPAD_CENTER,
-                        KeyEvent.KEYCODE_ENTER -> {
-                            if (!isInputActive) {
-                                isInputActive = true
-                                keyboardController?.show()
-                                true
-                            } else {
-                                isInputActive = false
-                                keyboardController?.hide()
-                                val trimmed = query.trim()
-                                if (trimmed.isNotEmpty() && trimmed != lastExecutedQuery) {
-                                    lastExecutedQuery = trimmed
-                                    onSearch(trimmed)
-                                }
-                                true
-                            }
-                        }
-                        KeyEvent.KEYCODE_BACK -> {
-                            if (isInputActive) {
-                                isInputActive = false
-                                keyboardController?.hide()
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                        KeyEvent.KEYCODE_DPAD_DOWN -> {
-                            if (isInputActive) {
-                                isInputActive = false
-                                keyboardController?.hide()
-                            }
-                            focusResult()
-                            true
-                        }
-                        KeyEvent.KEYCODE_DPAD_UP -> {
-                            if (isInputActive) {
-                                isInputActive = false
-                                keyboardController?.hide()
-                            }
-                            runCatching { chipFocus[lastChip].requestFocus() }
-                            true
-                        }
-                        else -> false
-                    }
-                }
-                .focusProperties {
-                    up = chipFocus[lastChip]
-                    down = resultFocus.getOrNull(lastResult) ?: FocusRequester.Cancel
-                    if (!isInputActive) {
-                        left = FocusRequester.Cancel
-                        right = FocusRequester.Cancel
-                    }
-                },
-            placeholder = {
-                Text(
-                    if (isInputActive) stringResource(R.string.browse_search_hint)
-                    else stringResource(R.string.browse_search_hint_remote)
-                )
-            },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(
-                onSearch = {
-                    isInputActive = false
-                    keyboardController?.hide()
-                    val trimmed = query.trim()
-                    if (trimmed.isNotEmpty() && trimmed != lastExecutedQuery) {
-                        lastExecutedQuery = trimmed
-                        onSearch(trimmed)
-                    }
-                }
-            ),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White,
-                focusedBorderColor = if (isInputActive) Color.White else Color.White.copy(alpha = 0.82f),
-                unfocusedBorderColor = Color.White.copy(alpha = 0.22f),
-                focusedContainerColor = if (isInputActive) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.08f),
-                unfocusedContainerColor = Color.White.copy(alpha = 0.05f),
-                focusedPlaceholderColor = Color.White.copy(alpha = 0.52f),
-                unfocusedPlaceholderColor = Color.White.copy(alpha = 0.38f),
-            ),
-        )
-        Spacer(Modifier.height(18.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            SectionHeading(if (isSearching) stringResource(R.string.browse_search_results) else stringResource(R.string.browse_recently_played))
-            if (loading && shownTracks.isNotEmpty()) {
-                Spacer(Modifier.width(14.dp))
-                AppleLoadingIndicator(Modifier.size(18.dp))
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        if (shownTracks.isEmpty()) {
-            if (loading) {
-                Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    AppleLoadingIndicator()
-                }
-            } else {
-                Text(
-                    stringResource(if (setupMessage.isNullOrBlank()) R.string.browse_search_empty else R.string.browse_search_error),
-                    color = Color.White.copy(alpha = 0.64f), fontSize = 16.sp,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 16.dp),
-                )
-            }
-        } else {
-            FocusTrackingRow(
-                state = resultRowState,
-                modifier = Modifier.fillMaxWidth().weight(1f).focusGroup(),
-                horizontalArrangement = Arrangement.spacedBy(20.dp),
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
-            ) {
-                itemsIndexed(shownTracks, key = { index, item -> "$index:${item.id}" }) { index, item ->
-                    RecentCard(
-                        track = item,
-                        onClick = { onOpenTrack(item, shownTracks) },
-                        focusModifier = Modifier.automationId("search-result-$index").focusRequester(resultFocus[index])
-                            .onFocusChanged { if (it.isFocused) lastResult = index }
-                            .focusProperties {
-                                up = textFieldFocus
-                                down = FocusRequester.Cancel
-                                if (index == 0) left = FocusRequester.Cancel
-                                if (index == shownTracks.lastIndex) right = FocusRequester.Cancel
-                            },
-                    )
-                }
-            }
+    FocusSurface(
+        onClick = onClick,
+        modifier = Modifier.width(220.dp).height(48.dp).then(modifier),
+        cornerRadius = 12.dp,
+        background = if (selected) Color.White.copy(alpha = 0.18f) else BrowseTokens.Surface,
+        focusedBackground = Color.White.copy(alpha = 0.9f),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                text = if (selected) stringResource(R.string.browse_selected_source, label) else label,
+                color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
+                fontSize = 15.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            )
         }
     }
 }
@@ -833,6 +734,11 @@ private fun HomeShelves(
     onLoadMoreShelf: (String) -> Unit = {},
     firstContentFocusRequester: FocusRequester?,
     navigationFocusRequester: FocusRequester?,
+    aboveContentFocusRequester: FocusRequester? = null,
+    authorizationRequired: Boolean = false,
+    onRegisterReturnToTop: ((() -> Boolean)?) -> Unit = {},
+    onOpenInsights: ((HomeInsightsLink) -> Unit)? = null,
+    onOpenStationGenres: (() -> Unit)? = null,
 ) {
     if (shelves.isEmpty()) {
         if (loading) {
@@ -846,17 +752,15 @@ private fun HomeShelves(
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(
                 modifier = Modifier
-                    .width(680.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(Color.White.copy(alpha = 0.06f))
-                    .padding(horizontal = 36.dp, vertical = 32.dp),
+                    .width(480.dp)
+                    .padding(horizontal = 24.dp, vertical = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Text(
                     text = stringResource(R.string.browse_content_unavailable),
                     color = Color.White,
-                    fontSize = 24.sp,
+                    fontSize = 21.sp,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center,
                 )
@@ -868,7 +772,7 @@ private fun HomeShelves(
                 Text(
                     text = detailText,
                     color = Color.White.copy(alpha = 0.72f),
-                    fontSize = 16.sp,
+                    fontSize = 14.sp,
                     lineHeight = 24.sp,
                     textAlign = TextAlign.Center,
                 )
@@ -881,39 +785,40 @@ private fun HomeShelves(
                         FocusSurface(
                             onClick = onRetry,
                             modifier = Modifier
-                                .width(200.dp)
-                                .height(48.dp)
+                                .width(140.dp)
+                                .height(38.dp)
                                 .focusRequester(retryRequester)
                                 .focusProperties {
-                                    if (navigationFocusRequester != null) up = navigationFocusRequester
-                                    right = signInRequester
+                                    (aboveContentFocusRequester ?: navigationFocusRequester)?.let { up = it }
+                                    if (navigationFocusRequester != null) left = navigationFocusRequester
+                                    right = if (connectionState != MusicConnectionState.Demo) signInRequester else FocusRequester.Cancel
                                 },
-                            cornerRadius = 24.dp,
+                            cornerRadius = 19.dp,
                             focusedScale = 1.04f,
-                            background = Color.White.copy(alpha = 0.9f),
-                            focusedBackground = Color.White,
+                            background = Color.White.copy(alpha = 0.10f),
+                            focusedBackground = Color.White.copy(alpha = 0.90f),
                         ) {
                             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 Text(
                                     text = stringResource(R.string.browse_reload),
-                                    color = Color(0xFF111713),
-                                    fontSize = 16.sp,
+                                    color = focusSurfaceContentColor(Color.White, Color(0xFF111713)),
+                                    fontSize = 14.sp,
                                     fontWeight = FontWeight.SemiBold,
                                 )
                             }
                         }
-                        if (connectionState != MusicConnectionState.Demo) {
+                        if (connectionState == MusicConnectionState.ReadyToSignIn || authorizationRequired) {
                             FocusSurface(
                                 onClick = onSignIn,
                                 modifier = Modifier
-                                    .width(230.dp)
-                                    .height(48.dp)
+                                    .width(180.dp)
+                                    .height(38.dp)
                                     .focusRequester(signInRequester)
                                     .focusProperties {
-                                        if (navigationFocusRequester != null) up = navigationFocusRequester
+                                        (aboveContentFocusRequester ?: navigationFocusRequester)?.let { up = it }
                                         left = retryRequester
                                     },
-                                cornerRadius = 24.dp,
+                                cornerRadius = 19.dp,
                                 focusedScale = 1.04f,
                                 background = Color.White.copy(alpha = 0.14f),
                                 focusedBackground = Color.White.copy(alpha = 0.28f),
@@ -926,7 +831,7 @@ private fun HomeShelves(
                                             stringResource(R.string.browse_apple_sign_in)
                                         },
                                         color = Color.White,
-                                        fontSize = 16.sp,
+                                        fontSize = 14.sp,
                                         fontWeight = FontWeight.SemiBold,
                                     )
                                 }
@@ -944,31 +849,115 @@ private fun HomeShelves(
     val shelfSizes = remember(shelves, pagination) {
         shelves.map { it.items.size + if (pagination[it.id]?.showAction == true) 1 else 0 }
     }
-    val columnState = rememberLazyListState()
-    val rowStates = remember(shelfKey) {
-        shelves.map { androidx.compose.foundation.lazy.LazyListState() }
+    val retained = LocalHomeShelfRetention.current ?: remember { HomeShelfRetention() }
+    val columnState = retained.column
+    val rowStates = remember(shelfKey, retained) {
+        shelves.map { retained.rows.getOrPut(it.id) { androidx.compose.foundation.lazy.LazyListState() } }
     }
-    val requesterRows = remember(shelfKey, firstContentFocusRequester) {
-        shelves.map { ArrayList<FocusRequester>() }
-    }
-    val itemFocusRequesters = requesterRows.mapIndexed { shelfIndex, row ->
-        while (row.size < shelfSizes[shelfIndex]) {
-            row += if (shelfIndex == 0 && row.isEmpty() && firstContentFocusRequester != null) {
-                firstContentFocusRequester
-            } else FocusRequester()
+    // A root reset is an explicit destination intent, not an ordinary Up key.
+    // Keep it across progressive row replacement until that real card owns focus.
+    var topEntryRequest by remember(retained) { mutableIntStateOf(0) }
+    val firstEntry = firstShelfEntry(shelves, shelfSizes) ?: ShelfFocusPosition(0, 0)
+    val restoredFocus = if (topEntryRequest != 0) firstEntry else if (retained.userNavigated)
+        resolveShelfFocusAnchor(retained.activatedAnchor ?: retained.focusAnchor, shelves, shelfSizes) ?: firstEntry
+        else firstEntry
+    // Lazy rows keep their actual focused nodes when an earlier source arrives.
+    // Keep their requesters as well; replacing the whole matrix detached remote
+    // navigation from the row that still owned Android focus.
+    val itemFocusRequesters = remember(shelves, shelfSizes, retained) {
+        shelves.map { shelf ->
+            val row = retained.requesters.getOrPut(shelf.id) { mutableMapOf() }
+            buildList {
+                shelf.items.forEach { track -> add(row.getOrPut(track.shelfFocusKey()) { FocusRequester() }) }
+                if (pagination[shelf.id]?.showAction == true)
+                    add(row.getOrPut("continuation:${shelf.items.size}") { FocusRequester() })
+            }
         }
-        row
     }
     // The key handler reads this holder without invalidating the whole LazyColumn
     // whenever focus moves one card horizontally.
-    val navigationCursor = remember(shelfKey) { ShelfNavigationCursor(shelfSizes) }
-    SideEffect { navigationCursor.updateShelfSizes(shelfSizes) }
+    val navigationCursor = remember(retained) { ShelfNavigationCursor(shelfSizes).apply {
+        onFocused(restoredFocus.shelf, restoredFocus.item)
+        updateShelfSizes(shelfSizes)
+    } }
+    val structure = remember(retained) { arrayOf<List<String>?>(null) }
+    val contentEntry = LocalContentFocusEntry.current
+    // Only Replay changes heading membership when focus moves. Other header
+    // focus changes retain the same action lists and their animation state.
+    val replayShelf = retained.headerAction?.takeIf { it.second == "insights-replay" && it.first in shelfKey }?.first
+        ?: shelves.firstOrNull()?.id
+    val headerActions = remember(shelves, onOpenInsights != null, onOpenStationGenres != null, replayShelf) {
+        shelves.mapIndexed { index, shelf ->
+            shelf.id to buildList<HomeHeadingAction> {
+                shelf.seeAll?.let { add(HomeHeadingAction.Resource(it)) }
+                if (onOpenInsights != null) {
+                    if (shelf.seeAll == null && shelf.hasMore) homeShelfInsightsLink(shelf.id, shelf.title)?.let { add(HomeHeadingAction.Insights(it)) }
+                    if (shelf.id == replayShelf) add(HomeHeadingAction.Insights(HomeInsightsLink(ListeningInsightsSource.Replay)))
+                }
+                if (index == 0 && onOpenStationGenres != null) add(HomeHeadingAction.StationGenres)
+            }
+        }.toMap()
+    }
+    val headerRequesters = remember(headerActions, retained) {
+        buildMap {
+            headerActions.forEach { (shelf, actions) -> actions.forEach { action ->
+                put(shelf to action.key, retained.requesters.getOrPut(shelf) { mutableMapOf() }
+                    .getOrPut("header:${action.key}") { FocusRequester() })
+            } }
+        }
+    }
+    var focusedHeader by remember { mutableStateOf<Pair<String, String>?>(null) }
+    DisposableEffect(contentEntry) {
+        onDispose { contentEntry?.preferredReturnRequester = null }
+    }
+    var contentHasFocus by remember { mutableStateOf(false) }
+    val currentContentHasFocus by rememberUpdatedState(contentHasFocus)
+    SideEffect {
+        navigationCursor.updateShelfSizes(shelfSizes)
+        // Native focus callbacks can update the anchor after this composition
+        // read it. Resolve again at commit; never write its old row over the
+        // card that actually won focus in that same transaction.
+        val committedFocus = if (topEntryRequest != 0) firstEntry else if (retained.userNavigated)
+            resolveShelfFocusAnchor(retained.activatedAnchor ?: retained.focusAnchor, shelves, shelfSizes) ?: firstEntry
+            else firstEntry
+        // A pending destination is not proof that its native target has focus.
+        if (topEntryRequest == 0) navigationCursor.onFocused(committedFocus.shelf, committedFocus.item)
+        val headerRequester = retained.headerAction?.let(headerRequesters::get)
+        contentEntry?.requester = headerRequester ?: itemFocusRequesters.getOrNull(committedFocus.shelf)?.getOrNull(committedFocus.item)
+        if (headerRequester == null) {
+            retained.headerAction = null
+            contentEntry?.preferredReturnRequester = if (retained.activatedAnchor != null)
+                itemFocusRequesters.getOrNull(committedFocus.shelf)?.getOrNull(committedFocus.item) else null
+        }
+        if (structure[0] != shelfKey) {
+            structure[0] = shelfKey
+            if (!retained.userNavigated) {
+                // Forget LazyColumn's previous first-visible key before the new
+                // provider is measured. Otherwise each prepended source moves
+                // the initial page farther down despite zero user input.
+                columnState.requestScrollToItem(firstEntry.shelf)
+                rowStates[firstEntry.shelf].requestScrollToItem(0)
+            }
+        }
+    }
     var pendingPageFocus by remember(shelfKey) { mutableStateOf<ShelfFocusPosition?>(null) }
     val scope = rememberCoroutineScope()
     val focusJob = remember { arrayOfNulls<kotlinx.coroutines.Job>(1) }
     val verticalPlan = remember { mutableStateOf<ShelfFocusScroll?>(null) }
     val density = LocalDensity.current
     val focusTargetsEnabled = LocalFocusTargetsEnabled.current
+    val contentVisible = LocalBrowseContentVisible.current
+    ContentUpExitReadiness(contentEntry) {
+        val actual = resolveShelfFocusAnchor(retained.focusAnchor, shelves, shelfSizes)
+        val header = focusedHeader
+        val actualShelf = actual?.shelf?.let(shelves::getOrNull)
+        (if (header != null) header.first == shelves[firstEntry.shelf].id
+            else actualShelf?.let { headerActions[it.id] }.isNullOrEmpty() &&
+                actual?.shelf == firstEntry.shelf) && navigationCursor.requestedPosition.shelf == firstEntry.shelf &&
+            !columnState.isScrollInProgress && focusJob[0]?.isActive != true &&
+            columnState.firstVisibleItemIndex == 0 && columnState.firstVisibleItemScrollOffset == 0
+    }
+    rememberHomeArtworkPrefetch(shelves, columnState, rowStates, contentVisible && focusTargetsEnabled)
     // A final one-item page replaces its continuation card without changing the
     // total slot count. Resource counts must still trigger focus restoration.
     LaunchedEffect(resourceCounts, shelfSizes, focusTargetsEnabled) {
@@ -1003,31 +992,41 @@ private fun HomeShelves(
             pendingPageFocus = null
         }
     }
-    val cardWarmup = remember(shelfKey) { HomeCardWarmup() }
+    // Progressive sources change shelfKey. They must not revoke every mounted
+    // card's permit and replace cached covers/labels with skeletons again.
+    val cardWarmup = remember(retained) { HomeCardWarmup() }
     DisposableEffect(cardWarmup) {
         onDispose { cardWarmup.close() }
     }
-    LaunchedEffect(cardWarmup, focusTargetsEnabled) {
-        if (!focusTargetsEnabled) return@LaunchedEffect
+    LaunchedEffect(cardWarmup, contentVisible) {
+        if (!contentVisible) return@LaunchedEffect
         while (cardWarmup.awaitPending()) {
             withFrameNanos { cardWarmup.mountNext(it) }
         }
     }
-    LaunchedEffect(cardWarmup, columnState, rowStates, focusTargetsEnabled) {
-        if (!focusTargetsEnabled) return@LaunchedEffect
+    LaunchedEffect(cardWarmup, columnState, rowStates, contentVisible) {
+        if (!contentVisible) return@LaunchedEffect
         // Prefetched slots cannot consume a content permit until they are in
         // the real viewport. Observe index sets, rather than every scroll pixel.
         snapshotFlow {
             val column = columnState.layoutInfo
-            column.visibleItemsInfo.filter {
-                it.offset < column.viewportEndOffset && it.offset + it.size > column.viewportStartOffset
-            }.mapNotNull { shelf ->
-                val row = rowStates.getOrNull(shelf.index)?.layoutInfo ?: return@mapNotNull null
-                shelf.index to row.visibleItemsInfo.filter {
-                    it.offset < row.viewportEndOffset && it.offset + it.size > row.viewportStartOffset
-                }.map { it.index }
+            buildSet {
+                for (shelf in column.visibleItemsInfo) {
+                    if (shelf.offset >= column.viewportEndOffset ||
+                        shelf.offset + shelf.size <= column.viewportStartOffset) continue
+                    // Layout can still describe the previous ordering for one
+                    // frame after an insertion. Resolve its stable shelf/card
+                    // keys, never reinterpret that frame's numeric indices.
+                    val stableShelfId = shelf.key as? String ?: continue
+                    val row = retained.rows[stableShelfId]?.layoutInfo ?: continue
+                    for (card in row.visibleItemsInfo) {
+                        if (card.offset < row.viewportEndOffset && card.offset + card.size > row.viewportStartOffset) {
+                            add(card.key)
+                        }
+                    }
+                }
             }
-        }.collect { cardWarmup.notifyPrioritiesChanged() }
+        }.collect(cardWarmup::updateVisibleCards)
     }
     DisposableEffect(shelfKey, focusTargetsEnabled) {
         onDispose {
@@ -1037,7 +1036,15 @@ private fun HomeShelves(
         }
     }
 
-    fun cancelVerticalFocus() {
+    fun cancelVerticalFocus(keepFocusedRowReveal: Boolean = false) {
+        // A fast horizontal key may follow Down before its 260 ms reveal
+        // settles. Keep revealing the row that already owns input focus;
+        // cancelling that scroll strands its cards below the viewport.
+        if (keepFocusedRowReveal && verticalPlan.value?.shelfIndex == navigationCursor.focused.shelf) {
+            navigationCursor.cancel()
+            cardWarmup.notifyPrioritiesChanged()
+            return
+        }
         focusJob[0]?.cancel()
         navigationCursor.cancel()
         verticalPlan.value = null
@@ -1045,43 +1052,119 @@ private fun HomeShelves(
     }
 
     fun recordFocused(shelf: Int, item: Int) {
+        val returningHeader = retained.headerAction?.let(headerRequesters::get)
+        if (returningHeader == null || contentEntry?.preferredReturnRequester !== returningHeader)
+            retained.headerAction = null
         if (pendingPageFocus != ShelfFocusPosition(shelf, item)) pendingPageFocus = null
         navigationCursor.onFocused(shelf, item)
+        retained.focused = ShelfFocusPosition(shelf, item)
+        shelves.getOrNull(shelf)?.let { row ->
+            retained.focusAnchor = ShelfFocusAnchor(row.id, row.items.getOrNull(item)?.shelfFocusKey(), item)
+        }
+        val returning = retained.activatedAnchor?.let { resolveShelfFocusAnchor(it, shelves, shelfSizes) }
+        if (focusTargetsEnabled && contentVisible && returning == ShelfFocusPosition(shelf, item)) {
+            retained.activatedAnchor = null
+            contentEntry?.preferredReturnRequester = null
+        }
         cardWarmup.notifyPrioritiesChanged()
+    }
+
+    fun activateCard(shelf: Int, item: Int, track: Track, queue: List<Track>) {
+        topEntryRequest = 0
+        retained.userNavigated = true
+        // Pointer/accessibility activation does not run the Center key preview.
+        // Cancel its outstanding reveal just like an actual remote activation.
+        cancelVerticalFocus()
+        recordFocused(shelf, item)
+        retained.activatedAnchor = ShelfFocusAnchor(shelves[shelf].id, track.shelfFocusKey(), item)
+        contentEntry?.preferredReturnRequester = itemFocusRequesters[shelf][item]
+        onOpenTrack(track, queue)
+    }
+
+    LaunchedEffect(retained.activatedAnchor, shelves, focusTargetsEnabled, contentVisible) {
+        val anchor = retained.activatedAnchor ?: return@LaunchedEffect
+        if (!focusTargetsEnabled || !contentVisible) return@LaunchedEffect
+        val target = resolveShelfFocusAnchor(anchor, shelves, shelfSizes) ?: return@LaunchedEffect
+        val row = columnState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == shelves[target.shelf].id }
+        val item = rowStates[target.shelf].layoutInfo.visibleItemsInfo.firstOrNull { it.index == target.item }
+        if (row == null) columnState.scrollToItem(target.shelf)
+        if (item == null) rowStates[target.shelf].scrollToItem(target.item)
+        repeat(3) {
+            withFrameNanos { }
+            if (retained.activatedAnchor != anchor) return@LaunchedEffect
+            runCatching { itemFocusRequesters[target.shelf][target.item].requestFocus() }
+        }
     }
 
     fun shelfBounds(shelfIndex: Int): ShelfRowBounds {
         val row = rowStates[shelfIndex]
         val layout = row.layoutInfo
+        val outset = with(density) { CardVisuals.focusOutset(shelves[shelfIndex].featured).toPx() }
+        fun ShelfRowBounds.withDrawingFootprint() = copy(cards = cards.map {
+            it.copy(left = it.left - outset, width = it.width + outset * 2f)
+        })
         val measuredWidth = (layout.viewportEndOffset - layout.viewportStartOffset).toFloat()
         if (measuredWidth > 0f && layout.visibleItemsInfo.isNotEmpty()) {
             return ShelfRowBounds(measuredWidth, layout.visibleItemsInfo.map { item ->
                 ShelfCardBounds(item.index, (item.offset - layout.viewportStartOffset).toFloat(), item.size.toFloat())
-            })
+            }).withDrawingFootprint()
         }
         val shelf = shelves[shelfIndex]
         val viewportWidth = columnState.layoutInfo.viewportSize.width.toFloat()
         return estimateShelfRowBounds(
             shelfSizes[shelfIndex], row.firstVisibleItemIndex, row.firstVisibleItemScrollOffset,
-            with(density) { (if (shelf.featured) 210.dp else 168.dp).toPx() },
-            with(density) { (if (shelf.featured) 18.dp else 20.dp).toPx() },
-            with(density) { 14.dp.toPx() }, viewportWidth,
-        )
+            with(density) { shelf.cardWidth().toPx() },
+            with(density) { BrowseTokens.ColumnGap.toPx() },
+            with(density) { BrowseTokens.RowHorizontalPadding.toPx() }.coerceAtLeast(outset + 1f), viewportWidth,
+        ).withDrawingFootprint()
     }
 
-    fun moveVerticalFocus(direction: Int): Boolean {
+    fun moveVerticalFocus(direction: Int, includeHeader: Boolean = true): Boolean {
         val from = navigationCursor.requestedPosition
+        if (direction < 0 && includeHeader) {
+            val shelfId = shelves[from.shelf].id
+            val action = headerActions[shelfId]?.firstOrNull()
+            val requester = action?.let { headerRequesters[shelfId to it.key] }
+            if (requester != null) {
+                cancelVerticalFocus()
+                focusJob[0] = scope.launch {
+                    // The card may be visible while its heading is above the viewport.
+                    val row = columnState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == shelfId }
+                    if (row == null || row.offset < columnState.layoutInfo.viewportStartOffset)
+                        columnState.animateScrollToItem(from.shelf)
+                    repeat(3) {
+                        withFrameNanos { }
+                        if (runCatching { requester.requestFocus() }.getOrDefault(false)) return@launch
+                    }
+                }
+                return true
+            }
+        }
         val sourceCenter = shelfBounds(from.shelf).cards.firstOrNull { it.index == from.item }?.centerX
-        val request = navigationCursor.request(direction, sourceCenter) { target, anchor ->
+        fun requestPrevious() = navigationCursor.request(direction, sourceCenter) { target, anchor ->
             nearestVisibleShelfCard(anchor, shelfBounds(target))
-        } ?: return false
+        }
+        val request = requestPrevious()
+        if (request == null) {
+            if (direction < 0 && from.shelf == firstEntry.shelf) {
+                // The requested cursor reaches row zero before native focus
+                // and its reveal do. Repeated Up must finish that same move,
+                // not cancel it and send its remaining repeats into the pill.
+                if (focusJob[0]?.isActive == true || columnState.isScrollInProgress) return true
+                if (columnState.firstVisibleItemIndex != 0 || columnState.firstVisibleItemScrollOffset != 0) {
+                    focusJob[0] = scope.launch { columnState.animateScrollToItem(0) }
+                    return true
+                }
+            }
+            return false
+        }
         cardWarmup.notifyPrioritiesChanged()
         val targetShelf = request.position.shelf
         focusJob[0]?.cancel()
         verticalPlan.value = null
         focusJob[0] = scope.launch {
             val layout = columnState.layoutInfo
-            val visible = layout.visibleItemsInfo.firstOrNull { it.index == targetShelf }
+            val visible = layout.visibleItemsInfo.firstOrNull { it.key == shelves[targetShelf].id }
             val distance = visible?.let {
                 shelfRevealScroll(it.offset, it.size, layout.viewportStartOffset, layout.viewportEndOffset)
             } ?: 0f
@@ -1089,12 +1172,12 @@ private fun HomeShelves(
             // reaches the end first. Predict that reachable endpoint before the
             // incoming target can report its focus-frame bounds.
             val destinationOffset = if (visible != null) visible.offset - distance else {
-                val rowGap = with(density) { 18.dp.toPx() }
+                val rowGap = with(density) { BrowseTokens.ShelfGap.toPx() }
                 val trailingHeight = (targetShelf until shelves.size).sumOf { index ->
-                    val measured = layout.visibleItemsInfo.firstOrNull { it.index == index }?.size?.toFloat()
+                    val measured = layout.visibleItemsInfo.firstOrNull { it.key == shelves[index].id }?.size?.toFloat()
                     (measured ?: with(density) {
-                        26.sp.toPx() + (if (shelves[index].featured) 12.dp else 8.dp).toPx() +
-                            (if (shelves[index].featured) 320.dp else 260.dp).toPx()
+                        BrowseTokens.HeadingLineHeight.toPx() + BrowseTokens.HeadingCardGap.toPx() +
+                            shelves[index].rowHeight().toPx()
                     }).toDouble()
                 }.toFloat() + rowGap * (shelves.lastIndex - targetShelf)
                 maxOf(layout.viewportStartOffset.toFloat(),
@@ -1105,7 +1188,7 @@ private fun HomeShelves(
             fun tryFocusItem(): Boolean {
                 if (!navigationCursor.isCurrent(request)) return false
                 val column = columnState.layoutInfo
-                val attachedRow = column.visibleItemsInfo.firstOrNull { it.index == targetShelf }
+                val attachedRow = column.visibleItemsInfo.firstOrNull { it.key == shelves[targetShelf].id }
                     ?: return false
                 if (attachedRow.offset >= column.viewportEndOffset ||
                     attachedRow.offset + attachedRow.size <= column.viewportStartOffset) return false
@@ -1150,24 +1233,153 @@ private fun HomeShelves(
         return true
     }
 
+    LaunchedEffect(topEntryRequest, shelfKey, resourceCounts, focusTargetsEnabled, contentVisible) {
+        if (topEntryRequest == 0 || !focusTargetsEnabled || !contentVisible) return@LaunchedEffect
+        val target = firstShelfEntry(shelves, shelfSizes) ?: return@LaunchedEffect
+        cancelVerticalFocus()
+        val job = currentCoroutineContext()[kotlinx.coroutines.Job]
+        focusJob[0] = job
+        try {
+            columnState.animateScrollToItem(target.shelf)
+            rowStates[target.shelf].scrollToItem(target.item)
+            repeat(3) {
+                withFrameNanos { }
+                val acquired = runCatching { itemFocusRequesters[target.shelf][target.item].requestFocus() }.getOrDefault(false)
+                if (acquired) {
+                    withFrameNanos { }
+                    if (currentContentHasFocus && shelfEntryHasFocus(target, shelves, retained.focusAnchor)) {
+                        topEntryRequest = 0
+                        return@LaunchedEffect
+                    }
+                }
+            }
+            // Keep the intent. A source/placement replacement can cancel this
+            // worker, but the next provider revision must still enter the top.
+        } finally { if (focusJob[0] === job) focusJob[0] = null }
+    }
+
+    DisposableEffect(columnState, shelfKey, resourceCounts, focusTargetsEnabled, contentVisible, onRegisterReturnToTop) {
+        onRegisterReturnToTop(if (!focusTargetsEnabled || !contentVisible) null else {
+            {
+                val scrolled = columnState.firstVisibleItemIndex > 0 || columnState.firstVisibleItemScrollOffset > 0
+                if (!scrolled) false else {
+                    retained.headerAction = null
+                    retained.activatedAnchor = null
+                    contentEntry?.preferredReturnRequester = null
+                    pendingPageFocus = null
+                    cancelVerticalFocus()
+                    firstShelfEntry(shelves, shelfSizes)?.let { target ->
+                        // The host may re-enter while the old card is still
+                        // pinned. Never point that handoff back at its old row.
+                        contentEntry?.requester = itemFocusRequesters[target.shelf][target.item]
+                    }
+                    topEntryRequest = if (topEntryRequest == Int.MAX_VALUE) 1 else topEntryRequest + 1
+                    true
+                }
+            }
+        })
+        onDispose { onRegisterReturnToTop(null) }
+    }
+
+    LaunchedEffect(shelfKey, resourceCounts, focusTargetsEnabled, contentVisible, contentHasFocus, topEntryRequest) {
+        if (topEntryRequest != 0 || retained.userNavigated || !focusTargetsEnabled || !contentVisible || !contentHasFocus) return@LaunchedEffect
+        val target = firstShelfEntry(shelves, shelfSizes) ?: return@LaunchedEffect
+        val anchor = retained.focusAnchor
+        val firstTrackKey = shelves[target.shelf].items.firstOrNull()?.shelfFocusKey()
+        if (anchor?.shelfId == shelves[target.shelf].id && anchor.itemKey == firstTrackKey &&
+            columnState.firstVisibleItemIndex == target.shelf && columnState.firstVisibleItemScrollOffset == 0) return@LaunchedEffect
+        cancelVerticalFocus()
+        val job = currentCoroutineContext()[kotlinx.coroutines.Job]
+        focusJob[0] = job
+        try {
+            columnState.requestScrollToItem(target.shelf)
+            rowStates[target.shelf].requestScrollToItem(0)
+            repeat(3) {
+                withFrameNanos { }
+                if (retained.userNavigated || !currentContentHasFocus) return@LaunchedEffect
+                if (runCatching { itemFocusRequesters[target.shelf][0].requestFocus() }.getOrDefault(false)) return@LaunchedEffect
+            }
+        } finally { if (focusJob[0] === job) focusJob[0] = null }
+    }
+
     // Only explicit Up/Down navigation may move the vertical viewport. Focused
     // artwork scales in drawing and must not continuously re-center the column.
+    // Benchmark APK only: distinguish genuine scrolling from idle 30fps video.
+    // Constant BUILD_TYPE removes this observer entirely from standalone/release.
+    if (BuildConfig.BUILD_TYPE == "benchmark" && android.os.Build.VERSION.SDK_INT >= 29) {
+        LaunchedEffect(columnState, contentVisible) {
+            if (!contentVisible) return@LaunchedEffect
+            val cookie = System.identityHashCode(columnState)
+            var sectionOpen = false
+            try {
+                snapshotFlow { columnState.isScrollInProgress }.collect { moving ->
+                    if (moving && !sectionOpen) {
+                        android.os.Trace.beginAsyncSection("AMATV:home-scroll", cookie)
+                        sectionOpen = true
+                    } else if (!moving && sectionOpen) {
+                        android.os.Trace.endAsyncSection("AMATV:home-scroll", cookie)
+                        sectionOpen = false
+                    }
+                }
+            } finally {
+                if (sectionOpen) android.os.Trace.endAsyncSection("AMATV:home-scroll", cookie)
+            }
+        }
+    }
     CompositionLocalProvider(LocalBringIntoViewSpec provides StationaryShelfViewport) {
         LazyColumn(
             state = columnState,
             modifier = Modifier
                 .automationId("home-shelves-count-${shelves.size}")
                 .fillMaxSize()
+                .onFocusChanged { contentHasFocus = it.hasFocus }
+                .focusGroup()
                 .onPreviewKeyEvent { event ->
                     if (event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) {
                         return@onPreviewKeyEvent false
+                    }
+                    if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK) topEntryRequest = 0
+                    if (focusedHeader != null) {
+                        retained.userNavigated = true
+                        topEntryRequest = 0
+                        contentEntry?.preferredReturnRequester = null
+                        when (event.nativeKeyEvent.keyCode) {
+                            KeyEvent.KEYCODE_DPAD_DOWN -> {
+                                cancelVerticalFocus()
+                                val shelf = shelves.indexOfFirst { it.id == focusedHeader?.first }
+                                val item = navigationCursor.focused.item.coerceIn(0, (shelfSizes.getOrNull(shelf)?.minus(1) ?: 0).coerceAtLeast(0))
+                                itemFocusRequesters.getOrNull(shelf)?.getOrNull(item)?.let { runCatching { it.requestFocus() } }
+                                return@onPreviewKeyEvent true
+                            }
+                            KeyEvent.KEYCODE_DPAD_UP -> {
+                                if (!moveVerticalFocus(-1, includeHeader = false)) {
+                                    cancelVerticalFocus()
+                                    (aboveContentFocusRequester ?: navigationFocusRequester)?.let { runCatching { it.requestFocus() } }
+                                }
+                                return@onPreviewKeyEvent true
+                            }
+                            else -> return@onPreviewKeyEvent false
+                        }
+                    }
+                    if (event.nativeKeyEvent.keyCode in setOf(KeyEvent.KEYCODE_DPAD_UP,
+                            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_MENU)) {
+                        retained.activatedAnchor = null
+                        retained.headerAction = null
+                        contentEntry?.preferredReturnRequester = null
+                        topEntryRequest = 0
+                        retained.userNavigated = true
+                        resolveShelfFocusAnchor(retained.focusAnchor, shelves, shelfSizes)?.let {
+                            navigationCursor.updateShelfSizes(shelfSizes)
+                            navigationCursor.onFocused(it.shelf, it.item)
+                        }
                     }
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_UP -> {
                             pendingPageFocus = null
                             if (!moveVerticalFocus(-1)) {
                                 cancelVerticalFocus()
-                                navigationFocusRequester?.let { requester ->
+                                (aboveContentFocusRequester ?: navigationFocusRequester)?.let { requester ->
                                     runCatching { requester.requestFocus() }
                                 }
                             }
@@ -1179,7 +1391,11 @@ private fun HomeShelves(
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT,
-                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                            pendingPageFocus = null
+                            cancelVerticalFocus(keepFocusedRowReveal = true)
+                            false
+                        }
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
                         KeyEvent.KEYCODE_BACK -> {
@@ -1193,30 +1409,81 @@ private fun HomeShelves(
                     }
                 },
             contentPadding = PaddingValues(bottom = 64.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(BrowseTokens.ShelfGap),
         ) {
             itemsIndexed(shelves, key = { _, shelf -> shelf.id }) { shelfIndex, shelf ->
                 Column(Modifier.automationId("home-row-$shelfIndex-count-${shelf.items.size}")) {
-                    SectionHeading(shelf.title)
-                    Spacer(Modifier.height(if (shelf.featured) 12.dp else 8.dp))
+                    val actions = headerActions[shelf.id].orEmpty()
+                    if (actions.isEmpty()) SectionHeading(shelf.title)
+                    else Row(Modifier.fillMaxWidth().padding(end = BrowseTokens.RowHorizontalPadding),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        SectionHeading(shelf.title, Modifier.weight(1f))
+                        actions.forEachIndexed { actionIndex, action ->
+                            // Progressive sources can move Replay between headings.
+                            // Preserve each button's focus/animation state by identity,
+                            // rather than transferring it to the action at this index.
+                            key(action.key) {
+                                val actionKey = shelf.id to action.key
+                                val requester = headerRequesters.getValue(actionKey)
+                                ArtistTextAction(label = stringResource(when (action) {
+                                    is HomeHeadingAction.Insights -> if (action.link.source == ListeningInsightsSource.Replay) R.string.insights_replay else R.string.insights_show_all
+                                    is HomeHeadingAction.Resource -> R.string.insights_show_all
+                                    HomeHeadingAction.StationGenres -> R.string.radio_browse_genres
+                                }), onClick = {
+                                    cancelVerticalFocus()
+                                    retained.userNavigated = true
+                                    retained.headerAction = actionKey
+                                    retained.activatedAnchor = null
+                                    contentEntry?.preferredReturnRequester = requester
+                                    when (action) {
+                                        is HomeHeadingAction.Insights -> onOpenInsights?.invoke(action.link)
+                                        is HomeHeadingAction.Resource -> onOpenTrack(action.track, listOf(action.track))
+                                        HomeHeadingAction.StationGenres -> onOpenStationGenres?.invoke()
+                                    }
+                                }, modifier = Modifier.focusRequester(requester)
+                                    .automationId("home-shelf-${shelf.id}-${action.key}")
+                                    .onFocusChanged { state ->
+                                        if (state.isFocused) {
+                                            focusedHeader = actionKey
+                                            retained.headerAction = actionKey
+                                            val item = if (navigationCursor.focused.shelf == shelfIndex) navigationCursor.focused.item
+                                                else rowStates[shelfIndex].firstVisibleItemIndex
+                                            val selectedItem = item.coerceIn(0, (shelfSizes[shelfIndex] - 1).coerceAtLeast(0))
+                                            navigationCursor.onFocused(shelfIndex, selectedItem)
+                                            retained.focusAnchor = ShelfFocusAnchor(shelf.id, shelf.items.getOrNull(selectedItem)?.shelfFocusKey(), selectedItem)
+                                            contentEntry?.requester = requester
+                                            if (focusTargetsEnabled && contentVisible) contentEntry?.preferredReturnRequester = null
+                                        } else if (focusedHeader == actionKey) focusedHeader = null
+                                    }.focusProperties {
+                                        left = if (actionIndex > 0) headerRequesters.getValue(shelf.id to actions[actionIndex - 1].key)
+                                            else navigationFocusRequester ?: FocusRequester.Cancel
+                                        right = if (actionIndex < actions.lastIndex) headerRequesters.getValue(shelf.id to actions[actionIndex + 1].key)
+                                            else FocusRequester.Cancel
+                                    })
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(BrowseTokens.HeadingCardGap))
                     val remainingVerticalScroll = remember(shelfIndex, columnState) {
                         derivedStateOf {
                             val offset = columnState.layoutInfo.visibleItemsInfo
-                                .firstOrNull { it.index == shelfIndex }?.offset
+                                .firstOrNull { it.key == shelf.id }?.offset
                             if (offset == null) 0f else verticalPlan.value?.remaining(shelfIndex, offset) ?: 0f
                         }
                     }
                     FocusTrackingRow(
                         state = rowStates[shelfIndex],
+                        focusVisualOutset = CardVisuals.focusOutset(shelf.featured),
                         verticalScrollOffset = remainingVerticalScroll,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(if (shelf.featured) 320.dp else 260.dp)
+                            .height(shelf.rowHeight())
                             .focusGroup(),
-                        horizontalArrangement = Arrangement.spacedBy(
-                            if (shelf.featured) 18.dp else 20.dp,
+                        horizontalArrangement = Arrangement.spacedBy(BrowseTokens.ColumnGap),
+                        contentPadding = PaddingValues(
+                            horizontal = BrowseTokens.RowHorizontalPadding,
+                            vertical = BrowseTokens.RowVerticalPadding,
                         ),
-                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 20.dp),
                     ) {
                         itemsIndexed(
                             shelf.items,
@@ -1225,8 +1492,10 @@ private fun HomeShelves(
                             val focusModifier = Modifier
                                 .automationId("shelf-$shelfIndex-item-$itemIndex-${track.catalogKind.name.lowercase()}")
                                 .focusRequester(itemFocusRequesters[shelfIndex][itemIndex])
+                                .then(if (firstContentFocusRequester != null && firstEntry == ShelfFocusPosition(shelfIndex, itemIndex))
+                                    Modifier.focusRequester(firstContentFocusRequester) else Modifier)
                                 .focusProperties {
-                                    if (itemIndex == 0) left = FocusRequester.Cancel
+                                    if (itemIndex == 0) left = navigationFocusRequester ?: FocusRequester.Cancel
                                     if (itemIndex == shelf.items.lastIndex &&
                                         pagination[shelf.id]?.showAction != true
                                     ) right = FocusRequester.Cancel
@@ -1238,28 +1507,18 @@ private fun HomeShelves(
                                 }
                             val mountPriority = {
                                 val requested = navigationCursor.requestedPosition
-                                val columnLayout = columnState.layoutInfo
-                                val visibleRow = columnLayout.visibleItemsInfo.any {
-                                    it.index == shelfIndex && it.offset < columnLayout.viewportEndOffset &&
-                                        it.offset + it.size > columnLayout.viewportStartOffset
-                                }
-                                val rowLayout = rowStates[shelfIndex].layoutInfo
-                                val visibleCard = rowLayout.visibleItemsInfo.any {
-                                    it.index == itemIndex && it.offset < rowLayout.viewportEndOffset &&
-                                        it.offset + it.size > rowLayout.viewportStartOffset
-                                }
-                                when {
-                                    visibleRow && visibleCard &&
-                                        requested.shelf == shelfIndex && requested.item == itemIndex -> 0
-                                    visibleRow && visibleCard -> 1
-                                    else -> 2
-                                }
+                                cardWarmup.priority(
+                                    "${shelf.id}:${track.resourceType}:${track.resourceId ?: track.id}",
+                                    shelfIndex == requested.shelf && itemIndex == requested.item,
+                                )
                             }
-                            if (shelf.featured) {
+                            if (shelf.id == BrowseInlineSection.Genres.shelfId) {
+                                InlineGenreCard(track, { activateCard(shelfIndex, itemIndex, track, shelf.items) }, focusModifier)
+                            } else if (shelf.featured) {
                                 TopPick(
                                     label = track.eyebrow(),
                                     track = track,
-                                    onClick = { onOpenTrack(track, shelf.items) },
+                                    onClick = { activateCard(shelfIndex, itemIndex, track, shelf.items) },
                                     focusModifier = focusModifier,
                                     warmup = cardWarmup,
                                     mountPriority = mountPriority,
@@ -1267,7 +1526,7 @@ private fun HomeShelves(
                             } else {
                                 RecentCard(
                                     track = track,
-                                    onClick = { onOpenTrack(track, shelf.items) },
+                                    onClick = { activateCard(shelfIndex, itemIndex, track, shelf.items) },
                                     focusModifier = focusModifier,
                                     warmup = cardWarmup,
                                     mountPriority = mountPriority,
@@ -1282,8 +1541,10 @@ private fun HomeShelves(
                                 LibraryLoadMoreCard(
                                     pagination = page,
                                     featured = shelf.featured,
+                                    compact = shelf.id == BrowseInlineSection.Genres.shelfId,
                                     onClick = {
                                         if (!page.loading) {
+                                            topEntryRequest = 0
                                             pendingPageFocus = ShelfFocusPosition(shelfIndex, shelf.items.size)
                                             onLoadMoreShelf(shelf.id)
                                         }
@@ -1291,12 +1552,20 @@ private fun HomeShelves(
                                     modifier = Modifier
                                         .automationId("shelf-$shelfIndex-load-more")
                                         .focusRequester(itemFocusRequesters[shelfIndex][shelf.items.size])
+                                        .then(if (firstContentFocusRequester != null && firstEntry == ShelfFocusPosition(shelfIndex, shelf.items.size))
+                                            Modifier.focusRequester(firstContentFocusRequester) else Modifier)
                                         .focusProperties {
-                                            if (shelf.items.isEmpty()) left = FocusRequester.Cancel
+                                            if (shelf.items.isEmpty()) left = navigationFocusRequester ?: FocusRequester.Cancel
                                             right = FocusRequester.Cancel
                                         }
                                         .onFocusChanged { state ->
-                                            if (state.isFocused) recordFocused(shelfIndex, shelf.items.size)
+                                            if (state.isFocused) {
+                                                recordFocused(shelfIndex, shelf.items.size)
+                                                // A first-page read can complete while this
+                                                // loading slot owns focus. Follow its first
+                                                // real replacement, just like an explicit More.
+                                                if (page.loading) pendingPageFocus = ShelfFocusPosition(shelfIndex, shelf.items.size)
+                                            }
                                         },
                                 )
                             }
@@ -1312,28 +1581,38 @@ private fun HomeShelves(
 private fun LibraryLoadMoreCard(
     pagination: LibraryShelfPagination,
     featured: Boolean,
+    compact: Boolean = false,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val label = stringResource(when {
         pagination.loading -> R.string.browse_loading
         pagination.failed -> R.string.browse_load_more_retry
+        pagination.empty -> R.string.browse_reload
         else -> R.string.browse_load_more
     })
     FocusSurface(
         onClick = onClick,
         modifier = modifier
-            .width(if (featured) 210.dp else 168.dp)
-            .height(if (featured) 280.dp else 220.dp)
+            .width(if (compact) 190.dp else if (featured) BrowseTokens.ShowcaseWidth else BrowseTokens.CardWidth)
+            .height(if (compact) 76.dp else if (featured) BrowseTokens.ShowcaseHeight else BrowseTokens.CardHeight)
             .semantics { stateDescription = label },
-        cornerRadius = 14.dp,
-        focusedScale = 1.035f,
+        cornerRadius = if (featured) BrowseTokens.ShowcaseRadius else BrowseTokens.CardRadius,
+        focusedScale = if (featured) BrowseTokens.ShowcaseFocusScale else BrowseTokens.CardFocusScale,
         focusedLift = 2.dp,
-        background = Color.White.copy(alpha = 0.06f),
-        focusedBackground = Color.White.copy(alpha = 0.14f),
+        background = BrowseTokens.Surface,
+        focusedBackground = Color(0xFF303033),
         padding = PaddingValues(16.dp),
     ) {
-        Column(
+        if (compact) Row(
+            Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (pagination.loading) AppleLoadingIndicator()
+            else Text("+", color = Color.White.copy(alpha = 0.75f), fontSize = 24.sp)
+            Text(label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        } else Column(
             Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -1357,14 +1636,16 @@ private fun LibraryLoadMoreCard(
 }
 
 @Composable
-private fun SectionHeading(text: String) {
+private fun SectionHeading(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
-        color = Color.White.copy(alpha = 0.66f),
-        fontSize = 22.sp,
-        lineHeight = 26.sp,
-        fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(start = 8.dp),
+        color = Color.White.copy(alpha = 0.94f),
+        fontSize = BrowseTokens.HeadingSize,
+        lineHeight = BrowseTokens.HeadingLineHeight,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier.padding(start = BrowseTokens.RowHorizontalPadding),
     )
 }
 
@@ -1375,15 +1656,22 @@ private fun rememberHomeCardMount(
     key: Any,
     priority: () -> Int,
 ): State<Boolean> {
-    val ready = remember(warmup, key) { mutableStateOf(warmup == null) }
+    val ready = remember(warmup, key) { mutableStateOf(warmup == null || warmup.wasMounted(key)) }
     val currentPriority = rememberUpdatedState(priority)
     if (warmup != null) {
         DisposableEffect(warmup, key) {
-            val ticket = warmup.request({ currentPriority.value() }) { ready.value = true }
+            val ticket = if (warmup.wasMounted(key)) {
+                ready.value = true
+                null
+            } else warmup.request({ currentPriority.value() }) {
+                warmup.rememberMounted(key)
+                ready.value = true
+            }
             onDispose {
-                warmup.cancel(ticket)
-                // Reusable lazy slots must rejoin the budget when attached again.
-                ready.value = false
+                ticket?.let(warmup::cancel)
+                // Returning content keeps its permit. Unmounted/reused cells
+                // still join the first-visit budget under their new identity.
+                ready.value = warmup.wasMounted(key)
             }
         }
     }
@@ -1407,55 +1695,101 @@ private fun HomeCardContent(
     track: Track,
     featured: Boolean,
     staged: Boolean,
+    shadow: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    if (!staged) {
-        content()
-        return
-    }
-    Box(Modifier.fillMaxSize().clearAndSetSemantics { }) {
-        if (ready.value) content() else HomeCardPlaceholder(track, featured)
+    Box(if (staged) Modifier.fillMaxSize().clearAndSetSemantics { } else Modifier.fillMaxSize()) {
+        if (!staged || ready.value) {
+            // Focus opacity invalidates this sibling's display list, not the
+            // offscreen card texture containing images, gradients and labels.
+            // Placeholders still wait for their original mounting permit.
+            val context = LocalContext.current
+            // A warm poster is already visible in the shell: keep it immediate.
+            // Only the first cold content grant needs a short presentation blend.
+            var revealed by remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
+                mutableStateOf(!staged || ArtworkImages.cachedImage(context, track.posterForAspect(
+                    if (featured && track.motionForAspect(BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value)
+                            ?.aspectRatio?.let { it < .9f } == true)
+                        BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value else 1f,
+                )) != null)
+            }
+            val reveal = if (!revealed) remember { Animatable(0f) } else null
+            if (reveal != null) {
+                LaunchedEffect(reveal) {
+                    reveal.animateTo(1f, tween(120))
+                    revealed = true
+                }
+                HomeCardPlaceholder(track, featured, showLabels = false)
+            }
+            shadow()
+            CachedHomeCard(opacity = { reveal?.value ?: 1f }, content = content)
+        } else HomeCardPlaceholder(track, featured)
     }
 }
 
+/** Cache the exact foreground raster while its ancestor moves; the shadow stays separate. */
 @Composable
-private fun HomeCardEyebrow(ready: State<Boolean>, label: String) {
-    if (ready.value) {
-        Text(
-            text = label,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            color = Color.White.copy(alpha = 0.62f),
-            fontSize = 14.sp,
-        )
-    }
+private fun CachedHomeCard(opacity: () -> Float, content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().graphicsLayer {
+        alpha = opacity()
+        // Auto can replay every image/gradient/label during scrolling on a
+        // 32-bit TV. Retain the completed card instead, at its existing size.
+        compositingStrategy = CompositingStrategy.Offscreen
+        clip = true
+    }) { content() }
 }
 
-/** No font shaping, image request or changing geometry before the card's grant. */
+/** No font shaping or image request before the grant; cached covers remain visible. */
 @Composable
-private fun HomeCardPlaceholder(track: Track, featured: Boolean) {
-    Canvas(Modifier.fillMaxSize().then(if (featured) Modifier.clip(RoundedCornerShape(14.dp)) else Modifier)) {
-        val coverHeight = if (featured) (size.height - 72.dp.toPx()).coerceAtLeast(0f) else 168.dp.toPx()
-        val corner = CornerRadius(14.dp.toPx())
-        if (featured) drawRoundRect(track.palette.last().copy(alpha = 0.58f), cornerRadius = corner)
-        drawRoundRect(
-            color = track.palette.first(),
-            size = Size(size.width, coverHeight),
-            cornerRadius = if (featured) CornerRadius.Zero else corner,
+internal fun HomeCardPlaceholder(track: Track, featured: Boolean, showLabels: Boolean = true) {
+    val context = LocalContext.current
+    val portrait = featured && track.motionForAspect(
+        BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value,
+    )?.aspectRatio?.let { it < 0.9f } == true
+    val url = track.posterForAspect(if (portrait)
+        BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value else 1f)
+    val cached = remember(url) { ArtworkImages.cachedImage(context, url)?.asPainter(context) }
+    Box(Modifier.fillMaxSize()) {
+        if (cached != null) Image(
+            painter = cached,
+            contentDescription = null,
+            contentScale = if (track.catalogKind == CatalogKind.Station) ContentScale.Fit else ContentScale.Crop,
+            modifier = (if (portrait) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(1f))
+                .clip(RoundedCornerShape(if (featured) BrowseTokens.ShowcaseRadius else BrowseTokens.CardRadius)),
         )
-        val titleWidth = size.width * 0.64f
-        val artistWidth = size.width * 0.42f
-        val titleY = coverHeight + (if (featured) 20.dp else 13.dp).toPx()
-        val titleX = if (featured) (size.width - titleWidth) / 2f else 0f
-        val artistX = if (featured) (size.width - artistWidth) / 2f else 0f
-        drawRoundRect(
-            Color.White.copy(alpha = 0.12f), Offset(titleX, titleY),
-            Size(titleWidth, 8.dp.toPx()), CornerRadius(4.dp.toPx()),
-        )
-        drawRoundRect(
-            Color.White.copy(alpha = 0.07f), Offset(artistX, titleY + 16.dp.toPx()),
-            Size(artistWidth, 6.dp.toPx()), CornerRadius(3.dp.toPx()),
-        )
+        Canvas(Modifier.fillMaxSize()) {
+            val coverHeight = if (featured) size.height else BrowseTokens.CardWidth.toPx()
+            val radius = (if (featured) BrowseTokens.ShowcaseRadius else BrowseTokens.CardRadius).toPx()
+            if (cached == null) drawRoundRect(
+                color = track.palette.first(),
+                size = Size(size.width, coverHeight),
+                cornerRadius = CornerRadius(radius),
+            )
+            if (featured) drawRoundRect(
+                brush = Brush.verticalGradient(
+                    0f to Color.Transparent,
+                    0.45f to Color.Transparent,
+                    1f to Color.Black.copy(alpha = 0.86f),
+                ),
+                cornerRadius = CornerRadius(radius),
+            )
+            if (!showLabels) return@Canvas
+            val textX = if (featured) 14.dp.toPx() else 0f
+            val titleY = if (featured) size.height - 43.dp.toPx() else coverHeight + 9.dp.toPx()
+            val titleWidth = size.width * (if (featured) 0.72f else 0.84f)
+            if (featured) drawRoundRect(
+                Color.White.copy(alpha = 0.12f), Offset(textX, titleY - 17.dp.toPx()),
+                Size(titleWidth * 0.65f, 5.dp.toPx()), CornerRadius(2.5.dp.toPx()),
+            )
+            drawRoundRect(
+                Color.White.copy(alpha = 0.18f), Offset(textX, titleY),
+                Size(titleWidth, 7.dp.toPx()), CornerRadius(3.dp.toPx()),
+            )
+            drawRoundRect(
+                Color.White.copy(alpha = 0.09f), Offset(textX, titleY + 18.dp.toPx()),
+                Size(titleWidth * 0.72f, 5.dp.toPx()), CornerRadius(2.5.dp.toPx()),
+            )
+        }
     }
 }
 
@@ -1468,93 +1802,96 @@ private fun TopPick(
     warmup: HomeCardWarmup? = null,
     mountPriority: () -> Int = { 1 },
 ) {
-    val contentReady = rememberHomeCardMount(warmup, track.id, mountPriority)
-    val cardShape = RoundedCornerShape(14.dp)
-    val genericEyebrows = listOf(
-        stringResource(R.string.browse_kind_song), stringResource(R.string.browse_kind_album),
-        stringResource(R.string.browse_kind_playlist),
-    )
-    val distinctEyebrow = label.takeIf {
-        it.isNotBlank() && !it.equals(track.artist, ignoreCase = true) &&
-            !it.equals("Playlist", ignoreCase = true) &&
-            !it.equals("Album", ignoreCase = true) &&
-            !it.equals("Song", ignoreCase = true) &&
-            genericEyebrows.none { placeholder -> it.equals(placeholder, ignoreCase = true) }
+    val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
+        listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
     }
-    Column(Modifier.width(210.dp).height(280.dp)) {
-        Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.TopStart) {
-            HomeCardEyebrow(contentReady, distinctEyebrow.orEmpty())
-        }
-        FocusSurface(
-            onClick = onClick,
-            deferIdleVisuals = warmup != null,
-            modifier = focusModifier
-                .homeCardSemantics(track, contentReady, warmup != null)
-                .fillMaxWidth()
-                .height(256.dp),
-            cornerRadius = 14.dp,
-            focusedScale = 1.03f,
-            focusedLift = 2.dp,
-            restingElevation = 0.dp,
-            focusedElevation = 10.dp,
-            showBorder = false,
-            background = Color.Transparent,
-            focusedBackground = Color.Transparent,
-        ) { focused ->
-            HomeCardContent(contentReady, track, featured = true, staged = warmup != null) {
+    val contentReady = rememberHomeCardMount(warmup, mountKey, mountPriority)
+    val backdrop = LocalBrowseBackdropController.current
+    val actionMenu = catalogMenuFor(track)
+    val portraitAspect = BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value
+    val hasPortraitArtwork = track.motionForAspect(portraitAspect)?.aspectRatio?.let { it < 0.9f } == true
+    FocusSurface(
+        onClick = onClick,
+        onLongClick = actionMenu?.let { open -> { open(track) } },
+        onLongClickLabel = stringResource(R.string.actions_menu),
+        deferIdleVisuals = warmup != null,
+        stableGeometry = true,
+        modifier = focusModifier.catalogMenuKey(track).onFocusChanged { if (it.isFocused) backdrop?.select(track) }
+            .homeCardSemantics(track, contentReady, warmup != null)
+            .width(BrowseTokens.ShowcaseWidth)
+            .height(BrowseTokens.ShowcaseHeight),
+        cornerRadius = BrowseTokens.ShowcaseRadius,
+        focusedScale = BrowseTokens.ShowcaseFocusScale,
+        focusedLift = 1.dp,
+        restingElevation = 0.dp,
+        focusedElevation = 0.dp,
+        showBorder = false,
+        background = Color.Transparent,
+        focusedBackground = Color.Transparent,
+    ) { focused ->
+        HomeCardContent(contentReady, track, featured = true, staged = warmup != null,
+            shadow = { Box(Modifier.fillMaxSize().coverShadow(focused, BrowseTokens.ShowcaseRadius, isolated = true)) }) {
+            val shape = RoundedCornerShape(BrowseTokens.ShowcaseRadius)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .coverHairline(BrowseTokens.ShowcaseRadius)
+                    .clip(shape)
+                    .background(Color.Black.copy(alpha = 0.24f)),
+            ) {
+                MotionArtwork(
+                    track = track,
+                    // A square catalog cover often includes typography. Keep
+                    // that image complete; only genuine portrait artwork may
+                    // fill this tall editorial card.
+                    modifier = if (hasPortraitArtwork) Modifier.fillMaxSize()
+                        else Modifier.fillMaxWidth().aspectRatio(1f).align(Alignment.TopCenter),
+                    animate = rememberBrowseMotionReady(focused),
+                    cornerRadius = if (hasPortraitArtwork) BrowseTokens.ShowcaseRadius else 0.dp,
+                    artworkAspectRatio = if (hasPortraitArtwork) portraitAspect else 1f,
+                )
+                Box(Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        0.4f to Color.Transparent,
+                        0.68f to Color.Black.copy(alpha = 0.12f),
+                        1f to Color.Black.copy(alpha = 0.46f),
+                    ),
+                ))
                 Column(
-                    Modifier
-                        .fillMaxSize()
-                        .clip(cardShape)
-                        .background(track.palette.last().copy(alpha = 0.58f)),
+                    modifier = Modifier.align(Alignment.BottomStart)
+                        .fillMaxWidth().padding(horizontal = 14.dp, vertical = 13.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    Box(Modifier.weight(1f)) {
-                        MotionArtwork(
-                            track = track,
-                            modifier = Modifier.fillMaxSize(),
-                            animate = focused,
-                            cornerRadius = 0.dp,
-                        )
-                    }
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(72.dp)
-                            .background(
-                                Brush.verticalGradient(
-                                    listOf(
-                                        Color.Black.copy(alpha = 0.08f),
-                                        Color.Black.copy(alpha = 0.32f),
-                                    ),
-                                ),
-                            )
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
+                    if (label.isNotBlank() && !label.equals(track.artist, ignoreCase = true)) {
                         Text(
-                            text = track.title,
-                            color = Color.White.copy(alpha = 0.96f),
-                            fontSize = 14.sp,
-                            lineHeight = 18.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = TextAlign.Center,
+                            text = label,
+                            color = Color.White.copy(alpha = 0.72f),
+                            fontSize = 10.sp,
+                            lineHeight = 13.sp,
+                            fontWeight = FontWeight.Medium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        if (track.artist.isNotBlank()) {
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = track.artist,
-                                color = Color.White.copy(alpha = 0.72f),
-                                fontSize = 12.sp,
-                                lineHeight = 16.sp,
-                                fontWeight = FontWeight.Medium,
-                                textAlign = TextAlign.Center,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
+                    }
+                    Text(
+                        text = track.title,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        lineHeight = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (track.artist.isNotBlank()) {
+                        Text(
+                            text = track.artist,
+                            color = Color.White.copy(alpha = 0.78f),
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
@@ -1570,64 +1907,63 @@ private fun RecentCard(
     warmup: HomeCardWarmup? = null,
     mountPriority: () -> Int = { 1 },
 ) {
-    val contentReady = rememberHomeCardMount(warmup, track.id, mountPriority)
+    val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
+        listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
+    }
+    val contentReady = rememberHomeCardMount(warmup, mountKey, mountPriority)
+    val backdrop = LocalBrowseBackdropController.current
+    val actionMenu = catalogMenuFor(track)
     FocusSurface(
         onClick = onClick,
+        onLongClick = actionMenu?.let { open -> { open(track) } },
+        onLongClickLabel = stringResource(R.string.actions_menu),
         deferIdleVisuals = warmup != null,
-        modifier = focusModifier.homeCardSemantics(track, contentReady, warmup != null)
-            .width(168.dp).height(220.dp),
-        cornerRadius = 14.dp,
-        focusedScale = 1.035f,
-        focusedLift = 2.dp,
+        stableGeometry = true,
+        modifier = focusModifier.catalogMenuKey(track).onFocusChanged { if (it.isFocused) backdrop?.select(track) }.homeCardSemantics(track, contentReady, warmup != null)
+            .width(BrowseTokens.CardWidth).height(BrowseTokens.CardHeight),
+        cornerRadius = BrowseTokens.CardRadius,
+        focusedScale = BrowseTokens.CardFocusScale,
+        focusedLift = 1.dp,
         restingElevation = 0.dp,
         focusedElevation = 0.dp,
         showBorder = false,
         background = Color.Transparent,
         focusedBackground = Color.Transparent,
     ) { focused ->
-        HomeCardContent(contentReady, track, featured = false, staged = warmup != null) {
+        HomeCardContent(contentReady, track, featured = false, staged = warmup != null,
+            shadow = { Box(Modifier.size(BrowseTokens.CardWidth).coverShadow(focused, BrowseTokens.CardRadius, isolated = true)) }) {
             Column {
-                MotionArtwork(
-                    track = track,
-                    modifier = Modifier.size(168.dp),
-                    animate = focused,
-                    cornerRadius = 14.dp,
-                )
+                Box(Modifier.size(BrowseTokens.CardWidth)
+                    .coverHairline(BrowseTokens.CardRadius)) {
+                    MotionArtwork(
+                        track = track,
+                        modifier = Modifier.fillMaxSize(),
+                        animate = rememberBrowseMotionReady(focused),
+                        cornerRadius = BrowseTokens.CardRadius,
+                    )
+                }
                 Text(
                     text = track.title,
-                    color = Color.White.copy(alpha = 0.92f),
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White.copy(alpha = 0.96f),
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp,
+                    fontWeight = FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 9.dp),
+                    modifier = Modifier.padding(top = 7.dp),
                 )
                 Text(
                     text = track.artist,
-                    color = Color.White.copy(alpha = 0.56f),
-                    fontSize = 13.sp,
+                    color = Color.White.copy(alpha = 0.58f),
+                    fontSize = 11.sp,
+                    lineHeight = 14.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 1.dp),
+                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
         }
     }
-}
-
-private fun firstRowFocusModifier(
-    index: Int,
-    firstContentFocusRequester: FocusRequester?,
-    navigationFocusRequester: FocusRequester?,
-): Modifier {
-    var result: Modifier = Modifier
-    if (index == 0 && firstContentFocusRequester != null) {
-        result = result.focusRequester(firstContentFocusRequester)
-    }
-    if (navigationFocusRequester != null) {
-        result = result.focusProperties { up = navigationFocusRequester }
-    }
-    return result
 }
 
 @Composable
@@ -1637,4 +1973,6 @@ private fun Track.eyebrow(): String = when (catalogKind) {
     CatalogKind.Playlist -> artist.takeIf { it.isNotBlank() } ?: stringResource(R.string.browse_kind_playlist)
     CatalogKind.Station -> stringResource(R.string.browse_kind_station)
     CatalogKind.MusicVideo -> stringResource(R.string.browse_kind_music_video)
+    CatalogKind.Artist -> stringResource(R.string.library_artists)
+    CatalogKind.Page -> stringResource(R.string.nav_browse)
 }

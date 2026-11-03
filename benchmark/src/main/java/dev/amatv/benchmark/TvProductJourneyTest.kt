@@ -8,7 +8,6 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
-import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -19,19 +18,11 @@ class TvProductJourneyTest {
     @get:Rule val failures = UiFailureArtifacts()
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val device = UiDevice.getInstance(instrumentation)
-    private val ui = TvUi(device)
+    private val ui by lazy { TvUi(device) }
 
-    @Before fun coldLaunchPreservingAccount() {
+    private fun coldLaunchPreservingAccount() {
         device.executeShellCommand("am force-stop $TARGET")
         launchTarget()
-        if (ui.ensurePlayableSong()) {
-            // Exercise a genuine restored start after the one-time public-song seed.
-            // Home delivers ON_STOP so the normal cursor persistence path runs.
-            device.pressHome()
-            ui.settle(600)
-            device.executeShellCommand("am force-stop $TARGET")
-            launchTarget()
-        }
     }
 
     private fun launchTarget() {
@@ -43,9 +34,8 @@ class TvProductJourneyTest {
     }
 
     @Test fun restoredStartupDoesNotAutomaticallyPlay() {
-        ui.browseTab("home")
-        assumeTrue("No saved song on this account", ui.has("nav-nowplaying"))
-        ui.browseTab("nowplaying")
+        coldLaunchPreservingAccount()
+        assumeTrue("No saved song on this account", ui.openRetainedSong())
         val player = PlayerUi(ui)
         player.awaitState("paused")
         ui.settle(2_000)
@@ -53,21 +43,19 @@ class TvProductJourneyTest {
     }
 
     @Test fun collectionSongsAndSingleBackReturnToBrowse() {
+        coldLaunchPreservingAccount()
         ui.browseTab("library")
-        ui.requireObject(By.res(Pattern.compile("home-shelves-count-\\d+")))
-        ui.down(500)
-        var collection = ui.homeCard().resourceName.endsWith("-playlist") || ui.homeCard().resourceName.endsWith("-album")
-        repeat(20) {
-            if (!collection) {
-                ui.right(180)
-                val focused = ui.homeCard().resourceName
-                collection = focused.endsWith("-playlist") || focused.endsWith("-album")
-            }
-        }
-        assumeTrue("Account has no visible album/playlist", collection)
+        ui.right(0)
+        ui.id("library-browser")
+        ui.focusUi("library-category-albums")
+        ui.center(0)
+        assertTrue(device.wait({ ui.has("library-grid") || ui.has("library-empty") }, 60_000L))
+        assumeTrue("Account has no library albums", ui.has("library-grid"))
+        ui.right(0)
+        ui.awaitFocused("library-item-0-album")
         ui.center()
         ui.id("collection-screen")
-        assertFalse("Collection is a detail page without top tabs", ui.has("nav-home"))
+        assertTrue("Collection detail must retain global navigation", ui.has("nav-menu"))
         ui.requireObject(By.res("collection-play").enabled(true), 60_000)
         // The play action deliberately keeps input focus while data is loading.
         // Real song content, rather than its focusable wrapper, signals readiness.
@@ -82,16 +70,15 @@ class TvProductJourneyTest {
         repeat(steps) { ui.up(100) }
         ui.settle(600)
         assertTrue("Song list must retain DPAD focus", ui.id("collection-song-0").isFocused)
-        ui.left(350)
         device.pressBack()
-        ui.id("nav-home")
+        ui.id("nav-menu")
         assertFalse("One Back must close collection", ui.has("collection-screen"))
+        ui.awaitFocused("library-item-0-album")
     }
 
     @Test fun queueModesAndControllerDisappearTogether() {
-        ui.browseTab("home")
-        assumeTrue("No saved song on this account", ui.has("nav-nowplaying"))
-        ui.browseTab("nowplaying")
+        coldLaunchPreservingAccount()
+        ui.requireRetainedPausedSong()
         val player = PlayerUi(ui)
         player.focusControl("player-queue")
         ui.center()
@@ -109,9 +96,14 @@ class TvProductJourneyTest {
     }
 
     @Test fun nativePlaybackCanStartAndPauseFromRemote() {
-        ui.browseTab("home")
-        assumeTrue("No saved song on this account", ui.has("nav-nowplaying"))
-        ui.browseTab("nowplaying")
+        requirePlayerPlaybackOptIn()
+        val allowSeed = InstrumentationRegistry.getArguments().getString("allow_playback_seed") == "1"
+        coldLaunchPreservingAccount()
+        if (!ui.openRetainedSong()) {
+            assumeTrue("SKIPPED: need a previously selected song or allow_playback_seed=1", allowSeed)
+            ui.seedPlayableSong()
+        }
+        assumeTrue("SKIPPED: retained song must already be paused", PlayerUi(ui).state() == "paused")
         val player = PlayerUi(ui)
         try {
             player.play()

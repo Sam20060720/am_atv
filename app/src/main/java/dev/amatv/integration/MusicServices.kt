@@ -4,20 +4,37 @@ import dev.amatv.R
 import dev.amatv.i18n.AppText
 
 import android.content.Context
+import android.content.MutableContextWrapper
+import android.app.Activity
+import java.security.MessageDigest
 import android.content.Intent
+import android.media.audiofx.AudioEffect
 import android.util.Log
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.atomic.AtomicLong
 import dev.amatv.BuildConfig
 import dev.amatv.model.ContentShelf
+import dev.amatv.model.CatalogResourcePage
+import dev.amatv.model.CatalogResourceProfile
+import dev.amatv.model.CatalogResourceRef
+import dev.amatv.model.CatalogResourceSection
 import dev.amatv.model.LyricLine
 import dev.amatv.model.Track
+import dev.amatv.model.CatalogKind
+import dev.amatv.model.matchesPlaybackQueueEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONObject
+import java.net.URI
 
 enum class MusicConnectionState {
     Demo,
@@ -39,6 +56,8 @@ interface RecommendationProvider {
 class MusicServices(context: Context) : RecommendationProvider {
     private val appContext = context.applicationContext
     val contentCache = ContentCache.get(appContext)
+    val artworkMotionPreferences = ArtworkMotionPreferences.get(appContext)
+    val libraryAdditionPreferences = LibraryAdditionPreferences(appContext)
     private val tokenStore = SecureTokenStore(appContext)
     private val webAuthenticationSession = WebAuthenticationSession(appContext)
     private val developerTokens = DeveloperTokenClient(
@@ -47,7 +66,31 @@ class MusicServices(context: Context) : RecommendationProvider {
         bundledToken = BuildConfig.MUSICKIT_DEVELOPER_TOKEN,
     )
     private val bridge = MusicKitBridge(appContext)
-    private val songSpectrum = SongAudioSpectrum(appContext, bridge::audioSessionId)
+    private val playbackHostContext = MutableContextWrapper(appContext).apply {
+        if (context is Activity) baseContext = context
+    }
+    private val stationPlayer = MusicKitStationPlayer(playbackHostContext)
+    private enum class PlaybackEngine { Native, StationWeb }
+    private class EngineRequest(val engine: PlaybackEngine, val generation: Long) {
+        var localGeneration = 0L
+        var pending: PlaybackSnapshot? = null
+    }
+    private val playbackEpoch = AtomicLong()
+    private val engineLock = Any()
+    private val playbackMain = Handler(Looper.getMainLooper())
+    private var activeEngineRequest: EngineRequest? = null
+    @Volatile private var serviceSnapshot: PlaybackSnapshot? = null
+    @Volatile private var servicePlaybackListener: ((PlaybackSnapshot) -> Unit)? = null
+    @Volatile private var runtimePlaybackListener: ((PlaybackSnapshot) -> Unit)? = null
+    @Volatile private var spectrumActive = false
+    private var uiSystemCallbacks: PlaybackMediaSession.Callbacks? = null
+    private var runtimeSystemCallbacks: PlaybackMediaSession.Callbacks? = null
+    private val songSpectrum = SongAudioSpectrum(appContext) {
+        // A station WebView does not expose the native renderer's audio session.
+        // Never visualize an old native song as if it belonged to the station.
+        val nativeActive = synchronized(engineLock) { activeEngineRequest?.engine == PlaybackEngine.Native }
+        if (nativeActive) bridge.audioSessionId() else 0
+    }
     private val mediaSession = PlaybackMediaSession(appContext)
     private val playbackPreparation = Mutex()
     private val api = AppleMusicApi(
@@ -55,16 +98,77 @@ class MusicServices(context: Context) : RecommendationProvider {
         developerTokens = developerTokens,
         userToken = tokenStore::readUserToken,
     )
+    private val webPageToken = AppleWebPlaybackTokenClient()
+    internal val webRequest = AppleMusicWebRequest(tokenStore::readUserToken, webPageToken)
+    val libraryManagement = CatalogLibraryManagement(api::effectiveStorefront) { path, method, body ->
+        webRequest.request(path, method, body, fresh = method == "GET")
+    }
+    private val publicBrowse = PublicMusicBrowseClient(
+        storefront = {
+            if (tokenStore.readUserToken().isNullOrBlank()) BuildConfig.APPLE_MUSIC_STOREFRONT
+            else api.userStorefront()
+        },
+        language = { appContext.resources.configuration.locales[0].toLanguageTag() },
+        editorialRequest = ::requestPublicEditorial,
+        parseResource = api::parseResourceItem,
+    )
+    private val publicEditorialMotion = PublicEditorialMotionClient(
+        storefront = {
+            if (tokenStore.readUserToken().isNullOrBlank()) BuildConfig.APPLE_MUSIC_STOREFRONT else api.userStorefront()
+        },
+        language = { appContext.resources.configuration.locales[0].toLanguageTag() },
+        cacheDirectory = java.io.File(appContext.cacheDir, "editorial-motion-metadata-v1"),
+        cacheGeneration = { contentCache.generation },
+        cacheEnabled = { contentCache.settings.value.let { it.enabled && !it.clearing } },
+        canWriteCache = { contentCache.canWrite() },
+    )
+    private val editorialArtworkResolver = EditorialArtworkResolver(
+        scopeKey = { "${api.userStorefront()}:${appContext.resources.configuration.locales.toLanguageTags()}" },
+        albumForSong = { song ->
+            catalogPages.sectionPage(dev.amatv.model.CatalogResourceRef(checkNotNull(song.catalogId), "songs"),
+                dev.amatv.model.CatalogResourceSection("albums", resourceTypes = setOf("albums"), pageSize = 10))
+                .items.firstOrNull { it.catalogKind == dev.amatv.model.CatalogKind.Album }
+        },
+        publicArtwork = publicEditorialMotion::artwork,
+    )
+    internal suspend fun editorialArtwork(item: Track): Track =
+        if (artworkMotionPreferences.enabled.value) editorialArtworkResolver.artwork(item) else item
+    internal fun cachedEditorialArtwork(item: Track): Track =
+        api.cachedEffectiveStorefront()?.let { publicEditorialMotion.cachedArtwork(item, it) } ?: item
+    val catalogActions: CatalogActions get() = api.actions
+    val catalogPages: CatalogPagesApi get() = api.catalogPages
+    val accountInsights get() = api.accountInsights
+    val catalogCharts get() = api.catalogCharts
+    val mediaCapabilities get() = bridge.mediaCapabilities
+    val presentationCapabilities get() = CatalogPresentationCapabilities(mediaCapabilities,
+        stationWebPlaybackAvailable = stationPlayer.available)
+
     private val appleLyrics = AppleMusicLyricsClient(
         storefront = BuildConfig.APPLE_MUSIC_STOREFRONT,
         storefrontProvider = api::userStorefront,
         userToken = tokenStore::readUserToken,
         debugDumpDir = if (BuildConfig.DEBUG) java.io.File(appContext.cacheDir, "lyrics-ttml") else null,
         contentCache = contentCache,
+        webToken = webPageToken,
     )
     private val google = GoogleTvAuthorization(tokenStore)
     private val ytm = YtmInnertubeClient(google::accessToken)
     private val resolver = CrossCatalogResolver(api)
+
+    /** Opaque per-authorization cache boundary; tokens never reach cache keys or logs. */
+    fun authorizationCacheScope(): String = tokenStore.readUserToken()?.takeIf { it.isNotBlank() }?.let { token ->
+        MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+            .take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    } ?: "guest"
+
+    /** A retained engine can reattach its tiny station view without retaining an old Activity. */
+    fun attachPlaybackHost(activity: Activity?) {
+        val attach = {
+            playbackHostContext.baseContext = activity ?: appContext
+            stationPlayer.attachHost(activity)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) attach() else playbackMain.post { attach() }
+    }
 
     val ytmPairingConfigured get() = google.configured
     val ytmSignedIn get() = google.signedIn
@@ -175,42 +279,188 @@ class MusicServices(context: Context) : RecommendationProvider {
         )
     }
 
+    internal suspend fun phoneAuthentication(advertisedAuthority: String? = null, port: Int = 0): PhoneMusicAuthorization {
+        val developerToken = developerTokens.token()
+        var created: PhoneMusicAuthorization? = null
+        try {
+            return withContext(Dispatchers.IO) {
+                PhoneMusicAuthorization(developerToken, BuildConfig.VERSION_NAME,
+                    appContext.resources.configuration.locales[0].toLanguageTag(),
+                    advertisedAuthority = advertisedAuthority, port = port).also { created = it }
+            }
+        } catch (failure: Throwable) {
+            // The return dispatch can be cancelled after IO created the socket.
+            created?.close()
+            throw failure
+        }
+    }
+
+    /** Validate the new authorization before replacing the retained TV account. */
+    internal suspend fun completePhoneAuthentication(userToken: String) {
+        require(isPhoneMusicUserToken(userToken)) { AppText.text(R.string.services_auth_invalid_user_token) }
+        val candidate = AppleMusicApi(BuildConfig.APPLE_MUSIC_STOREFRONT, developerTokens) { userToken }
+        candidate.userStorefront()
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        withContext(Dispatchers.IO) { tokenStore.writeUserToken(userToken) }
+        mediaSession.clear()
+        resetPlaybackEngines()
+    }
+
     fun completeWebAuthentication(data: Intent): String {
         val userToken = checkNotNull(
             data.getStringExtra(MusicKitWebAuthActivity.EXTRA_USER_TOKEN),
         ) { AppText.text(R.string.services_auth_invalid_user_token) }
         tokenStore.writeUserToken(userToken)
         mediaSession.clear()
-        bridge.release()
+        resetPlaybackEngines()
         return userToken
     }
 
     fun signOut() {
         webAuthenticationSession.markLocalWebSessionForReset()
-        songSpectrum.setActive(false)
+        setSpectrumActive(false)
         mediaSession.clear()
-        bridge.release()
+        resetPlaybackEngines()
         tokenStore.clear()
     }
 
-    suspend fun recommendations(): List<Track> = api.recommendations()
     suspend fun recommendationShelves(): List<ContentShelf> = api.recommendationShelves()
-    suspend fun recentlyPlayed(): List<Track> = api.recentlyPlayed()
-    suspend fun recentlyPlayedTracks(): List<Track> = api.recentlyPlayedTracks()
-    suspend fun recentlyAdded(): List<Track> = api.recentlyAdded()
-    suspend fun libraryPlaylists(): List<Track> = api.libraryPlaylists()
-    suspend fun librarySongs(): List<Track> = api.librarySongs()
+    suspend fun browseShelves(): List<ContentShelf> = publicBrowse.shelves(presentationCapabilities)
+    /** Public editorial pages retain the same native detail browser and lifecycle. */
+    internal suspend fun resourceProfile(ref: CatalogResourceRef): CatalogResourceProfile {
+        if (ref.type == "public-rooms") return publicBrowse.profile(ref, presentationCapabilities)
+        if (ref.type != "public-curators") return withPublicSongCredits(catalogPages.profile(ref))
+        val original = catalogPages.profile(CatalogResourceRef(ref.id, "apple-curators")).let {
+            it.copy(ref = ref, item = it.item.copy(resourceType = ref.type))
+        }
+        val editorial = try { publicBrowse.profile(ref, presentationCapabilities) }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            return original
+        }
+        return original.copy(sections = original.sections + editorial.sections.filter { "stations" in it.resourceTypes })
+    }
+
+    private suspend fun withPublicSongCredits(profile: CatalogResourceProfile): CatalogResourceProfile {
+        val songId = when (profile.ref.type) {
+            "songs" -> profile.ref.id
+            "library-songs" -> profile.item.catalogId
+            else -> null
+        }?.takeIf { it.matches(Regex("[1-9][0-9]*")) } ?: return profile
+        if (profile.metadata.any { it.key.startsWith("credits:") }) return profile
+        val storefront = api.cachedEffectiveStorefront()?.takeIf { it.matches(Regex("[a-z]{2}")) } ?: return profile
+        val language = appContext.resources.configuration.locales[0].toLanguageTag()
+        val encodedLanguage = java.net.URLEncoder.encode(language, Charsets.UTF_8.name())
+        val path = "/v1/catalog/$storefront/songs/$songId?include=credits,albums,artists" +
+            "&format%5Bresources%5D=map&platform=web&l=$encodedLanguage"
+        return try {
+            // Public names and roles need the web Origin contract, not an
+            // account write or another player/client. Keep Library identity.
+            val root = webRequest.request(path, needsUserToken = false, language = language)
+            catalogPages.attachSongCredits(profile, root)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { kotlinx.coroutines.currentCoroutineContext().ensureActive(); profile }
+    }
+
+    internal suspend fun resourceSectionPage(ref: CatalogResourceRef, section: CatalogResourceSection,
+        nextPage: String?): CatalogResourcePage = when {
+        ref.type == "public-rooms" || ref.type == "public-curators" && section.id.startsWith("public:") ->
+            publicBrowse.sectionPage(ref, section, nextPage, presentationCapabilities)
+        ref.type == "public-curators" -> catalogPages.sectionPage(CatalogResourceRef(ref.id, "apple-curators"), section, nextPage)
+        else -> catalogPages.sectionPage(ref, section, nextPage)
+    }
+
+    private suspend fun requestPublicEditorial(path: String): JSONObject {
+        val uri = URI("https://amp-api.music.apple.com$path")
+        require(uri.host == "amp-api.music.apple.com" && uri.userInfo == null && uri.port == -1 && uri.fragment == null &&
+            uri.path.matches(Regex("/v1/editorial/[a-z]{2}/rooms/[1-9][0-9]{0,19}/contents")))
+        return try {
+            webRequest.request(path, needsUserToken = false,
+                maxResponseBytes = PublicMusicBrowsePage.MAX_JSON_BYTES,
+                language = appContext.resources.configuration.locales[0].toLanguageTag())
+        } catch (failure: CatalogRequestException) {
+            // Anonymous editorial access uses the same Origin contract as the
+            // existing lyrics client. Rejected access must not demand re-login.
+            if (failure.httpStatus in setOf(401, 403)) throw CatalogRequestException(CatalogFailureReason.Unavailable,
+                AppText.text(R.string.browse_content_unavailable), failure.httpStatus, failure.serviceCode)
+            throw failure
+        }
+    }
+    suspend fun recentlyPlayedPage(): LibraryPage = api.recentlyPlayedPage()
+    suspend fun recentlyPlayedTracksPage(): LibraryPage = api.recentlyPlayedTracksPage()
+    suspend fun recentlyAddedPage(nextPage: String? = null): LibraryPage = api.recentlyAddedPage(nextPage)
+    suspend fun libraryAlbumsPage(nextPage: String? = null): LibraryPage = api.libraryAlbumsPage(nextPage)
+    suspend fun libraryArtistsPage(nextPage: String? = null): LibraryPage = api.libraryArtistsPage(nextPage)
+    suspend fun artistProfile(artist: Track): dev.amatv.model.ArtistProfile = api.artistProfile(artist)
+    suspend fun artistSectionPage(artist: Track, section: dev.amatv.model.ArtistSection, nextPage: String? = null): LibraryPage =
+        api.artistSectionPage(artist, section, nextPage)
+    suspend fun relatedArtistsPage(item: Track, nextPage: String? = null): LibraryPage = api.relatedArtistsPage(item, nextPage)
+    suspend fun searchSuggestions(term: String): dev.amatv.model.CatalogSearchSuggestions = api.searchSuggestions(term)
+    suspend fun searchPage(term: String, type: dev.amatv.model.CatalogSearchType, nextPage: String? = null): LibraryPage =
+        api.searchPage(term, type, nextPage)
+    suspend fun librarySearchPage(term: String, type: dev.amatv.model.CatalogSearchType, nextPage: String? = null): LibraryPage =
+        api.librarySearchPage(term, type, nextPage)
     suspend fun libraryPlaylistsPage(nextPage: String? = null): LibraryPage = api.libraryPlaylistsPage(nextPage)
     suspend fun librarySongsPage(nextPage: String? = null): LibraryPage = api.librarySongsPage(nextPage)
-    suspend fun charts(types: String = "albums,songs,playlists"): List<Track> =
-        api.charts(types)
-    suspend fun liveRadio(): List<Track> = api.liveRadio()
-    suspend fun search(term: String): List<Track> = api.search(term)
+    suspend fun radioSectionPage(section: RadioCatalogSection, nextPage: String? = null): LibraryPage =
+        api.radioCatalog.page(section, nextPage)
+
+    /** Public editorial sections load independently of personal station/history reads. */
+    suspend fun radioShelves(
+        onPartial: (List<ContentShelf>) -> Unit = {},
+        onPage: (String, LibraryPage) -> Unit = { _, _ -> },
+        onFinished: (Boolean) -> Unit = {},
+    ): List<ContentShelf> = coroutineScope {
+        val sections = linkedMapOf<String, List<ContentShelf>>()
+        var firstFailure: Exception? = null
+        fun snapshot(): List<ContentShelf> = listOf("personal", "public", "recent")
+            .flatMap { sections[it].orEmpty() }
+        suspend fun read(key: String, operation: suspend () -> List<ContentShelf>) {
+            try {
+                sections[key] = operation()
+                onPartial(snapshot())
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { if (firstFailure == null) firstFailure = failure }
+        }
+        val publicRequest = async { read("public") {
+            try { publicBrowse.radioShelves(presentationCapabilities) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                val page = radioSectionPage(RadioCatalogSection.Live)
+                onPage("radio-live", page)
+                listOf(ContentShelf("radio-live", AppText.text(R.string.app_apple_music_radio), page.items))
+                    .filter { it.items.isNotEmpty() || page.nextPage != null }
+            }
+        } }
+        val personal = async {
+            if (connectionState == MusicConnectionState.SignedIn) read("personal") {
+                val page = radioSectionPage(RadioCatalogSection.Personal)
+                onPage("radio-personal", page)
+                listOf(ContentShelf("radio-personal", AppText.text(R.string.radio_for_you), page.items))
+                    .filter { it.items.isNotEmpty() || page.nextPage != null }
+            }
+        }
+        val recent = async {
+            if (connectionState == MusicConnectionState.SignedIn) read("recent") {
+                val page = radioSectionPage(RadioCatalogSection.Recent)
+                onPage("radio-recent", page)
+                listOf(ContentShelf("radio-recent", AppText.text(R.string.radio_recent), page.items))
+                    .filter { it.items.isNotEmpty() || page.nextPage != null }
+            }
+        }
+        awaitAll(publicRequest, personal, recent)
+        onFinished(firstFailure == null)
+        snapshot().also { if (it.isEmpty()) firstFailure?.let { failure -> throw failure } }
+    }
     override suspend fun createAmStation(songId: String): Pair<String?, List<Track>> =
         api.createContinuousStation(songId)
     override suspend fun amStationNextTracks(stationId: String): List<Track> =
         api.stationNextTracks(stationId)
     suspend fun collectionTracks(collection: Track): List<Track> = api.collectionTracks(collection)
+    suspend fun collectionTracksPage(collection: Track, nextPage: String? = null): LibraryPage = api.collectionTracksPage(collection, nextPage)
+    internal suspend fun sampleCollectionShuffleSong(collection: Track, total: Int): CollectionShuffleSample? =
+        api.sampleCollectionShuffleSong(collection, total)
 
     suspend fun lyricsFor(
         track: Track,
@@ -223,54 +473,208 @@ class MusicServices(context: Context) : RecommendationProvider {
     /** Resolve all songs through account-storefront equivalence, retaining source provenance. */
     suspend fun resolvePlayableTrack(track: Track): Track {
         if (track.catalogKind != dev.amatv.model.CatalogKind.Song) return track
-        checkNotNull(track.catalogId) { AppText.text(R.string.services_catalog_id_missing) }
         return resolvePlayableSongTrack(track, api::resolveCatalogSongId)
     }
-
-    suspend fun prepareAndPlay(track: Track): Long = preparePlayback(track)
 
     suspend fun preparePlayback(
         track: Track,
         positionMs: Long = 0L,
         playWhenReady: Boolean = true,
+        currentAppEntryId: Long? = null,
+        upcoming: List<NativeQueueEntry> = emptyList(),
     ): Long {
         val userToken = checkNotNull(tokenStore.readUserToken()) { AppText.text(R.string.services_sign_in_apple_music) }
         val developerToken = developerTokens.token()
         return playbackPreparation.withLock {
             withContext(Dispatchers.Default) {
                 if (playWhenReady) mediaSession.playbackRequested()
-                bridge.preparePlayback(track, developerToken, userToken, positionMs, playWhenReady)
+                val engine = if (track.catalogKind == dev.amatv.model.CatalogKind.Station &&
+                    !mediaCapabilities.catalogStations) PlaybackEngine.StationWeb else PlaybackEngine.Native
+                val request = EngineRequest(engine, playbackEpoch.incrementAndGet())
+                synchronized(engineLock) { activeEngineRequest = request; serviceSnapshot = null }
+                refreshSpectrumRoute()
+                try {
+                    val local = if (engine == PlaybackEngine.StationWeb) {
+                        bridge.pause()
+                        bridge.release()
+                        // Reuse the account storefront already resolved by browsing;
+                        // MusicKit JS otherwise defaults this separate instance to US.
+                        val stationStorefront = try {
+                            withTimeoutOrNull(1_500L) { api.userStorefront() }
+                                ?: BuildConfig.APPLE_MUSIC_STOREFRONT
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            BuildConfig.APPLE_MUSIC_STOREFRONT
+                        }
+                        stationPlayer.preparePlayback(track, developerToken, userToken, positionMs, playWhenReady,
+                            storefront = stationStorefront)
+                    } else {
+                        stationPlayer.release()
+                        bridge.preparePlayback(track, developerToken, userToken, positionMs, playWhenReady,
+                            currentAppEntryId, upcoming)
+                    }
+                    val pending = synchronized(engineLock) {
+                        request.localGeneration = local
+                        request.pending.also { request.pending = null }
+                    }
+                    pending?.takeIf { it.requestGeneration == local }?.let { snapshot ->
+                        playbackMain.post { forwardPlaybackSnapshot(engine, snapshot) }
+                    }
+                    request.generation
+                } catch (failure: Throwable) {
+                    synchronized(engineLock) {
+                        if (activeEngineRequest === request) activeEngineRequest = null
+                    }
+                    refreshSpectrumRoute()
+                    throw failure
+                }
             }
         }
     }
 
-    fun audioSpectrum(): AudioSpectrum = songSpectrum.sample()
-    fun setSpectrumActive(enabled: Boolean) = songSpectrum.setActive(enabled)
+    /** Only native media owns a queue rail, and engine-local generations stay private. */
+    fun updateNativeUpcoming(serviceGeneration: Long, entries: List<NativeQueueEntry>): Boolean {
+        val localGeneration = synchronized(engineLock) {
+            val request = activeEngineRequest ?: return false
+            if (request.engine != PlaybackEngine.Native || request.generation != serviceGeneration || request.localGeneration == 0L) return false
+            request.localGeneration
+        }
+        return bridge.updateUpcoming(localGeneration, entries)
+    }
+
+    fun audioSpectrum(): AudioSpectrum = when {
+        !spectrumActive -> AudioSpectrum()
+        currentEngine() == PlaybackEngine.StationWeb -> stationPlayer.audioSpectrum()
+        currentEngine() == PlaybackEngine.Native -> songSpectrum.sample()
+        else -> AudioSpectrum()
+    }
+    fun spectrumCaptureState(): SpectrumCaptureState = when {
+        !spectrumActive -> SpectrumCaptureState.Disabled
+        currentEngine() == PlaybackEngine.StationWeb -> stationPlayer.spectrumCaptureState()
+        currentEngine() == PlaybackEngine.Native -> songSpectrum.captureState()
+        else -> SpectrumCaptureState.WaitingForSession
+    }
+    fun setSpectrumActive(enabled: Boolean) {
+        spectrumActive = enabled
+        refreshSpectrumRoute()
+    }
+    private fun refreshSpectrumRoute() {
+        // Resolve the latest owner on the main queue, rather than posting an
+        // obsolete route from a concurrently finishing playback preparation.
+        playbackMain.post {
+            val engine = currentEngine()
+            songSpectrum.setActive(spectrumActive && engine == PlaybackEngine.Native)
+            stationPlayer.setSpectrumActive(spectrumActive && engine == PlaybackEngine.StationWeb)
+        }
+    }
+
+    private fun currentEngine(): PlaybackEngine? = synchronized(engineLock) { activeEngineRequest?.engine }
 
     fun play() {
         mediaSession.playbackRequested()
-        bridge.play()
+        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.play() else bridge.play()
+    }
+    /** Keep the existing foreground lease while preparing an explicit replacement. */
+    fun pauseForReplacement() {
+        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.pause() else bridge.pause()
     }
     fun pause() {
         mediaSession.playbackPaused()
-        bridge.pause()
+        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.pause() else bridge.pause()
     }
-    fun seekTo(positionMs: Long) = bridge.seekTo(positionMs)
-    fun skipToNext() = bridge.skipToNext()
-    fun skipToPrevious() = bridge.skipToPrevious()
-    fun skipToQueueItem(queueId: Long) = bridge.skipToQueueItem(queueId)
-    // The app queue owns repeat, shuffle and autoplay. Each native queue contains
-    // one selected track, so enabling a second queue engine would race the app.
-    fun playbackSnapshot(): PlaybackSnapshot? = bridge.playbackSnapshot()
-    fun setPlaybackListener(listener: ((PlaybackSnapshot) -> Unit)?) =
-        bridge.setPlaybackListener(listener)
-    fun setSystemPlaybackCallbacks(callbacks: PlaybackMediaSession.Callbacks?) =
-        mediaSession.setCallbacks(callbacks)
+    fun seekTo(positionMs: Long) {
+        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.seekTo(positionMs) else bridge.seekTo(positionMs)
+    }
+    fun skipToNext() {
+        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.skipToNext() else bridge.skipToNext()
+    }
+    fun skipToPrevious() {
+        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.skipToPrevious() else bridge.skipToPrevious()
+    }
+    // Song repeat/shuffle belongs to the app queue; a station owns its actual
+    // internal queue. Engine-local generations must never escape this boundary.
+    fun playbackSnapshot(): PlaybackSnapshot? = serviceSnapshot
+
+    /** The system panel may control only the currently prepared native song's renderer. */
+    internal fun audioEffectsIntent(item: Track): Intent? {
+        val sessionId = synchronized(engineLock) {
+            val request = activeEngineRequest ?: return null
+            val snapshot = serviceSnapshot ?: return null
+            val current = snapshot.currentTrack ?: return null
+            if (request.engine != PlaybackEngine.Native || request.localGeneration == 0L ||
+                snapshot.requestGeneration != request.generation || !snapshot.isPrepared ||
+                !snapshot.hasPlayerCurrentTrack || snapshot.isEnded || snapshot.errorMessage != null ||
+                item.catalogKind != CatalogKind.Song || current.catalogKind != CatalogKind.Song ||
+                !item.matchesPlaybackQueueEntry(current)) return null
+            bridge.audioSessionId().takeIf { it > 0 } ?: return null
+        }
+        val panel = Intent(AudioEffect.ACTION_DISPLAY_AUDIO_EFFECT_CONTROL_PANEL)
+            .putExtra(AudioEffect.EXTRA_PACKAGE_NAME, appContext.packageName)
+            .putExtra(AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
+        return try {
+            panel.takeIf { it.resolveActivity(appContext.packageManager) != null }
+        } catch (_: SecurityException) {
+            null
+        }
+    }
+
+    fun setPlaybackListener(listener: ((PlaybackSnapshot) -> Unit)?) {
+        servicePlaybackListener = listener
+        updateEngineListeners()
+    }
+    fun setRuntimePlaybackListener(listener: ((PlaybackSnapshot) -> Unit)?) {
+        runtimePlaybackListener = listener
+        updateEngineListeners()
+    }
+    private fun updateEngineListeners() {
+        val subscribed = servicePlaybackListener != null || runtimePlaybackListener != null
+        bridge.setPlaybackListener(if (!subscribed) null else { snapshot ->
+            forwardPlaybackSnapshot(PlaybackEngine.Native, snapshot)
+        })
+        stationPlayer.setPlaybackListener(if (!subscribed) null else { snapshot ->
+            forwardPlaybackSnapshot(PlaybackEngine.StationWeb, snapshot)
+        })
+    }
+    private fun forwardPlaybackSnapshot(engine: PlaybackEngine, snapshot: PlaybackSnapshot) {
+        val mapped = synchronized(engineLock) {
+            val request = activeEngineRequest ?: return
+            if (request.engine != engine) return
+            if (request.localGeneration == 0L) { request.pending = snapshot; return }
+            if (snapshot.requestGeneration != request.localGeneration) return
+            snapshot.copy(requestGeneration = request.generation).also { serviceSnapshot = it }
+        }
+        runtimePlaybackListener?.invoke(mapped)
+        servicePlaybackListener?.invoke(mapped)
+    }
+    private fun resetPlaybackEngines() {
+        synchronized(engineLock) {
+            playbackEpoch.incrementAndGet()
+            activeEngineRequest = null
+            serviceSnapshot = null
+        }
+        refreshSpectrumRoute()
+        stationPlayer.release()
+        bridge.release()
+    }
+    fun setSystemPlaybackCallbacks(callbacks: PlaybackMediaSession.Callbacks?) {
+        uiSystemCallbacks = callbacks
+        mediaSession.setCallbacks(uiSystemCallbacks ?: runtimeSystemCallbacks)
+    }
+    fun setRuntimeSystemPlaybackCallbacks(callbacks: PlaybackMediaSession.Callbacks?) {
+        runtimeSystemCallbacks = callbacks
+        mediaSession.setCallbacks(uiSystemCallbacks ?: runtimeSystemCallbacks)
+    }
     fun publishSystemPlayback(snapshot: PlaybackSnapshot, canSkipNext: Boolean, canSkipPrevious: Boolean) =
         mediaSession.publish(snapshot, canSkipNext, canSkipPrevious)
     fun release() {
+        servicePlaybackListener = null
+        runtimePlaybackListener = null
+        uiSystemCallbacks = null
+        runtimeSystemCallbacks = null
+        attachPlaybackHost(null)
         songSpectrum.release()
         mediaSession.release()
-        bridge.release()
+        resetPlaybackEngines()
     }
 }

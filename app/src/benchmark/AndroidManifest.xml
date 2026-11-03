@@ -1,6 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
+    <application android:usesCleartextTraffic="true">
         <profileable android:shell="true" />
+        <receiver
+            android:name="dev.amatv.benchmark.RuntimeContinuityProbeReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
+        <activity
+            android:name="dev.amatv.ui.ArtworkCacheProbeActivity"
+            android:exported="true"
+            android:process=":artwork_probe"
+            android:screenOrientation="landscape" />
+        <activity
+            android:name="dev.amatv.ui.NavigationRaceProbeActivity"
+            android:exported="true"
+            android:screenOrientation="landscape" />
+        <activity
+            android:name="dev.amatv.ui.LibraryFixtureActivity"
+            android:exported="true"
+            android:screenOrientation="landscape" />
     </application>
 </manifest>

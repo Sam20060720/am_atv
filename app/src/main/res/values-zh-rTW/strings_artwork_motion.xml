@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="artwork_motion_title">動態封面</string>
+    <string name="artwork_motion_hint">首頁、專輯與播放畫面的封面動畫。</string>
+    <string name="artwork_motion_on">動態封面：開啟</string>
+    <string name="artwork_motion_off">動態封面：關閉</string>
+</resources>

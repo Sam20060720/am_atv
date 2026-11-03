@@ -65,4 +65,17 @@ class PlaybackSessionSanitizationTest {
         val original = session(listOf(track("bad", CatalogKind.Station)), 0, setOf(0))
         assertNull(original.sanitizedAutoplayEntries())
     }
+
+    @Test fun sanitizationKeepsOccurrenceSourcesAlignedAndPreservesOffWindowDeferredIds() {
+        val original = session(listOf(track("same"), track("bad", CatalogKind.Station), track("same"), track("last")),
+            0, setOf(1)).copy(
+            queueEntryIds = listOf(10L, 11L, 12L, 13L),
+            queueSourceEntryIds = listOf(1L, 2L, 1L, 3L),
+            deferredLastEntryIds = setOf(11L, 13L, 99L),
+        )
+        val restored = original.sanitizedAutoplayEntries()!!
+        assertEquals(listOf(10L, 12L, 13L), restored.queueEntryIds)
+        assertEquals(listOf(1L, 1L, 3L), restored.queueSourceEntryIds)
+        assertEquals(setOf(13L, 99L), restored.deferredLastEntryIds)
+    }
 }

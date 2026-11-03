@@ -1,0 +1,7 @@
+<resources>
+    <string name="catalog_charts_songs">Top Songs</string>
+    <string name="catalog_charts_albums">Top Albums</string>
+    <string name="catalog_charts_playlists">Top Playlists</string>
+    <string name="catalog_charts_city">City Charts</string>
+    <string name="catalog_charts_global">Daily Top 100</string>
+</resources>

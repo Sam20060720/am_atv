@@ -73,6 +73,12 @@ internal class NativePlaybackIntent {
         resetCompletionEvidence()
     }
 
+    /** The same native controller has already adopted this queued occurrence. */
+    fun adoptPrepared(catalogId: String?, positionMs: Long, playWhenReady: Boolean, nowMs: Long) {
+        begin(catalogId, positionMs, playWhenReady, nowMs)
+        phase = Phase.Ready
+    }
+
     fun requestPlaying(value: Boolean) {
         wantsPlay = value
         playRecoveryAllowed = value

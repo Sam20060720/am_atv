@@ -98,9 +98,9 @@ class LyricViewportTest {
         // Layout runs before that effect. A captured maxScroll=0 used to undo
         // the correct initial placement and latch it until the next lyric cue.
         val tops = FloatArray(8) { 140f + it * 100f }
-        layout.update(List(8) { "row-$it" }, tops, FloatArray(8) { 80f }, 1_200f)
+        layout.update(tops, FloatArray(8) { 80f }, 1_200f)
         assertEquals(660f, locateAfterLayout(), 0f)
-        layout.update(List(8) { "row-$it" }, FloatArray(8) { tops[it] + 40f },
+        layout.update(FloatArray(8) { tops[it] + 40f },
             FloatArray(8) { 80f }, 1_240f)
         assertEquals(700f, locateAfterLayout(), 0f)
     }
@@ -122,6 +122,44 @@ class LyricViewportTest {
         assertTrue(narrow >= wide)
         assertEquals(500L, line.startMs)
         assertEquals(3_000L, line.mainEndMs)
+    }
+
+    @Test fun pronunciationPriorityChangesWrappingWithoutChangingLyricsTimingOrPlainLyrics() {
+        val words = List(12) { index -> LyricWord("字", 500L + index * 300L, 800L + index * 300L,
+            pronunciationText = "pronunciation") }
+        val line = LyricLine(words, timing = LyricTiming.Word)
+        val lyricsFirst = estimateLyricRowHeight(line, 480f, 1f, 1f)
+        val pronunciationFirst = estimateLyricRowHeight(line, 480f, 1f, 1f, pronunciationLarger = true)
+        assertTrue("Larger pronunciation must affect the actual wrapping estimate", pronunciationFirst > lyricsFirst)
+        val withoutPronunciation = line.forDisplay(showTranslation = true, showPronunciation = false)
+        assertEquals(estimateLyricRowHeight(withoutPronunciation, 480f, 1f, 1f),
+            estimateLyricRowHeight(withoutPronunciation, 480f, 1f, 1f, pronunciationLarger = true), 0f)
+        assertSame(words, line.words)
+        assertEquals(500L, line.startMs)
+        assertEquals(4_100L, line.mainEndMs)
+    }
+
+    @Test fun readableHierarchyTracksStaticTimedCompactAndBackgroundGeometryAtFontScales() {
+        val base = LyricLine(listOf(LyricWord("短句", 1_000L, 3_000L, pronunciationText = "duan ju")),
+            translation = "Translation", pronunciationText = "duan ju", backgroundWords = listOf(
+                LyricWord("和聲", 1_500L, 3_500L, pronunciationText = "he sheng", isBackgroundVocal = true)),
+            backgroundTranslation = "Background", backgroundPronunciationText = "he sheng", timing = LyricTiming.Word)
+        for (line in listOf(base, base.copy(timing = LyricTiming.Line),
+            base.copy(isStatic = true, timing = LyricTiming.None))) {
+            for (background in if (line.isStatic) listOf(false) else listOf(false, true)) {
+                val normal = lyricTextSizes(line, false, background)
+                val chosen = lyricTextSizes(line, true, background)
+                assertTrue(normal.lyric > normal.pronunciation)
+                assertTrue(chosen.pronunciation > chosen.lyric)
+                assertTrue(chosen.lyricLine >= chosen.lyric)
+                assertTrue(chosen.pronunciationLine >= chosen.pronunciation)
+            }
+            for (fontScale in listOf(1f, 1.4f, 2f)) {
+                val height = estimateLyricRowHeight(line, 320f, 1.5f, fontScale, true)
+                assertTrue(height.isFinite() && height > 0f)
+                assertTrue(height >= estimateLyricRowHeight(line, 800f, 1.5f, fontScale, true))
+            }
+        }
     }
 
     @Test fun oversizedNonBreakingGroupFallsBackToBoundedWordWrapping() {

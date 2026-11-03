@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="artist_library_albums">資料庫中的專輯</string>
+    <string name="artist_top_songs">熱門歌曲</string>
+    <string name="artist_latest_release">最新發行</string>
+    <string name="artist_featured_albums">代表專輯</string>
+    <string name="artist_full_albums">錄音室專輯</string>
+    <string name="artist_singles">單曲與 EP</string>
+    <string name="artist_live_albums">現場專輯</string>
+    <string name="artist_compilation_albums">精選輯</string>
+    <string name="artist_appears_on">參與作品</string>
+    <string name="artist_featured_playlists">藝人精選歌單</string>
+    <string name="artist_playlists">相關歌單</string>
+    <string name="artist_similar_artists">相似藝人</string>
+    <string name="artist_featured_videos">精選音樂影片</string>
+    <string name="artist_top_videos">熱門音樂影片</string>
+    <string name="artist_videos">音樂影片</string>
+    <string name="artist_albums">所有專輯</string>
+    <string name="artist_station">藝人電台</string>
+    <string name="artist_play_top_songs">播放熱門歌曲</string>
+    <string name="artist_read_more">更多</string>
+    <string name="artist_show_less">收起</string>
+    <string name="artist_more">顯示更多</string>
+</resources>

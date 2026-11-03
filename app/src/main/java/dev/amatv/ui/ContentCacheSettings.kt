@@ -23,7 +23,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-internal fun ContentCacheSettings(cache: ContentCache) {
+internal fun ContentCacheSettings(cache: ContentCache, navigationFocus: FocusRequester? = null) {
     val context = LocalContext.current.applicationContext
     val settings by cache.settings.collectAsState()
     val scope = rememberCoroutineScope()
@@ -53,7 +53,7 @@ internal fun ContentCacheSettings(cache: ContentCache) {
             label = stringResource(if (settings.enabled) R.string.browse_cache_disk_on else R.string.browse_cache_disk_off),
             onClick = { cache.setEnabled(!settings.enabled) },
             modifier = Modifier.width(240.dp).focusRequester(diskFocus).focusProperties {
-                left = FocusRequester.Cancel; right = prefetchFocus; down = clearFocus
+                left = navigationFocus ?: FocusRequester.Cancel; right = prefetchFocus; down = clearFocus
             },
         )
         CacheButton(
@@ -75,7 +75,7 @@ internal fun ContentCacheSettings(cache: ContentCache) {
             }
         },
         modifier = Modifier.width(290.dp).focusRequester(clearFocus).focusProperties {
-            up = diskFocus; left = FocusRequester.Cancel; right = FocusRequester.Cancel; down = FocusRequester.Cancel
+            up = diskFocus; left = navigationFocus ?: FocusRequester.Cancel; right = FocusRequester.Cancel; down = FocusRequester.Cancel
         },
     )
     error?.let { Text(stringResource(it), color = Color(0xFFFFB0BA), fontSize = 14.sp) }

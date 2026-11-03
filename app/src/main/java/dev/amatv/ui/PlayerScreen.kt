@@ -18,6 +18,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.rounded.AllInclusive
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ClearAll
 import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
@@ -53,6 +56,7 @@ import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -97,6 +101,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -104,6 +109,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -153,6 +159,7 @@ private enum class PlayerControl {
     Lyrics,
     LyricsDisplay,
     Queue,
+    More,
     Radio,
 }
 
@@ -191,6 +198,7 @@ fun PlayerScreen(
     autoplaySource: dev.amatv.integration.AutoplaySource = dev.amatv.integration.AutoplaySource.AppleMusic,
     onToggleAutoplaySource: () -> Unit = {},
     onClearQueue: () -> Unit = {},
+    onQueueItemActions: (Long) -> Unit = {},
     audioSpectrum: () -> AudioSpectrum = { AudioSpectrum() },
     isActiveScreen: Boolean = true,
     isVisibleOnScreen: Boolean = true,
@@ -205,41 +213,61 @@ fun PlayerScreen(
     lowPerformanceMode: Boolean = false,
     lyricTranslationEnabled: Boolean = false,
     lyricPronunciationEnabled: Boolean = false,
+    lyricPronunciationLarger: Boolean = false,
     lyricTranslationLanguageTag: String = "",
     lyricPronunciationLanguageTag: String = "en-US",
     appLanguageTag: String = Locale.getDefault().toLanguageTag(),
     lyricsEnhancementsReady: Boolean = true,
     onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
     onLyricPronunciationEnabledChange: (Boolean) -> Unit = {},
+    onLyricPronunciationLargerChange: (Boolean) -> Unit = {},
     onLyricTranslationLanguageChange: (String) -> Unit = {},
     onLyricPronunciationLanguageChange: (String) -> Unit = {},
+    canSeek: Boolean = true,
+    feedbackInput: PlaybackFeedbackInput? = null,
 ) {
+    val seekEnabled = canSeek && track.durationMs > 0L
+    val queueForwardStep = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1 else 1
+    val openCatalogActions = LocalCatalogActionMenu.current
+    val reportMenuAnchor = LocalCatalogMenuAnchorReporter.current
+    val moreButtonBounds = remember { arrayOfNulls<Rect>(1) }
     val playbackStateDescription = stringResource(when {
         isPlaying -> R.string.player_state_playing
         playWhenReady -> R.string.player_state_preparing
         else -> R.string.player_state_paused
     })
-    val supportsLyrics = track.catalogKind == CatalogKind.Song ||
-        track.lyrics.isNotEmpty() || track.hasLyricsAvailable
+    val supportsLyrics = track.lyrics.isNotEmpty() || track.hasLyricsAvailable
     var userToggledLyrics by remember(queueSessionId) { mutableStateOf(false) }
     var showLyrics by remember(queueSessionId) { mutableStateOf(supportsLyrics && track.lyrics.isNotEmpty()) }
     var showQueue by remember(queueSessionId) { mutableStateOf(false) }
     var showLyricsSettings by remember(queueSessionId) { mutableStateOf(false) }
     var controlsVisible by remember { mutableStateOf(true) }
     var controlsActivity by remember { mutableIntStateOf(0) }
+    var heldNavigationKey by remember { mutableStateOf<Int?>(null) }
+    var queueScrollActive by remember { mutableStateOf(false) }
+    var consumeBackRelease by remember { mutableStateOf(false) }
     var navigationZone by remember(queueSessionId) {
         mutableStateOf(PlayerNavigationZone.Controls)
     }
     var focusedControl by remember(queueSessionId) {
         mutableStateOf(PlayerControl.PlayPause)
     }
+    var pressedControl by remember { mutableStateOf<PlayerControl?>(null) }
+    var controlPressEpoch by remember { mutableLongStateOf(0L) }
+    var controlKeyHeld by remember { mutableStateOf(false) }
     var selectedLyricIndex by remember(track.id) {
         mutableIntStateOf(-1)
     }
     var isScrubbing by remember(track.id) { mutableStateOf(false) }
     var scrubPositionMs by remember(track.id) { mutableLongStateOf(0L) }
+    LaunchedEffect(seekEnabled) {
+        if (!seekEnabled) {
+            isScrubbing = false
+            if (navigationZone == PlayerNavigationZone.ProgressBar) navigationZone = PlayerNavigationZone.Controls
+        }
+    }
     var focusedQueueMode by remember { mutableStateOf(QueueModeControl.Repeat) }
-    val availableControls = remember(supportsLyrics, canSkipPrevious, canSkipNext, canSetAutoplay) {
+    val availableControls = remember(supportsLyrics, canSkipPrevious, canSkipNext, canSetAutoplay, openCatalogActions != null) {
         buildList {
             if (canSkipPrevious) add(PlayerControl.Previous)
             add(PlayerControl.PlayPause)
@@ -249,6 +277,7 @@ fun PlayerScreen(
                 add(PlayerControl.Lyrics)
             }
             add(PlayerControl.Queue)
+            if (openCatalogActions != null) add(PlayerControl.More)
             if (canSetAutoplay) add(PlayerControl.Radio)
         }
     }
@@ -257,7 +286,7 @@ fun PlayerScreen(
             focusedControl = PlayerControl.PlayPause
         }
     }
-    LaunchedEffect(lyricsLookupFailed, track.lyrics.isEmpty(), userToggledLyrics) {
+    LaunchedEffect(lyricsLookupFailed, track.lyrics.isEmpty(), userToggledLyrics, showQueue) {
         if (lyricsLookupFailed && track.lyrics.isEmpty() && !userToggledLyrics) {
             showLyrics = false
         } else if (track.lyrics.isNotEmpty() && !userToggledLyrics && !showQueue) {
@@ -274,13 +303,50 @@ fun PlayerScreen(
         if (queueEntryIds.size == displayQueue.size) queueEntryIds
         else displayQueue.mapIndexed { index, item -> "$index:${item.id}" }
     }
+    val currentQueueKey = displayQueueKeys.getOrNull(currentQueueIndex)
+    var observedCurrentQueueKey by remember(queueSessionId) { mutableStateOf(currentQueueKey) }
     var focusedQueueKey by remember(queueSessionId) { mutableStateOf<Any?>(null) }
-    val focusedQueueIndex = displayQueueKeys.indexOf(focusedQueueKey).takeIf { it >= 0 } ?: currentQueueIndex
+    var lastQueueSelectionIndex by remember(queueSessionId) { mutableIntStateOf(currentQueueIndex) }
+    var queuePressEntryId by remember { mutableStateOf<Long?>(null) }
+    var queuePressConsumed by remember { mutableStateOf(false) }
+    fun selectedQueueIndex() = displayQueueKeys.indexOf(focusedQueueKey).takeIf { it >= 0 } ?: currentQueueIndex
+    val focusedQueueIndex = if (observedCurrentQueueKey != currentQueueKey) currentQueueIndex else selectedQueueIndex()
     fun focusQueueIndex(index: Int) {
         focusedQueueKey = displayQueueKeys.getOrNull(index)
+        lastQueueSelectionIndex = index
     }
-    LaunchedEffect(currentQueueIndex, navigationZone, controlsVisible, queueSessionId) {
-        if (navigationZone != PlayerNavigationZone.QueueItems || !controlsVisible) focusQueueIndex(currentQueueIndex)
+    LaunchedEffect(queuePressEntryId) {
+        val entry = queuePressEntryId ?: return@LaunchedEffect
+        delay(500L)
+        if (isActiveScreen && showQueue && navigationZone == PlayerNavigationZone.QueueItems && queuePressEntryId == entry) {
+            queuePressConsumed = true
+            onQueueItemActions(entry)
+        }
+    }
+    LaunchedEffect(isActiveScreen, showQueue, focusedQueueKey) {
+        if (!isActiveScreen || !showQueue || focusedQueueKey != queuePressEntryId) queuePressEntryId = null
+    }
+    LaunchedEffect(displayQueueKeys, currentQueueKey, currentQueueIndex, queueSessionId, showQueue) {
+        if (observedCurrentQueueKey != currentQueueKey) {
+            // Follow the new occurrence, including duplicate songs and native
+            // handoff. A stale browsed future card must not pin the carousel.
+            observedCurrentQueueKey = currentQueueKey
+            queuePressEntryId = null
+            queuePressConsumed = true
+            focusQueueIndex(currentQueueIndex)
+        } else if (!showQueue) focusQueueIndex(currentQueueIndex)
+        else {
+            val existingIndex = displayQueueKeys.indexOf(focusedQueueKey)
+            if (existingIndex >= 0) {
+                // A move preserves the occurrence key but changes its position.
+                // If it is removed next, select its latest visual neighbour.
+                lastQueueSelectionIndex = existingIndex
+            } else focusQueueIndex(
+                if (focusedQueueKey == null) currentQueueIndex else lastQueueSelectionIndex.coerceIn(0, displayQueue.lastIndex.coerceAtLeast(0)))
+        }
+        if (showQueue && displayQueue.isEmpty() && navigationZone == PlayerNavigationZone.QueueItems) {
+            navigationZone = PlayerNavigationZone.QueueModes
+        }
     }
     val availableQueueModes = remember(canSetShuffle, canSetRepeat, canSetAutoplay, autoplayEnabled, canClearQueue) {
         buildList {
@@ -295,14 +361,12 @@ fun PlayerScreen(
         if (focusedQueueMode !in availableQueueModes) focusedQueueMode = availableQueueModes.first()
     }
     val playerFocusRequester = remember { FocusRequester() }
-    var lyricsScrollTrigger by remember(track.id) { mutableIntStateOf(0) }
-    var lyricsScrollDelta by remember(track.id) { mutableFloatStateOf(0f) }
     val playbackPosition = rememberPlaybackPositionState(
         trackId = track.id,
         positionAnchorMs = positionAnchorMs,
         playStartedRealtimeMs = playStartedRealtimeMs,
         isPlaying = isPlaying && isVisibleOnScreen,
-        durationMs = track.durationMs,
+        durationMs = track.durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE,
     )
     val presentation = when {
         showQueue -> PlayerPresentation.Queue
@@ -329,11 +393,20 @@ fun PlayerScreen(
             line.backgroundWords.any { !it.pronunciationText.isNullOrBlank() }
     }
 
-    LaunchedEffect(controlsVisible, controlsActivity, isActiveScreen, isScrubbing, showLyricsSettings) {
-        if (controlsVisible && isActiveScreen && !isScrubbing && !showLyricsSettings) {
+    LaunchedEffect(controlsVisible, controlsActivity, isActiveScreen, isScrubbing,
+        showLyricsSettings, navigationZone, showQueue, controlKeyHeld, queuePressEntryId,
+        heldNavigationKey, queueScrollActive, currentQueueKey, currentQueueIndex) {
+        if (controlsVisible && isActiveScreen && !isScrubbing && !showLyricsSettings &&
+            !controlKeyHeld && queuePressEntryId == null && heldNavigationKey == null && !queueScrollActive) {
             delay(5_000L)
             controlsVisible = false
             isScrubbing = false
+            if (showQueue) {
+                // Keep the playback carousel, hide its virtual selection/chrome.
+                focusQueueIndex(currentQueueIndex)
+                navigationZone = PlayerNavigationZone.Controls
+                focusedControl = PlayerControl.Queue
+            }
         }
     }
     val chromeTransition = updateTransition(PlayerChromeState(controlsVisible, showQueue), label = "player-chrome")
@@ -348,9 +421,71 @@ fun PlayerScreen(
         derivedStateOf { chromeAlpha.value * (pageVisibility?.value ?: 1f) }
     }
     LaunchedEffect(isActiveScreen) {
+        if (!isActiveScreen) heldNavigationKey = null
         if (isActiveScreen) {
             withFrameNanos { }
             runCatching { playerFocusRequester.requestFocus() }
+        }
+    }
+
+    fun activateControl(control: PlayerControl) {
+        controlsVisible = true
+        controlsActivity++
+        focusedControl = control
+        navigationZone = PlayerNavigationZone.Controls
+        when (control) {
+            PlayerControl.Previous -> onSkipPrevious()
+            PlayerControl.PlayPause -> onTogglePlayback()
+            PlayerControl.Next -> onSkipNext()
+            PlayerControl.Lyrics -> {
+                userToggledLyrics = true
+                if (lyricsTransientFailure && track.lyrics.isEmpty()) {
+                    showLyrics = true
+                    onRetryLyrics()
+                } else {
+                    showLyrics = showQueue || !showLyrics
+                }
+                showQueue = false
+                if (!showLyrics && navigationZone == PlayerNavigationZone.Lyrics) {
+                    navigationZone = PlayerNavigationZone.Controls
+                }
+            }
+            PlayerControl.LyricsDisplay -> {
+                showLyricsSettings = true
+            }
+            PlayerControl.Queue -> {
+                showQueue = !showQueue
+                if (showQueue) {
+                    focusQueueIndex(currentQueueIndex)
+                    navigationZone = if (displayQueue.isNotEmpty()) PlayerNavigationZone.QueueItems
+                        else PlayerNavigationZone.QueueModes
+                } else {
+                    navigationZone = PlayerNavigationZone.Controls
+                }
+            }
+            PlayerControl.More -> {
+                moreButtonBounds[0]?.let { reportMenuAnchor?.invoke(it) }
+                openCatalogActions?.invoke(track)
+            }
+            PlayerControl.Radio -> if (canSetAutoplay) onToggleAutoplay()
+        }
+    }
+
+    LaunchedEffect(isActiveScreen, controlsVisible, showLyricsSettings, navigationZone, focusedControl) {
+        if (!isActiveScreen || !controlsVisible || showLyricsSettings ||
+            navigationZone != PlayerNavigationZone.Controls || pressedControl != focusedControl) {
+            controlKeyHeld = false
+        }
+    }
+
+    fun enterPresentation() {
+        if (showQueue) {
+            navigationZone = if (displayQueue.isNotEmpty()) PlayerNavigationZone.QueueItems
+                else PlayerNavigationZone.QueueModes
+        } else if (presentation == PlayerPresentation.Lyrics && displayedLyrics.isNotEmpty()) {
+            navigationZone = PlayerNavigationZone.Lyrics
+            val currentIdx = LyricTimeline.activeLineAt(displayedLyrics, playbackPosition.value, applyTimeProcessorOffsets = true)
+            selectedLyricIndex = if (currentIdx >= 0) currentIdx else 0
         }
     }
 
@@ -360,22 +495,125 @@ fun PlayerScreen(
             .semantics { stateDescription = playbackStateDescription }
             .fillMaxSize()
             .onPreviewKeyEvent { event ->
+                val native = event.nativeKeyEvent
+                val confirm = native.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || native.keyCode == KeyEvent.KEYCODE_ENTER
+                val directional = native.keyCode == KeyEvent.KEYCODE_DPAD_UP || native.keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+                    native.keyCode == KeyEvent.KEYCODE_DPAD_LEFT || native.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                if (native.action == KeyEvent.ACTION_UP && directional) {
+                    heldNavigationKey = null
+                    if (isActiveScreen) controlsActivity++
+                }
+                if (confirm && native.action == KeyEvent.ACTION_UP && queuePressEntryId != null) {
+                    val entry = queuePressEntryId
+                    queuePressEntryId = null
+                    if (isActiveScreen) controlsActivity++
+                    if (!queuePressConsumed && isActiveScreen) {
+                        queueEntryIds.indexOf(entry).takeIf { it >= 0 }?.let(onSelectTrack)
+                    }
+                    queuePressConsumed = false
+                    return@onPreviewKeyEvent true
+                }
+                if (native.keyCode == KeyEvent.KEYCODE_BACK && native.action == KeyEvent.ACTION_UP && consumeBackRelease) {
+                    consumeBackRelease = false
+                    return@onPreviewKeyEvent true
+                }
+                if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP &&
+                    (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                        event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_ENTER)) {
+                    controlKeyHeld = false
+                }
                 if (!isActiveScreen || event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) {
                     return@onPreviewKeyEvent false
                 }
+                if (directional) heldNavigationKey = native.keyCode
+                controlsActivity++
+                if (showQueue && navigationZone == PlayerNavigationZone.QueueItems) {
+                    val entry = queueEntryIds.getOrNull(selectedQueueIndex())
+                    if (entry != null && native.keyCode == KeyEvent.KEYCODE_MENU) {
+                        if (native.repeatCount == 0) onQueueItemActions(entry)
+                        return@onPreviewKeyEvent true
+                    }
+                    if (entry != null && confirm) {
+                        if (native.repeatCount == 0) {
+                            queuePressConsumed = false
+                            queuePressEntryId = entry
+                        }
+                        return@onPreviewKeyEvent true
+                    }
+                }
+                if (!confirm) queuePressEntryId = null
+                if (native.keyCode == KeyEvent.KEYCODE_BACK && native.repeatCount > 0) return@onPreviewKeyEvent consumeBackRelease
+                if ((native.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || native.keyCode == KeyEvent.KEYCODE_ENTER) &&
+                    native.repeatCount > 0) return@onPreviewKeyEvent true
                 if (showLyricsSettings) {
                     return@onPreviewKeyEvent if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
                         showLyricsSettings = false
+                        consumeBackRelease = true
                         true
                     } else {
                         false
                     }
                 }
+                if (native.keyCode == KeyEvent.KEYCODE_BACK) {
+                    val handled = when {
+                        isScrubbing -> { isScrubbing = false; true }
+                        showQueue -> {
+                            showQueue = false
+                            controlsVisible = true
+                            controlsActivity++
+                            controlKeyHeld = false
+                            navigationZone = PlayerNavigationZone.Controls
+                            focusedControl = PlayerControl.Queue
+                            true
+                        }
+                        controlsVisible -> {
+                            controlsVisible = false
+                            controlKeyHeld = false
+                            if (presentation == PlayerPresentation.Lyrics) {
+                                navigationZone = PlayerNavigationZone.Lyrics
+                                selectedLyricIndex = -1
+                            }
+                            true
+                        }
+                        presentation == PlayerPresentation.Lyrics && selectedLyricIndex >= 0 -> {
+                            selectedLyricIndex = -1
+                            navigationZone = PlayerNavigationZone.Lyrics
+                            true
+                        }
+                        else -> false
+                    }
+                    consumeBackRelease = handled
+                    return@onPreviewKeyEvent handled
+                }
+                // Music's hidden-controls lyric mode stays navigable. A remote
+                // Up/Down does not reveal unrelated transport controls first.
+                if (!controlsVisible && presentation == PlayerPresentation.Lyrics && displayedLyrics.isNotEmpty()) {
+                    when (native.keyCode) {
+                        KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
+                            val active = LyricTimeline.activeLineAt(displayedLyrics, playbackPosition.value, applyTimeProcessorOffsets = true)
+                                .coerceAtLeast(0)
+                            val from = selectedLyricIndex.takeIf { it in displayedLyrics.indices } ?: active
+                            selectedLyricIndex = (from + if (native.keyCode == KeyEvent.KEYCODE_DPAD_UP) -1 else 1)
+                                .coerceIn(displayedLyrics.indices)
+                            navigationZone = PlayerNavigationZone.Lyrics
+                            return@onPreviewKeyEvent true
+                        }
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                            if (selectedLyricIndex in displayedLyrics.indices) {
+                                if (seekEnabled) {
+                                    onSeekBy(displayedLyrics[selectedLyricIndex].startMs - playbackPosition.value)
+                                    selectedLyricIndex = -1
+                                }
+                                return@onPreviewKeyEvent true
+                            }
+                        }
+                    }
+                }
                 val wasHidden = !controlsVisible
                 controlsVisible = true
-                controlsActivity++
                 if (wasHidden) {
-                    navigationZone = PlayerNavigationZone.Controls
+                    navigationZone = if (showQueue && native.keyCode == KeyEvent.KEYCODE_DPAD_UP && displayQueue.isNotEmpty())
+                        PlayerNavigationZone.QueueItems else PlayerNavigationZone.Controls
                     return@onPreviewKeyEvent when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
@@ -389,35 +627,24 @@ fun PlayerScreen(
                 }
 
                 when (event.nativeKeyEvent.keyCode) {
-                    KeyEvent.KEYCODE_BACK -> {
-                        if (isScrubbing) {
-                            isScrubbing = false
-                            true
-                        } else when (navigationZone) {
-                            PlayerNavigationZone.Lyrics -> {
-                                navigationZone = PlayerNavigationZone.ProgressBar
-                                true
-                            }
-                            PlayerNavigationZone.QueueItems,
-                            PlayerNavigationZone.QueueModes -> {
-                                navigationZone = PlayerNavigationZone.Controls
-                                true
-                            }
-                            else -> false
-                        }
-                    }
                     KeyEvent.KEYCODE_DPAD_CENTER,
                     KeyEvent.KEYCODE_ENTER -> {
                         when (navigationZone) {
                             PlayerNavigationZone.Lyrics -> {
                                 val targetLine = displayedLyrics.getOrNull(selectedLyricIndex)
-                                if (targetLine != null) {
+                                if (targetLine != null && seekEnabled) {
                                     val delta = targetLine.startMs - playbackPosition.value
                                     onSeekBy(delta)
+                                    selectedLyricIndex = -1
+                                    isScrubbing = false
+                                    navigationZone = PlayerNavigationZone.ProgressBar
                                 }
                             }
                             PlayerNavigationZone.ProgressBar -> {
-                                if (isScrubbing) {
+                                if (!seekEnabled) {
+                                    isScrubbing = false
+                                    navigationZone = PlayerNavigationZone.Controls
+                                } else if (isScrubbing) {
                                     val targetMs = scrubPositionMs
                                     isScrubbing = false
                                     val delta = targetMs - playbackPosition.value
@@ -428,7 +655,8 @@ fun PlayerScreen(
                             }
                             PlayerNavigationZone.QueueItems -> {
                                 if (showQueue) {
-                                    if (focusedQueueIndex in displayQueue.indices) onSelectTrack(focusedQueueIndex)
+                                    val index = selectedQueueIndex()
+                                    if (index in displayQueue.indices) onSelectTrack(index)
                                 }
                             }
                             PlayerNavigationZone.QueueModes -> {
@@ -449,37 +677,11 @@ fun PlayerScreen(
                                 }
                             }
                             PlayerNavigationZone.Controls -> {
-                                when (focusedControl) {
-                                    PlayerControl.Previous -> onSkipPrevious()
-                                    PlayerControl.PlayPause -> onTogglePlayback()
-                                    PlayerControl.Next -> onSkipNext()
-                                    PlayerControl.Lyrics -> {
-                                        userToggledLyrics = true
-                                        if (lyricsTransientFailure && track.lyrics.isEmpty()) {
-                                            showLyrics = true
-                                            onRetryLyrics()
-                                        } else {
-                                            showLyrics = !showLyrics
-                                        }
-                                        showQueue = false
-                                        if (!showLyrics && navigationZone == PlayerNavigationZone.Lyrics) {
-                                            navigationZone = PlayerNavigationZone.Controls
-                                        }
-                                    }
-                                    PlayerControl.LyricsDisplay -> {
-                                        showLyricsSettings = true
-                                    }
-                                    PlayerControl.Queue -> {
-                                        showQueue = !showQueue
-                                        if (showQueue) {
-                                            showLyrics = false
-                                            focusQueueIndex(currentQueueIndex)
-                                            navigationZone = PlayerNavigationZone.QueueItems
-                                        } else {
-                                            navigationZone = PlayerNavigationZone.Controls
-                                        }
-                                    }
-                                    PlayerControl.Radio -> if (canSetAutoplay) onToggleAutoplay()
+                                if (event.nativeKeyEvent.repeatCount == 0) {
+                                    pressedControl = focusedControl
+                                    controlKeyHeld = true
+                                    controlPressEpoch++
+                                    activateControl(focusedControl)
                                 }
                             }
                         }
@@ -488,22 +690,24 @@ fun PlayerScreen(
                     KeyEvent.KEYCODE_DPAD_LEFT -> {
                         when (navigationZone) {
                             PlayerNavigationZone.ProgressBar -> {
-                                val currentAnchor = if (isScrubbing) scrubPositionMs else playbackPosition.value
-                                isScrubbing = true
-                                scrubPositionMs = (currentAnchor - 5_000L).coerceIn(0L, track.durationMs)
+                                if (seekEnabled) {
+                                    val currentAnchor = if (isScrubbing) scrubPositionMs else playbackPosition.value
+                                    isScrubbing = true
+                                    scrubPositionMs = (currentAnchor - 5_000L).coerceIn(0L, track.durationMs)
+                                }
                             }
                             PlayerNavigationZone.Lyrics -> {
                                 // Keep lyrics navigation focused on UP/DOWN
                             }
                             PlayerNavigationZone.QueueItems -> {
-                                if (showQueue) {
-                                    focusQueueIndex((focusedQueueIndex - 1).coerceAtLeast(0))
+                                if (displayQueue.isNotEmpty()) {
+                                    focusQueueIndex((selectedQueueIndex() - queueForwardStep).coerceIn(displayQueue.indices))
                                 }
                             }
                             PlayerNavigationZone.QueueModes -> {
                                 if (showQueue) {
                                     val index = availableQueueModes.indexOf(focusedQueueMode).coerceAtLeast(0)
-                                    focusedQueueMode = availableQueueModes[(index - 1).coerceAtLeast(0)]
+                                    focusedQueueMode = availableQueueModes[(index - queueForwardStep).coerceIn(availableQueueModes.indices)]
                                 }
                             }
                             PlayerNavigationZone.Controls -> {
@@ -516,23 +720,24 @@ fun PlayerScreen(
                     KeyEvent.KEYCODE_DPAD_RIGHT -> {
                         when (navigationZone) {
                             PlayerNavigationZone.ProgressBar -> {
-                                val currentAnchor = if (isScrubbing) scrubPositionMs else playbackPosition.value
-                                isScrubbing = true
-                                scrubPositionMs = (currentAnchor + 5_000L).coerceIn(0L, track.durationMs)
+                                if (seekEnabled) {
+                                    val currentAnchor = if (isScrubbing) scrubPositionMs else playbackPosition.value
+                                    isScrubbing = true
+                                    scrubPositionMs = (currentAnchor + 5_000L).coerceIn(0L, track.durationMs)
+                                }
                             }
                             PlayerNavigationZone.Lyrics -> {
                                 // Keep lyrics navigation focused on UP/DOWN
                             }
                             PlayerNavigationZone.QueueItems -> {
-                                if (showQueue) {
-                                    focusQueueIndex((focusedQueueIndex + 1)
-                                        .coerceAtMost(displayQueue.lastIndex.coerceAtLeast(0)))
+                                if (displayQueue.isNotEmpty()) {
+                                    focusQueueIndex((selectedQueueIndex() + queueForwardStep).coerceIn(displayQueue.indices))
                                 }
                             }
                             PlayerNavigationZone.QueueModes -> {
                                 if (showQueue) {
                                     val index = availableQueueModes.indexOf(focusedQueueMode).coerceAtLeast(0)
-                                    focusedQueueMode = availableQueueModes[(index + 1).coerceAtMost(availableQueueModes.lastIndex)]
+                                    focusedQueueMode = availableQueueModes[(index + queueForwardStep).coerceIn(availableQueueModes.indices)]
                                 }
                             }
                             PlayerNavigationZone.Controls -> {
@@ -548,21 +753,10 @@ fun PlayerScreen(
                         isScrubbing = false
                         when (navigationZone) {
                             PlayerNavigationZone.Controls -> {
-                                navigationZone = PlayerNavigationZone.ProgressBar
+                                if (seekEnabled) navigationZone = PlayerNavigationZone.ProgressBar else enterPresentation()
                             }
                             PlayerNavigationZone.ProgressBar -> {
-                                if (showQueue) {
-                                    focusQueueIndex(currentQueueIndex)
-                                    navigationZone = PlayerNavigationZone.QueueItems
-                                } else if (presentation == PlayerPresentation.Lyrics && displayedLyrics.isNotEmpty()) {
-                                    navigationZone = PlayerNavigationZone.Lyrics
-                                    val currentIdx = LyricTimeline.activeLineAt(
-                                        lines = displayedLyrics,
-                                        positionMs = playbackPosition.value,
-                                        applyTimeProcessorOffsets = true,
-                                    )
-                                    selectedLyricIndex = if (currentIdx >= 0) currentIdx else 0
-                                }
+                                enterPresentation()
                             }
                             PlayerNavigationZone.Lyrics -> {
                                 if (selectedLyricIndex > 0) {
@@ -573,7 +767,7 @@ fun PlayerScreen(
                                 navigationZone = PlayerNavigationZone.QueueModes
                             }
                             PlayerNavigationZone.QueueModes -> {
-                                // Stay at top
+                                // Already at the top of the queue presentation.
                             }
                         }
                         true
@@ -582,23 +776,27 @@ fun PlayerScreen(
                         isScrubbing = false
                         when (navigationZone) {
                             PlayerNavigationZone.QueueModes -> {
-                                navigationZone = PlayerNavigationZone.QueueItems
+                                if (displayQueue.isNotEmpty()) navigationZone = PlayerNavigationZone.QueueItems
+                                else navigationZone = if (seekEnabled) PlayerNavigationZone.ProgressBar else PlayerNavigationZone.Controls
                             }
                             PlayerNavigationZone.QueueItems -> {
-                                navigationZone = PlayerNavigationZone.ProgressBar
+                                navigationZone = if (seekEnabled) PlayerNavigationZone.ProgressBar else PlayerNavigationZone.Controls
                             }
                             PlayerNavigationZone.Lyrics -> {
                                 if (selectedLyricIndex < displayedLyrics.lastIndex) {
                                     selectedLyricIndex++
                                 } else {
-                                    navigationZone = PlayerNavigationZone.ProgressBar
+                                    navigationZone = if (seekEnabled) PlayerNavigationZone.ProgressBar else PlayerNavigationZone.Controls
                                 }
                             }
                             PlayerNavigationZone.ProgressBar -> {
                                 navigationZone = PlayerNavigationZone.Controls
                             }
                             PlayerNavigationZone.Controls -> {
-                                // Stay in controls
+                                if (showQueue) {
+                                    showQueue = false
+                                    focusedControl = PlayerControl.Queue
+                                }
                             }
                         }
                         true
@@ -611,7 +809,8 @@ fun PlayerScreen(
     ) {
         PlayerBackdrop(
             track = track,
-            animate = isVisibleOnScreen && isPlaying && !lowPerformanceMode,
+            visible = isVisibleOnScreen,
+            animate = isVisibleOnScreen && (isPlaying || playWhenReady) && !lowPerformanceMode,
             audioSpectrum = audioSpectrum,
             modifier = Modifier.fillMaxSize(),
         )
@@ -629,41 +828,40 @@ fun PlayerScreen(
             controlsVisible = controlsVisible,
             positionState = playbackPosition,
             lyricOffsetMs = lyricOffsetMs,
+            pronunciationLarger = lyricPronunciationLarger,
             lyricsLoading = lyricsLoading,
             lyricsLookupFailed = lyricsLookupFailed,
             lyricsTransientFailure = lyricsTransientFailure,
-            selectedLyricIndex = if (navigationZone == PlayerNavigationZone.Lyrics) selectedLyricIndex else null,
-            manualScrollTrigger = lyricsScrollTrigger,
-            manualScrollDelta = lyricsScrollDelta,
+            selectedLyricIndex = selectedLyricIndex.takeIf { navigationZone == PlayerNavigationZone.Lyrics && it >= 0 },
             displayQueue = displayQueue,
             queueKeys = displayQueueKeys,
             currentQueueIndex = currentQueueIndex,
             queueSessionId = queueSessionId,
             queueFocusVisibility = chromeFocusVisibility,
             focusedQueueIndex = focusedQueueIndex,
-            selectionVisible = navigationZone == PlayerNavigationZone.QueueItems,
+            selectionVisible = controlsVisible && navigationZone == PlayerNavigationZone.QueueItems,
+            onQueueScrollStateChange = { queueScrollActive = it },
             lowPerformanceMode = lowPerformanceMode,
             modifier = Modifier.fillMaxSize(),
         )
-        if (statusMessage != null) {
-            Text(
-                text = statusMessage,
-                color = Color.White,
-                fontSize = 14.sp,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 24.dp, end = 84.dp)
-                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(10.dp))
-                    .padding(horizontal = 14.dp, vertical = 9.dp),
-            )
-        }
+        val feedback = rememberPlaybackFeedback(
+            feedbackInput ?: PlaybackFeedbackInput(queueSessionId, playWhenReady, isPlaying, canSeek, false, message = statusMessage),
+            active = isVisibleOnScreen,
+        )
+        PlayerPlaybackFeedback(feedback,
+            Modifier.align(Alignment.TopEnd).padding(top = 24.dp, end = 84.dp),
+            animate = !lowPerformanceMode, recoveryAvailable = true)
+
         chromeTransition.AnimatedVisibility(
             visible = { it.controlsVisible && it.showQueue },
             enter = fadeIn(tween(280, easing = MotionTokens.KaraokeLineEasing)),
             exit = fadeOut(tween(360, easing = MotionTokens.KaraokeGradientExitEasing)),
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 30.dp),
         ) {
-            CompositionLocalProvider(LocalFocusFrameVisibility provides chromeFocusVisibility) {
+            CompositionLocalProvider(LocalFocusFrameVisibility provides chromeFocusVisibility,
+                LocalFocusFrameEnabled provides false,
+                LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Television,
+                LocalTelevisionFocusTimings provides TelevisionFocusTimings(75, 150)) {
                 QueueModeControls(
                     repeatMode, shuffleEnabled, autoplayEnabled, autoplaySource,
                     canSetRepeat, canSetShuffle, canSetAutoplay, canClearQueue,
@@ -673,129 +871,108 @@ fun PlayerScreen(
         }
         chromeTransition.AnimatedVisibility(
             visible = { it.controlsVisible },
-            enter = fadeIn(
-                tween(280, easing = MotionTokens.KaraokeLineEasing),
-            ) + slideInVertically(
-                tween(320, easing = MotionTokens.KaraokeLineEasing),
-            ) { it / 4 },
-            exit = fadeOut(
-                tween(360, easing = MotionTokens.KaraokeGradientExitEasing),
-            ) + slideOutVertically(
-                tween(380, easing = MotionTokens.KaraokeLineEasing),
-            ) { it / 4 },
+            enter = fadeIn(tween(300, easing = LinearEasing)),
+            exit = fadeOut(tween(300, easing = LinearEasing)),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
-            CompositionLocalProvider(LocalFocusFrameVisibility provides chromeFocusVisibility) {
-            Column(
-                modifier = Modifier
-                    .automationId("player-controls")
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
+            TvPlaybackViewport(lowPerformanceMode) {
+                Column(
+                    Modifier.automationId("player-controls").fillMaxWidth()
+                        .background(Brush.verticalGradient(
                             listOf(Color.Transparent, Color.Black.copy(alpha = 0.52f)),
-                        ),
-                    )
-                    .padding(start = 88.dp, end = 84.dp, bottom = 26.dp, top = 36.dp),
-            ) {
-                Progress(
-                    positionState = playbackPosition,
-                    durationMs = track.durationMs,
-                    isFocused = navigationZone == PlayerNavigationZone.ProgressBar,
-                    scrubPositionMs = if (isScrubbing) scrubPositionMs else null,
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                        ))
+                        .padding(start = 40.dp, end = 40.dp, bottom = 25.dp, top = 30.dp),
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(Color.White.copy(alpha = 0.12f))
-                            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(24.dp))
-                            .padding(4.dp),
+                    TvPlaybackProgress(
+                        positionState = playbackPosition,
+                        durationMs = track.durationMs,
+                        isFocused = seekEnabled && navigationZone == PlayerNavigationZone.ProgressBar,
+                        scrubPositionMs = if (isScrubbing) scrubPositionMs else null,
+                    )
+                    Spacer(Modifier.height(8.5.dp))
+                    Row(
+                        Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                        PlayerButton(
-                            controlId = "player-previous",
-                            icon = Icons.Rounded.SkipPrevious,
-                            contentDescription = stringResource(R.string.player_previous_track),
-                            enabled = canSkipPrevious,
-                            focused = navigationZone == PlayerNavigationZone.Controls &&
-                                focusedControl == PlayerControl.Previous,
-                            width = 46.dp,
-                        )
-                        PlayerButton(
-                            controlId = "player-play-pause",
-                            icon = if (playWhenReady) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = stringResource(if (playWhenReady) R.string.player_pause else R.string.player_play),
-                            focused = navigationZone == PlayerNavigationZone.Controls &&
-                                focusedControl == PlayerControl.PlayPause,
-                            width = 56.dp,
-                        )
-                        PlayerButton(
-                            controlId = "player-next",
-                            icon = Icons.Rounded.SkipNext,
-                            contentDescription = stringResource(R.string.player_next_track),
-                            enabled = canSkipNext,
-                            focused = navigationZone == PlayerNavigationZone.Controls &&
-                                focusedControl == PlayerControl.Next,
-                            width = 46.dp,
-                        )
-                        }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(Color.White.copy(alpha = 0.12f))
-                            .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(24.dp))
-                            .padding(4.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (supportsLyrics) {
-                            PlayerButton(
-                                controlId = "player-lyrics-display",
-                                icon = Icons.Rounded.Translate,
-                                contentDescription = stringResource(R.string.player_lyrics_display_settings),
-                                selected = lyricTranslationEnabled || lyricPronunciationEnabled,
-                                focused = navigationZone == PlayerNavigationZone.Controls &&
-                                    focusedControl == PlayerControl.LyricsDisplay,
-                                width = 46.dp,
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            TvPlaybackButton(
+                                controlId = "player-previous", icon = Icons.Rounded.SkipPrevious,
+                                contentDescription = stringResource(R.string.player_previous_track),
+                                enabled = canSkipPrevious,
+                                focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.Previous,
+                                pressed = controlKeyHeld && pressedControl == PlayerControl.Previous,
+                                pressEpoch = if (pressedControl == PlayerControl.Previous) controlPressEpoch else 0L,
+                                onClick = { activateControl(PlayerControl.Previous) },
                             )
-                            PlayerButton(
-                                controlId = "player-lyrics",
-                                icon = Icons.Rounded.Lyrics,
-                                contentDescription = stringResource(R.string.player_lyrics),
-                                selected = showLyrics,
-                                focused = navigationZone == PlayerNavigationZone.Controls &&
-                                    focusedControl == PlayerControl.Lyrics,
-                                width = 46.dp,
+                            TvPlaybackButton(
+                                controlId = "player-play-pause",
+                                icon = if (playWhenReady) TvPlaybackIcons.Pause else TvPlaybackIcons.Play,
+                                iconSize = 32.dp,
+                                contentDescription = stringResource(if (playWhenReady) R.string.player_pause else R.string.player_play),
+                                focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.PlayPause,
+                                pressed = controlKeyHeld && pressedControl == PlayerControl.PlayPause,
+                                pressEpoch = if (pressedControl == PlayerControl.PlayPause) controlPressEpoch else 0L,
+                                onClick = { activateControl(PlayerControl.PlayPause) },
+                            )
+                            TvPlaybackButton(
+                                controlId = "player-next", icon = Icons.Rounded.SkipNext,
+                                contentDescription = stringResource(R.string.player_next_track),
+                                enabled = canSkipNext,
+                                focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.Next,
+                                pressed = controlKeyHeld && pressedControl == PlayerControl.Next,
+                                pressEpoch = if (pressedControl == PlayerControl.Next) controlPressEpoch else 0L,
+                                onClick = { activateControl(PlayerControl.Next) },
                             )
                         }
-                        PlayerButton(
-                            controlId = "player-queue",
-                            icon = Icons.AutoMirrored.Rounded.QueueMusic,
-                            contentDescription = stringResource(R.string.player_queue),
-                            selected = showQueue,
-                            focused = navigationZone == PlayerNavigationZone.Controls &&
-                                focusedControl == PlayerControl.Queue,
-                            width = 46.dp,
-                        )
-                        QueueModeButton(
-                            icon = Icons.Rounded.AllInclusive,
-                            label = stringResource(R.string.player_radio),
-                            selected = autoplayEnabled,
-                            focused = navigationZone == PlayerNavigationZone.Controls &&
-                                focusedControl == PlayerControl.Radio,
-                            enabled = canSetAutoplay,
-                            ytmBadge = false,
-                            frameKey = "player-main-radio",
-                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.5.dp), verticalAlignment = Alignment.CenterVertically) {
+                            if (supportsLyrics) {
+                                TvPlaybackButton(
+                                    controlId = "player-lyrics-display", icon = Icons.Rounded.Translate,
+                                    contentDescription = stringResource(R.string.player_lyrics_display_settings),
+                                    selected = lyricTranslationEnabled || lyricPronunciationEnabled,
+                                    focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.LyricsDisplay,
+                                pressed = controlKeyHeld && pressedControl == PlayerControl.LyricsDisplay,
+                                pressEpoch = if (pressedControl == PlayerControl.LyricsDisplay) controlPressEpoch else 0L,
+                                onClick = { activateControl(PlayerControl.LyricsDisplay) },
+                                )
+                                TvPlaybackButton(
+                                    controlId = "player-lyrics", icon = Icons.Rounded.Lyrics,
+                                    contentDescription = stringResource(R.string.player_lyrics), selected = showLyrics,
+                                    focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.Lyrics,
+                                pressed = controlKeyHeld && pressedControl == PlayerControl.Lyrics,
+                                pressEpoch = if (pressedControl == PlayerControl.Lyrics) controlPressEpoch else 0L,
+                                onClick = { activateControl(PlayerControl.Lyrics) },
+                                )
+                            }
+                            TvPlaybackButton(
+                                controlId = "player-queue", icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                                contentDescription = stringResource(R.string.player_queue), selected = showQueue,
+                                focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.Queue,
+                                pressed = controlKeyHeld && pressedControl == PlayerControl.Queue,
+                                pressEpoch = if (pressedControl == PlayerControl.Queue) controlPressEpoch else 0L,
+                                onClick = { activateControl(PlayerControl.Queue) },
+                            )
+                            if (openCatalogActions != null) TvPlaybackButton(
+                                controlId = "player-more", icon = Icons.Rounded.MoreHoriz,
+                                contentDescription = stringResource(R.string.catalog_more_actions),
+                                focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.More,
+                                pressed = controlKeyHeld && pressedControl == PlayerControl.More,
+                                pressEpoch = if (pressedControl == PlayerControl.More) controlPressEpoch else 0L,
+                                onClick = { activateControl(PlayerControl.More) },
+                                onBounds = { moreButtonBounds[0] = it },
+                            )
+                            TvPlaybackButton(
+                                controlId = "player-radio", icon = Icons.Rounded.AllInclusive,
+                                contentDescription = stringResource(R.string.player_radio), selected = autoplayEnabled,
+                                enabled = canSetAutoplay,
+                                focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.Radio,
+                                pressed = controlKeyHeld && pressedControl == PlayerControl.Radio,
+                                pressEpoch = if (pressedControl == PlayerControl.Radio) controlPressEpoch else 0L,
+                                onClick = { activateControl(PlayerControl.Radio) },
+                            )
                         }
                     }
                 }
-            }
             }
         }
 
@@ -803,6 +980,7 @@ fun PlayerScreen(
             LyricsDisplaySettingsDialog(
                 translationEnabled = lyricTranslationEnabled,
                 pronunciationEnabled = lyricPronunciationEnabled,
+                pronunciationLarger = lyricPronunciationLarger,
                 translationAvailable = lyricTranslationAvailable,
                 pronunciationAvailable = lyricPronunciationAvailable,
                 translationLanguageTag = lyricTranslationLanguageTag,
@@ -812,6 +990,7 @@ fun PlayerScreen(
                 enhancementsFailed = lyricsTransientFailure && track.lyrics.isNotEmpty(),
                 onTranslationChange = onLyricTranslationEnabledChange,
                 onPronunciationChange = onLyricPronunciationEnabledChange,
+                onPronunciationLargerChange = onLyricPronunciationLargerChange,
                 onTranslationLanguageChange = onLyricTranslationLanguageChange,
                 onPronunciationLanguageChange = onLyricPronunciationLanguageChange,
                 onDismiss = { showLyricsSettings = false },
@@ -822,183 +1001,7 @@ fun PlayerScreen(
 }
 
 
-@Composable
-private fun Progress(
-    positionState: State<Long>,
-    durationMs: Long,
-    isFocused: Boolean = false,
-    scrubPositionMs: Long? = null,
-) {
-    // The clock animates the bar in drawing; labels only need one update per second.
-    val displayedSecond by remember(positionState, scrubPositionMs) {
-        derivedStateOf { (scrubPositionMs ?: positionState.value) / 1_000L }
-    }
-    val positionMs = displayedSecond * 1_000L
-    val remainingMs = (durationMs - positionMs).coerceAtLeast(0L)
-    val isScrubPreview = scrubPositionMs != null
-
-    val barHeight by animateDpAsState(
-        targetValue = if (isFocused) 8.dp else 4.dp,
-        animationSpec = tween(220, easing = MotionTokens.KaraokeLineEasing),
-        label = "scrubber-bar-height",
-    )
-    val thumbRadius by animateDpAsState(
-        targetValue = when {
-            isScrubPreview -> 10.dp
-            isFocused -> 8.dp
-            else -> 0.dp
-        },
-        animationSpec = tween(220, easing = MotionTokens.KaraokeLineEasing),
-        label = "scrubber-thumb-radius",
-    )
-    val trackAlpha by animateFloatAsState(
-        targetValue = if (isFocused) 0.35f else 0.20f,
-        animationSpec = tween(200),
-        label = "scrubber-track-alpha",
-    )
-    val textAlpha by animateFloatAsState(
-        targetValue = if (isScrubPreview) 1f else if (isFocused) 0.95f else 0.60f,
-        animationSpec = tween(200),
-        label = "scrubber-text-alpha",
-    )
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .focusFrameTarget(isFocused, "player-progress", 12.dp)
-            .padding(vertical = 4.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(18.dp),
-            contentAlignment = Alignment.CenterStart,
-        ) {
-            Canvas(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(barHeight),
-            ) {
-                val totalWidth = size.width
-                val h = size.height
-                val activeMs = scrubPositionMs ?: positionState.value
-                val progress = (activeMs.toFloat() / durationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
-                val playedWidth = totalWidth * progress
-                val cornerRadius = CornerRadius(h / 2f, h / 2f)
-
-                // 1. Unfilled track capsule
-                drawRoundRect(
-                    color = Color.White.copy(alpha = trackAlpha),
-                    size = size,
-                    cornerRadius = cornerRadius,
-                )
-
-                // 2. Filled played progress capsule
-                if (playedWidth > 0f) {
-                    drawRoundRect(
-                        color = Color.White,
-                        size = Size(playedWidth, h),
-                        cornerRadius = cornerRadius,
-                    )
-                }
-
-                // 3. Apple TV Scrubber Knob Thumb
-                val thumbPx = thumbRadius.toPx()
-                if (thumbPx > 0.5f) {
-                    val knobCenter = Offset(
-                        x = playedWidth.coerceIn(thumbPx, totalWidth - thumbPx),
-                        y = h / 2f,
-                    )
-                    // Drop shadow / glow
-                    drawCircle(
-                        color = Color.Black.copy(alpha = if (isScrubPreview) 0.50f else 0.35f),
-                        radius = thumbPx + 3f,
-                        center = knobCenter,
-                    )
-                    // Solid white Apple scrubber knob
-                    drawCircle(
-                        color = Color.White,
-                        radius = thumbPx,
-                        center = knobCenter,
-                    )
-                }
-            }
-        }
-
-        Spacer(Modifier.height(6.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = formatTime(positionMs),
-                fontSize = 13.sp,
-                fontWeight = if (isScrubPreview) FontWeight.Bold else FontWeight.Medium,
-                color = Color.White.copy(alpha = textAlpha),
-            )
-            Text(
-                text = "−${formatTime(remainingMs)}",
-                fontSize = 13.sp,
-                fontWeight = if (isScrubPreview) FontWeight.Bold else FontWeight.Medium,
-                color = Color.White.copy(alpha = textAlpha),
-            )
-        }
-    }
-}
-
-@Composable
-private fun PlayerButton(
-    controlId: String,
-    icon: ImageVector,
-    contentDescription: String,
-    selected: Boolean = false,
-    enabled: Boolean = true,
-    focused: Boolean,
-    width: Dp = 46.dp,
-    height: Dp = 40.dp,
-) {
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.08f else 1.0f,
-        animationSpec = tween(180, easing = ArtworkDecelerateEasing),
-        label = "player-button-scale",
-    )
-    Box(
-        modifier = Modifier
-            .automationId(controlId)
-            .semantics { this.selected = focused; stateDescription = contentDescription }
-            .size(width = width, height = height)
-            .focusFrameTarget(focused, "player-control:$controlId", 20.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clip(RoundedCornerShape(20.dp))
-            .background(
-                when {
-                    focused -> Color.White
-                    selected -> Color.White.copy(alpha = 0.22f)
-                    else -> Color.Transparent
-                },
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = contentDescription,
-            tint = when {
-                !enabled -> Color.White.copy(alpha = 0.25f)
-                focused -> Color(0xFF18181A)
-                selected -> Color.White
-                else -> Color.White.copy(alpha = 0.88f)
-            },
-            modifier = Modifier.size(24.dp),
-        )
-    }
-}
-
-private enum class LyricsLanguagePicker { Translation, Pronunciation }
+private enum class LyricsLanguagePicker { Translation, Pronunciation, LargerText }
 
 private val TranslationLanguageTags = listOf(
     "", "zh-TW", "zh-CN", "en-US", "ja-JP", "ko-KR", "es-ES", "fr-FR", "de-DE",
@@ -1008,6 +1011,7 @@ private val TranslationLanguageTags = listOf(
 private fun LyricsDisplaySettingsDialog(
     translationEnabled: Boolean,
     pronunciationEnabled: Boolean,
+    pronunciationLarger: Boolean,
     translationAvailable: Boolean,
     pronunciationAvailable: Boolean,
     translationLanguageTag: String,
@@ -1017,6 +1021,7 @@ private fun LyricsDisplaySettingsDialog(
     enhancementsFailed: Boolean,
     onTranslationChange: (Boolean) -> Unit,
     onPronunciationChange: (Boolean) -> Unit,
+    onPronunciationLargerChange: (Boolean) -> Unit,
     onTranslationLanguageChange: (String) -> Unit,
     onPronunciationLanguageChange: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -1044,6 +1049,7 @@ private fun LyricsDisplaySettingsDialog(
                         when (languagePicker) {
                             LyricsLanguagePicker.Translation -> R.string.player_lyrics_choose_translation_language
                             LyricsLanguagePicker.Pronunciation -> R.string.player_lyrics_choose_pronunciation_script
+                            LyricsLanguagePicker.LargerText -> R.string.player_lyrics_larger_text
                             null -> R.string.player_lyrics_display_title
                         },
                     ),
@@ -1053,10 +1059,26 @@ private fun LyricsDisplaySettingsDialog(
             },
             text = {
                 Column(
-                    modifier = Modifier.width(520.dp),
+                    modifier = Modifier.width(520.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     when (languagePicker) {
+                        LyricsLanguagePicker.LargerText -> {
+                            listOf(false, true).forEachIndexed { index, larger ->
+                                LyricsLanguageChoiceRow(
+                                    label = stringResource(if (larger) R.string.player_lyrics_larger_pronunciation
+                                        else R.string.player_lyrics_larger_lyrics),
+                                    selected = larger == pronunciationLarger,
+                                    onClick = {
+                                        onPronunciationLargerChange(larger)
+                                        languagePicker = null
+                                    },
+                                    modifier = Modifier
+                                        .automationId(if (larger) "lyrics-larger-pronunciation" else "lyrics-larger-lyrics")
+                                        .then(if (index == 0) Modifier.focusRequester(firstFocus) else Modifier),
+                                )
+                            }
+                        }
                         LyricsLanguagePicker.Translation -> {
                             TranslationLanguageTags.forEachIndexed { index, tag ->
                                 val effectiveTag = tag.ifBlank { appLanguageTag }
@@ -1149,6 +1171,13 @@ private fun LyricsDisplaySettingsDialog(
                                     )
                                 },
                                 onClick = { languagePicker = LyricsLanguagePicker.Pronunciation },
+                            )
+                            LyricsDisplayValueRow(
+                                title = stringResource(R.string.player_lyrics_larger_text),
+                                value = stringResource(if (pronunciationLarger) R.string.player_lyrics_larger_pronunciation
+                                    else R.string.player_lyrics_larger_lyrics),
+                                onClick = { languagePicker = LyricsLanguagePicker.LargerText },
+                                modifier = Modifier.automationId("lyrics-larger-text"),
                             )
                         }
                     }
@@ -1256,10 +1285,11 @@ private fun LyricsDisplayValueRow(
     title: String,
     value: String,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     FocusSurface(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth().height(56.dp),
+        modifier = modifier.fillMaxWidth().height(56.dp),
         cornerRadius = 14.dp,
         showBorder = true,
         padding = PaddingValues(horizontal = 16.dp),
@@ -1335,12 +1365,11 @@ private fun PlayerStage(
     controlsVisible: Boolean,
     positionState: State<Long>,
     lyricOffsetMs: Long = 0L,
+    pronunciationLarger: Boolean = false,
     lyricsLoading: Boolean,
     lyricsLookupFailed: Boolean,
     lyricsTransientFailure: Boolean,
     selectedLyricIndex: Int? = null,
-    manualScrollTrigger: Int,
-    manualScrollDelta: Float,
     displayQueue: List<Track>,
     queueKeys: List<Any>,
     currentQueueIndex: Int,
@@ -1348,6 +1377,7 @@ private fun PlayerStage(
     queueFocusVisibility: State<Float>,
     focusedQueueIndex: Int,
     selectionVisible: Boolean,
+    onQueueScrollStateChange: (Boolean) -> Unit,
     lowPerformanceMode: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -1425,6 +1455,10 @@ private fun PlayerStage(
     val lyricsStageVisible by remember(presentation, lyricsAlpha, track.id) {
         derivedStateOf { lyricsVisited || presentation == PlayerPresentation.Lyrics || lyricsAlpha.value > 0.001f }
     }
+    val lyricsDrawing by remember(presentation, lyricsAlpha, isVisibleOnScreen) {
+        derivedStateOf { isVisibleOnScreen &&
+            (presentation == PlayerPresentation.Lyrics || lyricsAlpha.value > 0.001f) }
+    }
     val artworkStageVisible by remember(artworkColumnAlpha) {
         derivedStateOf { artworkColumnAlpha.value > 0.001f }
     }
@@ -1459,14 +1493,13 @@ private fun PlayerStage(
                 if (track.lyrics.isNotEmpty()) {
                     LyricsPanel(
                         lines = track.lyrics,
-                        isVisible = isVisibleOnScreen && presentation == PlayerPresentation.Lyrics,
+                        isVisible = lyricsDrawing,
                         positionState = positionState,
                         lyricOffsetMs = lyricOffsetMs,
+                        pronunciationLarger = pronunciationLarger,
                         controlsVisible = controlsVisible,
                         stageOffsetPx = supportingStageOffsetPx,
                         selectedLyricIndex = selectedLyricIndex,
-                        manualScrollTrigger = manualScrollTrigger,
-                        manualScrollDelta = manualScrollDelta,
                     )
                 } else {
                     LyricsUnavailablePanel(
@@ -1545,6 +1578,7 @@ private fun PlayerStage(
                     controlsVisible = controlsVisible,
                     selectedIndex = focusedQueueIndex,
                     selectionVisible = selectionVisible,
+                    onScrollStateChange = onQueueScrollStateChange,
                     isPlaying = audioIsPlaying,
                     audioSpectrum = audioSpectrum,
                     bandsEnabled = isVisibleOnScreen && presentation == PlayerPresentation.Queue,
@@ -1742,14 +1776,12 @@ internal class LyricsLayoutInfo {
         return measuredHeights
     }
 
-    var itemKeys: List<String> = emptyList()
     var itemTops by mutableStateOf(FloatArray(0))
         private set
     var itemHeights: FloatArray = FloatArray(0)
     var totalHeight by mutableFloatStateOf(0f)
 
-    fun update(keys: List<String>, tops: FloatArray, heights: FloatArray, total: Float) {
-        itemKeys = keys
+    fun update(tops: FloatArray, heights: FloatArray, total: Float) {
         if (!itemTops.contentEquals(tops)) itemTops = tops
         itemHeights = heights
         if (abs(totalHeight - total) > 0.5f) {
@@ -1798,17 +1830,20 @@ private fun LyricsPanel(
     isVisible: Boolean,
     positionState: State<Long>,
     lyricOffsetMs: Long = 0L,
+    pronunciationLarger: Boolean = false,
     controlsVisible: Boolean,
     stageOffsetPx: State<Float>,
     selectedLyricIndex: Int? = null,
-    manualScrollTrigger: Int = 0,
-    manualScrollDelta: Float = 0f,
 ) {
     val isStaticMode = remember(lines) { lines.all { it.isStatic } }
-    val effectiveLyricPositionState = remember(positionState, lyricOffsetMs) {
-        derivedStateOf {
+    val effectiveLyricPositionState = remember(positionState, lyricOffsetMs, isVisible) {
+        if (isVisible) derivedStateOf {
             (positionState.value + lyricOffsetMs).coerceAtLeast(0L)
-        }
+        } else mutableLongStateOf(Snapshot.withoutReadObservation {
+            // Retain measured words/scroll state without keeping hidden Queue
+            // and artwork views subscribed to every playback-clock frame.
+            (positionState.value + lyricOffsetMs).coerceAtLeast(0L)
+        })
     }
     val songwriterNames = remember(lines) {
         val writers = lines.firstOrNull()?.songwriters.orEmpty()
@@ -1825,6 +1860,12 @@ private fun LyricsPanel(
         lyricSchedule, effectiveLyricPositionState, terminalRelease, isVisible,
     )
     val allInstrumentalGaps = lyricSchedule.instrumentalGaps
+    val instrumentalPositionState = remember(allInstrumentalGaps, effectiveLyricPositionState) {
+        derivedStateOf {
+            if (allInstrumentalGaps.isEmpty()) -1L else
+                instrumentalDisplacementPosition(allInstrumentalGaps, effectiveLyricPositionState.value)
+        }
+    }
     // Publish only singer/anchor/interlude boundaries into composition. Linking
     // every row's derived predicates to the frame clock makes the recomposer
     // revalidate the entire graph even when no composable body needs to run.
@@ -1835,7 +1876,7 @@ private fun LyricsPanel(
         })
     }
     LaunchedEffect(lyricSchedule, effectiveLyricPositionState, isStaticMode, isVisible) {
-        if (isStaticMode) return@LaunchedEffect
+        if (isStaticMode || !isVisible) return@LaunchedEffect
         // snapshotFlow suppresses structurally equal snapshots; drawing and
         // placement retain their independent, full-rate word/scroll clocks.
         snapshotFlow { lyricSchedule.snapshotAt(effectiveLyricPositionState.value) }
@@ -1857,13 +1898,12 @@ private fun LyricsPanel(
             }
         }
     }
-    val displayItemKeys = remember(displayItems) { displayItems.map { it.key } }
 
     val textDensity = LocalDensity.current
-    val layoutInfo = remember(lines, textDensity.density, textDensity.fontScale) { LyricsLayoutInfo() }
+    val layoutInfo = remember(lines, textDensity.density, textDensity.fontScale, pronunciationLarger) { LyricsLayoutInfo() }
     val mountedRowsState = remember(lines) { mutableStateOf<Set<Int>>(emptySet()) }
     val mountBudget = remember(lines) { LyricRowMountBudget() }
-    val transitionState = remember(lines, isVisible) {
+    val transitionState = remember(lines, isVisible, pronunciationLarger) {
         mutableStateOf(
             StaggerScrollTransition(
                 fromScroll = 0f,
@@ -1874,11 +1914,9 @@ private fun LyricsPanel(
             ),
         )
     }
-    var previousAnchorKey by remember(lines, isVisible) { mutableStateOf<String?>(null) }
-    var previousAnchorDisplayIndex by remember(lines, isVisible) { mutableIntStateOf(-1) }
-    var previousAnchorLineIndex by remember(lines, isVisible) { mutableIntStateOf(-1) }
-    var isUserScrolling by remember(lines) { mutableStateOf(false) }
-    var userScrollOffset by remember(lines) { mutableFloatStateOf(0f) }
+    var previousAnchorKey by remember(lines, isVisible, pronunciationLarger) { mutableStateOf<String?>(null) }
+    var previousAnchorDisplayIndex by remember(lines, isVisible, pronunciationLarger) { mutableIntStateOf(-1) }
+    var previousAnchorLineIndex by remember(lines, isVisible, pronunciationLarger) { mutableIntStateOf(-1) }
     val frameRealtimeMs = remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
 
     val bottomFadeFraction by animateFloatAsState(
@@ -1894,22 +1932,18 @@ private fun LyricsPanel(
         label = "lyrics-bottom-fade-fraction",
     )
 
-    LaunchedEffect(transitionState.value) {
+    LaunchedEffect(transitionState.value, isVisible) {
+        if (!isVisible) return@LaunchedEffect
         val activeTransition = transitionState.value
+        if (activeTransition.durationMs <= 0 || activeTransition.fromScroll == activeTransition.toScroll) {
+            return@LaunchedEffect
+        }
         val maxDelay = MotionTokens.staggerDelayForRowBelowActive(MotionTokens.KaraokeStaggerMaxRows)
         val endMs = activeTransition.startRealtimeMs + activeTransition.durationMs + maxDelay + 32L
         while (SystemClock.elapsedRealtime() <= endMs) {
             withFrameNanos {
                 frameRealtimeMs.longValue = SystemClock.elapsedRealtime()
             }
-        }
-    }
-
-    LaunchedEffect(manualScrollTrigger) {
-        if (manualScrollTrigger > 0) {
-            isUserScrolling = true
-            delay(2_500L)
-            isUserScrolling = false
         }
     }
 
@@ -1981,8 +2015,8 @@ private fun LyricsPanel(
         val snapToAnchor = previousAnchorDisplayIndex == -1 ||
             (!isNaturalSingingAdvance && abs(anchorDisplayIndex - previousAnchorDisplayIndex) > 2)
         // Skipped phrases must not briefly light up before a seek's scroll snap.
-        // Manual browsing uses its own focus/secondary colors instead of retention.
-        val retainCompletedHighlight = !snapToAnchor && !isUserScrolling && selectedLyricIndex == null
+        // Manual browsing uses its own focus colors instead of retention.
+        val retainCompletedHighlight = !snapToAnchor && selectedLyricIndex == null
         // Keep all outgoing rows that can still be visibly fading, even when
         // several short phrases retarget a scroll before it has completed.
         val retentionMinimumTop = minOf(transitionState.value.fromScroll, transitionState.value.toScroll) +
@@ -1997,11 +2031,10 @@ private fun LyricsPanel(
             ),
         )
 
-        LaunchedEffect(anchorKey, anchorDisplayIndex, layoutInfo.totalHeight, isUserScrolling, isVisible) {
+        LaunchedEffect(anchorKey, anchorDisplayIndex, layoutInfo.totalHeight, isVisible) {
             if (
                 !isVisible ||
                 isStaticMode ||
-                isUserScrolling ||
                 anchorDisplayIndex < 0 ||
                 layoutInfo.totalHeight <= 0f
             ) return@LaunchedEffect
@@ -2048,38 +2081,17 @@ private fun LyricsPanel(
                     anchorItemIndex = anchorDisplayIndex,
                 )
             }
-            userScrollOffset = target
             previousAnchorKey = anchorKey
             previousAnchorDisplayIndex = anchorDisplayIndex
             previousAnchorLineIndex = selectedLyricIndex ?: scrollAnchorLineIndex
         }
 
-        LaunchedEffect(manualScrollTrigger) {
-            if (manualScrollTrigger > 0 && manualScrollDelta != 0f) {
-                val now = SystemClock.elapsedRealtime()
-                val currentTransition = transitionState.value
-                val base = if (isUserScrolling) {
-                    userScrollOffset
-                } else {
-                    evaluateRowScrollAt(currentTransition, currentTransition.anchorItemIndex, now)
-                }
-                val newTarget = (base + manualScrollDelta).coerceIn(0f, maxScroll)
-                userScrollOffset = newTarget
-                transitionState.value = StaggerScrollTransition(
-                    fromScroll = base,
-                    toScroll = newTarget,
-                    startRealtimeMs = now,
-                    durationMs = 220,
-                    anchorItemIndex = anchorDisplayIndex.coerceAtLeast(0),
-                )
-            }
-        }
-
-        val estimatedHeights = remember(displayItems, maxWidth, density.density, density.fontScale) {
+        val estimatedHeights = remember(displayItems, maxWidth, density.density, density.fontScale, pronunciationLarger) {
             FloatArray(displayItems.size) { index ->
                 when (val item = displayItems[index]) {
                     is LyricsDisplayItem.Line -> estimateLyricRowHeight(
                         item.line, with(density) { maxWidth.toPx() }, density.density, density.fontScale,
+                        pronunciationLarger,
                     )
                     is LyricsDisplayItem.Songwriters -> with(density) { 74.dp.toPx() }
                 }
@@ -2110,12 +2122,11 @@ private fun LyricsPanel(
         }
         val currentGap = activeInstrumentalGap
         LyricsScrollLayout(
-            displayItemKeys = displayItemKeys,
+            lineCount = displayItems.size,
             estimatedHeights = estimatedHeights,
-            onAnchorHeightCorrection = { userScrollOffset += it },
             allInstrumentalGaps = allInstrumentalGaps,
             activeInstrumentalGap = currentGap,
-            positionState = effectiveLyricPositionState,
+            instrumentalPositionState = instrumentalPositionState,
             transitionState = transitionState,
             nowRealtimeState = frameRealtimeMs,
             layoutInfo = layoutInfo,
@@ -2146,11 +2157,12 @@ private fun LyricsPanel(
                 transitionState = transitionState,
                 frameRealtimeState = frameRealtimeMs,
                 positionState = lyricVisualPositionState,
+                instrumentalPositionState = instrumentalPositionState,
                 allInstrumentalGaps = allInstrumentalGaps,
                 focalAnchorY = focalAnchorY,
                 selectedLyricIndex = selectedLyricIndex,
                 isStaticMode = isStaticMode,
-                isUserScrolling = isUserScrolling,
+                pronunciationLarger = pronunciationLarger,
             )
             if (currentGap != null) {
                 key("instrumental-slot-${currentGap.beforeLineIndex}-${currentGap.startMs}") {
@@ -2158,7 +2170,6 @@ private fun LyricsPanel(
                         InstrumentalInterludeRow(
                             gap = currentGap,
                             positionState = effectiveLyricPositionState,
-                            isUserScrolling = isUserScrolling,
                         )
                     }
                 }
@@ -2222,11 +2233,12 @@ private fun LyricsRows(
     transitionState: State<StaggerScrollTransition>,
     frameRealtimeState: State<Long>,
     positionState: State<Long>,
+    instrumentalPositionState: State<Long>,
     allInstrumentalGaps: List<LyricTimeline.InstrumentalGap>,
     focalAnchorY: Float,
     selectedLyricIndex: Int?,
     isStaticMode: Boolean,
-    isUserScrolling: Boolean,
+    pronunciationLarger: Boolean,
 ) {
     mountedRowsState.value.sorted().forEach { index ->
         val item = displayItems.getOrNull(index) ?: return@forEach
@@ -2241,11 +2253,12 @@ private fun LyricsRows(
                     transitionState = transitionState,
                     frameRealtimeState = frameRealtimeState,
                     positionState = positionState,
+                    instrumentalPositionState = instrumentalPositionState,
                     allInstrumentalGaps = allInstrumentalGaps,
                     focalAnchorY = focalAnchorY,
                     isFocused = selectedLyricIndex == item.lineIndex,
                     isStaticMode = isStaticMode,
-                    isUserScrolling = isUserScrolling,
+                    pronunciationLarger = pronunciationLarger,
                 )
                 is LyricsDisplayItem.Songwriters -> SongwritersFooterRow(item.text)
             }
@@ -2263,11 +2276,12 @@ private fun LyricsLineRow(
     transitionState: State<StaggerScrollTransition>,
     frameRealtimeState: State<Long>,
     positionState: State<Long>,
+    instrumentalPositionState: State<Long>,
     allInstrumentalGaps: List<LyricTimeline.InstrumentalGap>,
     focalAnchorY: Float,
     isFocused: Boolean,
     isStaticMode: Boolean,
-    isUserScrolling: Boolean,
+    pronunciationLarger: Boolean,
 ) {
     // Only the singers entering/leaving a cluster restart their expensive text
     // subtree. Other rows retain the same State objects and measured flexboxes.
@@ -2284,7 +2298,7 @@ private fun LyricsLineRow(
     val fadeDistance = with(density) { 64.dp.toPx() }
     val interludeAdvance = with(density) { 84.dp.toPx() }
     val renderedRowTop = remember(
-        item, layoutInfo, allInstrumentalGaps, interludeAdvance, positionState, retentionEnabled,
+        item, layoutInfo, allInstrumentalGaps, interludeAdvance, instrumentalPositionState, retentionEnabled,
         transitionState, frameRealtimeState,
     ) {
         derivedStateOf {
@@ -2292,7 +2306,7 @@ private fun LyricsLineRow(
             else layoutInfo.itemTops[item.lineIndex] - evaluateRowScrollAt(
                 transitionState.value, item.lineIndex, frameRealtimeState.value,
             ) + evaluateInstrumentalDisplacementFraction(
-                allInstrumentalGaps, item.lineIndex, positionState.value,
+                allInstrumentalGaps, item.lineIndex, instrumentalPositionState.value,
             ) * interludeAdvance
         }
     }
@@ -2342,8 +2356,8 @@ private fun LyricsLineRow(
         retainedBackgroundPresence = retainedBackgroundPresence,
         isFocused = isFocused,
         isStaticMode = isStaticMode,
-        isUserScrolling = isUserScrolling,
         positionState = positionState,
+        pronunciationLarger = pronunciationLarger,
     )
 }
 
@@ -2376,17 +2390,28 @@ private fun evaluateRowScrollAt(
     return transition.fromScroll + (transition.toScroll - transition.fromScroll) * eased
 }
 
+/** A fixed sentinel stops placement-clock invalidation when every row's displacement is zero. */
+internal fun instrumentalDisplacementPosition(
+    gaps: List<LyricTimeline.InstrumentalGap>,
+    positionMs: Long,
+): Long {
+    val lastStagger = MotionTokens.staggerDelayForRowBelowActive(MotionTokens.KaraokeStaggerMaxRows)
+    return if (gaps.any { gap ->
+        positionMs >= gap.startMs && positionMs < gap.endMs + LyricTimeline.DEFAULT_LINE_OFFSET_MS +
+            MotionTokens.KaraokeItemChangeMillis + lastStagger
+    }) positionMs else -1L
+}
+
 /**
  * Evaluates the continuous `[0f, 1f]` vertical displacement fraction for rows `>= gap.beforeLineIndex`
  * caused by an instrumental interlude gap (`gap >= 7000ms`), ensuring zero layout jump when the
  * 3-dot interlude enters or exits:
  * - Intro gap (`gap.startMs == 0L`): starts open (`1f`), and starting at `gap.endMs - 500ms`
- *   (coinciding with the 3-dot shrink phase and `line[0]` activation) smoothly collapses `1f -> 0f`
- *   over `750ms` (`KaraokeLineEasing`) with `Ua.B` row stagger.
+ *   smoothly collapses `1f -> 0f` over `750ms` (`KaraokeLineEasing`) with `Ua.B` row stagger.
  * - Mid-song gap (`gap.startMs > 0L`): opens `0f -> 1f` over `750ms` at `gap.startMs`, holds `1f`,
  *   and collapses `1f -> 0f` over `750ms` starting at `gap.endMs - 500ms` with `Ua.B` row stagger.
  */
-private fun evaluateInstrumentalDisplacementFraction(
+internal fun evaluateInstrumentalDisplacementFraction(
     gaps: List<LyricTimeline.InstrumentalGap>,
     rowIndex: Int,
     positionMs: Long,
@@ -2427,12 +2452,11 @@ private fun evaluateInstrumentalDisplacementFraction(
 
 @Composable
 private fun LyricsScrollLayout(
-    displayItemKeys: List<String>,
+    lineCount: Int,
     estimatedHeights: FloatArray,
-    onAnchorHeightCorrection: (Float) -> Unit,
     allInstrumentalGaps: List<LyricTimeline.InstrumentalGap>,
     activeInstrumentalGap: LyricTimeline.InstrumentalGap?,
-    positionState: State<Long>,
+    instrumentalPositionState: State<Long>,
     transitionState: androidx.compose.runtime.MutableState<StaggerScrollTransition>,
     nowRealtimeState: State<Long>,
     layoutInfo: LyricsLayoutInfo,
@@ -2457,7 +2481,6 @@ private fun LyricsScrollLayout(
         modifier = modifier,
     ) { measurables, constraints ->
         val childConstraints = constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity)
-        val lineCount = displayItemKeys.size
         val heightCache = layoutInfo.heightCache(constraints.maxWidth, lineCount)
         val linePlaceables = HashMap<Int, androidx.compose.ui.layout.Placeable>()
         var interludePlaceable: androidx.compose.ui.layout.Placeable? = null
@@ -2502,15 +2525,16 @@ private fun LyricsScrollLayout(
                 fromScroll = transition.fromScroll + correction,
                 toScroll = transition.toScroll + correction,
             )
-            onAnchorHeightCorrection(correction)
         }
-        layoutInfo.update(displayItemKeys, tops, heights, total)
+        layoutInfo.update(tops, heights, total)
 
         val measuredInterlude = interludePlaceable
         layout(constraints.maxWidth, constraints.maxHeight) {
             val activeTransition = transitionState.value
             val nowRealtimeMs = SystemClock.elapsedRealtime().coerceAtLeast(nowRealtimeState.value)
-            val posMs = positionState.value
+            // Ordinary singing does not change row placement. Subscribe to the
+            // full-rate clock only while an interlude can displace these rows.
+            val posMs = instrumentalPositionState.value
             val stageOffset = stageOffsetPx.value
             val interludeAdvance = if (measuredInterlude != null) {
                 measuredInterlude.height.toFloat() + spacingPx
@@ -2556,13 +2580,8 @@ private fun LyricsScrollLayout(
 private fun InstrumentalInterludeRow(
     gap: LyricTimeline.InstrumentalGap,
     positionState: State<Long>,
-    isUserScrolling: Boolean,
 ) {
-    val unlitAlpha = if (isUserScrolling) {
-        MotionTokens.KaraokeSecondaryAlpha
-    } else {
-        MotionTokens.KaraokeTertiaryAlpha
-    }
+    val unlitAlpha = MotionTokens.KaraokeTertiaryAlpha
 
     Box(
         modifier = Modifier
@@ -2651,8 +2670,8 @@ private fun KaraokeLyricLine(
     retainedBackgroundPresence: State<Float>,
     isFocused: Boolean = false,
     isStaticMode: Boolean,
-    isUserScrolling: Boolean,
     positionState: State<Long>,
+    pronunciationLarger: Boolean,
 ) {
     val hasMainPronunciation = !line.pronunciationText.isNullOrBlank() ||
         line.words.any { !it.pronunciationText.isNullOrBlank() }
@@ -2665,10 +2684,11 @@ private fun KaraokeLyricLine(
     if (isStaticMode || line.timing == LyricTiming.None) {
         val staticPronunciation = line.pronunciationText
             ?: line.words.mapNotNull(LyricWord::pronunciationText).joinToString(" ").takeIf(String::isNotBlank)
-        val staticMainFontSize = if (compactMainLocalization) 22.sp else 24.sp
-        val staticMainLineHeight = if (compactMainLocalization) 29.sp else 32.sp
-        val staticPronunciationFontSize = if (compactMainLocalization) 15.sp else 17.sp
-        val staticPronunciationLineHeight = if (compactMainLocalization) 19.sp else 22.sp
+        val staticSizes = lyricTextSizes(line, pronunciationLarger)
+        val staticMainFontSize = staticSizes.lyric.sp
+        val staticMainLineHeight = staticSizes.lyricLine.sp
+        val staticPronunciationFontSize = staticSizes.pronunciation.sp
+        val staticPronunciationLineHeight = staticSizes.pronunciationLine.sp
         val staticTranslationFontSize = if (compactMainLocalization) 17.sp else 19.sp
         val staticTranslationLineHeight = if (compactMainLocalization) 22.sp else 25.sp
         val staticLocalizationGap = if (compactMainLocalization) 2.dp else 4.dp
@@ -2805,24 +2825,24 @@ private fun KaraokeLyricLine(
 
     val unlitAlpha = if (isFocused) {
         MotionTokens.KaraokePrimaryAlpha
-    } else if (isUserScrolling) {
-        MotionTokens.KaraokeSecondaryAlpha
     } else {
         MotionTokens.KaraokeTertiaryAlpha
     }
     val fullLineStartPadding = if (alignEnd) 0.dp else 6.dp
     val fullLineEndPadding = if (alignEnd) 6.dp else 0.dp
-    val mainFontSize = if (compactMainLocalization) 31.sp else 34.sp
-    val mainLineHeight = if (compactMainLocalization) 37.sp else 41.sp
-    val mainPronunciationFontSize = if (compactMainLocalization) 15.sp else 17.sp
-    val mainPronunciationLineHeight = if (compactMainLocalization) 19.sp else 22.sp
+    val mainSizes = lyricTextSizes(line, pronunciationLarger)
+    val mainFontSize = mainSizes.lyric.sp
+    val mainLineHeight = mainSizes.lyricLine.sp
+    val mainPronunciationFontSize = mainSizes.pronunciation.sp
+    val mainPronunciationLineHeight = mainSizes.pronunciationLine.sp
     val mainTranslationFontSize = if (compactMainLocalization) 21.sp else 24.sp
     val mainTranslationLineHeight = if (compactMainLocalization) 25.sp else 29.sp
     val mainLocalizationGap = if (compactMainLocalization) 2.dp else 4.dp
-    val backgroundFontSize = if (compactBackgroundLocalization) 22.sp else 24.sp
-    val backgroundLineHeight = if (compactBackgroundLocalization) 27.sp else 29.sp
-    val backgroundPronunciationFontSize = if (compactBackgroundLocalization) 15.sp else 16.sp
-    val backgroundPronunciationLineHeight = if (compactBackgroundLocalization) 18.sp else 20.sp
+    val backgroundSizes = lyricTextSizes(line, pronunciationLarger, background = true)
+    val backgroundFontSize = backgroundSizes.lyric.sp
+    val backgroundLineHeight = backgroundSizes.lyricLine.sp
+    val backgroundPronunciationFontSize = backgroundSizes.pronunciation.sp
+    val backgroundPronunciationLineHeight = backgroundSizes.pronunciationLine.sp
     val backgroundTranslationFontSize = if (compactBackgroundLocalization) 17.sp else 19.sp
     val backgroundTranslationLineHeight = if (compactBackgroundLocalization) 22.sp else 25.sp
     val backgroundLocalizationGap = if (compactBackgroundLocalization) 2.dp else 4.dp
@@ -2860,6 +2880,7 @@ private fun KaraokeLyricLine(
                     alignEnd = alignEnd,
                     compactMainLocalization = compactMainLocalization,
                     compactBackgroundLocalization = compactBackgroundLocalization,
+                    pronunciationLarger = pronunciationLarger,
                 )
             } else {
                 // Main vocal FullWidthAlphaGradientFlexboxLayout (karaoke_line_flexbox)
@@ -3065,6 +3086,7 @@ private fun LineSyncedContent(
     alignEnd: Boolean,
     compactMainLocalization: Boolean,
     compactBackgroundLocalization: Boolean,
+    pronunciationLarger: Boolean,
 ) {
     val mainAlphaModifier = Modifier.graphicsLayer {
         alpha = unlitAlpha + (MotionTokens.KaraokePrimaryAlpha - unlitAlpha) * activePresence.value
@@ -3076,17 +3098,19 @@ private fun LineSyncedContent(
         alpha = unlitAlpha + (MotionTokens.KaraokeBgVocalLitAlpha - unlitAlpha) * backgroundPresence.value
     }
     val textAlign = if (alignEnd) TextAlign.End else TextAlign.Start
-    val mainFontSize = if (compactMainLocalization) 31.sp else 34.sp
-    val mainLineHeight = if (compactMainLocalization) 37.sp else 41.sp
-    val pronunciationFontSize = if (compactMainLocalization) 15.sp else 17.sp
-    val pronunciationLineHeight = if (compactMainLocalization) 19.sp else 22.sp
+    val mainSizes = lyricTextSizes(line, pronunciationLarger)
+    val mainFontSize = mainSizes.lyric.sp
+    val mainLineHeight = mainSizes.lyricLine.sp
+    val pronunciationFontSize = mainSizes.pronunciation.sp
+    val pronunciationLineHeight = mainSizes.pronunciationLine.sp
     val translationFontSize = if (compactMainLocalization) 21.sp else 24.sp
     val translationLineHeight = if (compactMainLocalization) 25.sp else 29.sp
     val mainGap = if (compactMainLocalization) 2.dp else 4.dp
-    val backgroundFontSize = if (compactBackgroundLocalization) 22.sp else 24.sp
-    val backgroundLineHeight = if (compactBackgroundLocalization) 27.sp else 29.sp
-    val backgroundPronunciationFontSize = if (compactBackgroundLocalization) 15.sp else 16.sp
-    val backgroundPronunciationLineHeight = if (compactBackgroundLocalization) 18.sp else 20.sp
+    val backgroundSizes = lyricTextSizes(line, pronunciationLarger, background = true)
+    val backgroundFontSize = backgroundSizes.lyric.sp
+    val backgroundLineHeight = backgroundSizes.lyricLine.sp
+    val backgroundPronunciationFontSize = backgroundSizes.pronunciation.sp
+    val backgroundPronunciationLineHeight = backgroundSizes.pronunciationLine.sp
     val backgroundTranslationFontSize = if (compactBackgroundLocalization) 17.sp else 19.sp
     val backgroundTranslationLineHeight = if (compactBackgroundLocalization) 22.sp else 25.sp
     val backgroundGap = if (compactBackgroundLocalization) 2.dp else 4.dp
@@ -3269,6 +3293,12 @@ private fun KaraokeVocalFlexbox(
         LyricTimeline.isRightToLeft(words.joinToString("") { it.text })
     }
     val rowCache = remember(words) { MaskRowCache(words.size) }
+    val maskPosition = remember(words, positionState) {
+        val first = words.minOf { it.startMs } + LyricTimeline.KARAOKE_WORD_OFFSET_MS - 1L
+        val last = words.maxOf { it.endMs } + LyricTimeline.KARAOKE_WORD_OFFSET_MS +
+            MotionTokens.KaraokeRushGradientMillis
+        derivedStateOf { positionState.value.coerceIn(first, last) }
+    }
     val density = LocalDensity.current
     val rowSpacingPx = with(density) { 4.dp.roundToPx() }
 
@@ -3283,7 +3313,7 @@ private fun KaraokeVocalFlexbox(
                 drawKaraokeFlexboxMask(
                     words = words,
                     isRtl = isRtl,
-                    positionMs = positionState.value,
+                    positionMs = maskPosition.value,
                     activePresence = activePresence.value,
                     litAlpha = litAlpha,
                     unlitAlpha = unlitAlpha,
@@ -3482,17 +3512,14 @@ private fun KaraokeWordItem(
         remember(words) { words.maxOfOrNull { it.endMs } ?: line.mainEndMs }
     } else line.mainEndMs
     val emphasisEasing = remember { { fraction: Float -> MotionTokens.KaraokeEmphasisEasing.transform(fraction) } }
+    val liftFrame = remember(wordStartWithOffset, vocalEndMs) {
+        LyricWordLiftFrame(wordStartWithOffset, vocalEndMs,
+            MotionTokens.KaraokeSpringDampingRatio, MotionTokens.KaraokeSpringStiffness)
+    }
 
     val wordModifier = if (animateMotion) {
         Modifier.graphicsLayer {
-            val lift = LyricTimeline.wordLiftFraction(
-                positionMs = positionState.value,
-                riseStartMs = wordStartWithOffset,
-                vocalEndMs = vocalEndMs,
-                activePresence = activePresence.value,
-                dampingRatio = MotionTokens.KaraokeSpringDampingRatio,
-                stiffness = MotionTokens.KaraokeSpringStiffness,
-            )
+            val lift = liftFrame.value(positionState.value, activePresence.value)
             translationY = liftDistancePx * lift
         }
     } else {
@@ -3534,14 +3561,15 @@ private fun KaraokeWordItem(
             )
         } else {
             // Character-split long-emphasis wave (`z0` in A.java lines 2078-2491)
-            val charWidthsPx = remember(renderedString) {
-                FloatArray(renderedString.length)
-            }
             val charBaselines = remember(renderedString) {
                 FloatArray(renderedString.length) { 0.8f }
             }
             val isWordRtl = remember(renderedString) {
                 LyricTimeline.isRightToLeft(renderedString)
+            }
+            val characterFrame = remember(renderedString, charTimings, charStartOffsetInGroup, vocalEndMs, isWordRtl, emphasisEasing) {
+                LyricCharacterFrame(charTimings, renderedString.length, renderedString.trimEnd().length,
+                    charStartOffsetInGroup, vocalEndMs, isWordRtl, emphasisEasing)
             }
 
             Row(verticalAlignment = Alignment.Bottom) {
@@ -3556,35 +3584,12 @@ private fun KaraokeWordItem(
                             color = Color.White,
                         )
                     } else {
-                        val groupCharIdx = (charStartOffsetInGroup + localCharIdx)
-                            .coerceIn(0, charTimings.lastIndex)
-                        val charTiming = charTimings[groupCharIdx]
                         val charBoxModifier = if (animateMotion) {
                             Modifier.graphicsLayer {
-                                val pos = positionState.value
-                                val presence = activePresence.value
-                                val amount = LyricTimeline.characterEmphasisAmountAt(
-                                    charTiming, pos, vocalEndMs, presence, emphasisEasing,
-                                )
-                                val charScale = 1f + (charTiming.maximumScale - 1f) * amount
-                                val visibleLengths = renderedString.trimEnd().length
-                                val halfExpansions = List(visibleLengths) { cIdx ->
-                                    val gIdx = (charStartOffsetInGroup + cIdx)
-                                        .coerceIn(0, charTimings.lastIndex)
-                                    val cAmount = LyricTimeline.characterEmphasisAmountAt(
-                                        charTimings[gIdx], pos, vocalEndMs, presence, emphasisEasing,
-                                    )
-                                    val cScale = 1f + (charTimings[gIdx].maximumScale - 1f) * cAmount
-                                    val w = if (cIdx in charWidthsPx.indices) charWidthsPx[cIdx] else 0f
-                                    (cScale - 1f) * w * 0.5f
-                                }
-                                val offsets = LyricTimeline.symmetricExpansionOffsets(
-                                    halfExpansions = halfExpansions,
-                                    isRtl = isWordRtl,
-                                )
-                                scaleX = charScale
-                                scaleY = charScale
-                                translationX = offsets.getOrElse(localCharIdx) { 0f }
+                                characterFrame.update(positionState.value, activePresence.value)
+                                scaleX = characterFrame.scale(localCharIdx)
+                                scaleY = characterFrame.scale(localCharIdx)
+                                translationX = characterFrame.offset(localCharIdx)
                                 transformOrigin = TransformOrigin(
                                     pivotFractionX = 0.5f,
                                     pivotFractionY = charBaselines[localCharIdx],
@@ -3603,14 +3608,8 @@ private fun KaraokeWordItem(
                                     color = Color.Transparent,
                                     style = shadowStyle,
                                     modifier = Modifier.graphicsLayer {
-                                        val amount = LyricTimeline.characterEmphasisAmountAt(
-                                            charTiming,
-                                            positionState.value,
-                                            vocalEndMs,
-                                            activePresence.value,
-                                            emphasisEasing,
-                                        )
-                                        alpha = MotionTokens.KaraokeEmphasisShadowAlpha * amount
+                                        characterFrame.update(positionState.value, activePresence.value)
+                                        alpha = MotionTokens.KaraokeEmphasisShadowAlpha * characterFrame.amount(localCharIdx)
                                     },
                                 )
                             }
@@ -3621,7 +3620,7 @@ private fun KaraokeWordItem(
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White,
                                 onTextLayout = { result ->
-                                    charWidthsPx[localCharIdx] = result.size.width.toFloat()
+                                    characterFrame.setWidth(localCharIdx, result.size.width.toFloat())
                                     if (result.size.height > 0) {
                                         charBaselines[localCharIdx] =
                                             (result.lastBaseline / result.size.height).coerceIn(0f, 1f)
@@ -3692,6 +3691,23 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawKaraokeFlexboxM
             (row.bottom + rowCache.rows[rowIndex + 1].top) / 2f
         }
 
+        // Settled rows need one solid mask. Do not rescan every word's
+        // geometry/script or evaluate progress whose result will be discarded.
+        val solidColor = when {
+            effectivePosMs < firstWord.startMs -> unlitColor
+            effectivePosMs >= lastWord.endMs + tailRushMs -> litColor
+            else -> null
+        }
+        if (solidColor != null) {
+            drawRect(
+                color = solidColor,
+                topLeft = Offset(0f, rowTop),
+                size = Size(size.width, rowBottom - rowTop),
+                blendMode = BlendMode.DstIn,
+            )
+            return@forEachIndexed
+        }
+
         val firstBounds = wordBounds[first]
         val lastBounds = wordBounds[last]
         val rowTextWidth = if (firstBounds != null && lastBounds != null) {
@@ -3759,37 +3775,14 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawKaraokeFlexboxM
             }
         }
 
-        val isFullyUnlit = effectivePosMs < firstWord.startMs
-        val isFullyLit = effectivePosMs >= lastWord.endMs + tailRushMs
-
-        when {
-            isFullyUnlit -> {
-                drawRect(
-                    color = unlitColor,
-                    topLeft = Offset(0f, rowTop),
-                    size = Size(size.width, rowBottom - rowTop),
-                    blendMode = BlendMode.DstIn,
-                )
-            }
-            isFullyLit -> {
-                drawRect(
-                    color = litColor,
-                    topLeft = Offset(0f, rowTop),
-                    size = Size(size.width, rowBottom - rowTop),
-                    blendMode = BlendMode.DstIn,
-                )
-            }
-            else -> {
-                val ramp = karaokeMaskRamp(rowProgress, featherFraction, isRtl)
-                rowCache.alphaMask.draw(
-                    canvas = drawContext.canvas.nativeCanvas,
-                    left = 0f, top = rowTop, right = size.width, bottom = rowBottom,
-                    start = ramp.start * size.width, end = ramp.end * size.width,
-                    startAlpha = if (isRtl) unlitAlpha else effectiveLitAlpha,
-                    endAlpha = if (isRtl) effectiveLitAlpha else unlitAlpha,
-                )
-            }
-        }
+        val ramp = karaokeMaskRamp(rowProgress, featherFraction, isRtl)
+        rowCache.alphaMask.draw(
+            canvas = drawContext.canvas.nativeCanvas,
+            left = 0f, top = rowTop, right = size.width, bottom = rowBottom,
+            start = ramp.start * size.width, end = ramp.end * size.width,
+            startAlpha = if (isRtl) unlitAlpha else effectiveLitAlpha,
+            endAlpha = if (isRtl) effectiveLitAlpha else unlitAlpha,
+        )
     }
 }
 
@@ -3802,6 +3795,7 @@ private fun QueuePanel(
     controlsVisible: Boolean,
     selectedIndex: Int,
     selectionVisible: Boolean,
+    onScrollStateChange: (Boolean) -> Unit,
     isPlaying: Boolean,
     audioSpectrum: () -> AudioSpectrum,
     bandsEnabled: Boolean,
@@ -3822,8 +3816,16 @@ private fun QueuePanel(
     )
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = currentIndex.coerceAtLeast(0))
     var positioned by remember(sessionId) { mutableStateOf(false) }
-    val targetIndex = if (selectionVisible) selectedIndex else currentIndex
-    LaunchedEffect(targetIndex, sessionId) {
+    val reportScrolling = rememberUpdatedState(onScrollStateChange)
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress }.collect { reportScrolling.value(it) }
+    }
+    DisposableEffect(listState) { onDispose { reportScrolling.value(false) } }
+    // Browsing follows the virtual selection; idle playback follows current.
+    // Unrelated tail appends must not cancel/restart an in-flight carousel move.
+    val targetIndex = if (controlsVisible) selectedIndex else currentIndex
+    val targetKey = queueKeys.getOrNull(targetIndex)
+    LaunchedEffect(targetIndex, sessionId, targetKey) {
         if (queue.isEmpty()) return@LaunchedEffect
         val index = targetIndex.coerceIn(queue.indices)
         if (positioned) listState.animateScrollToItem(index)
@@ -3866,25 +3868,23 @@ private fun QueuePanel(
                     )
                     Box(
                         modifier = Modifier
-                            .width(cardWidth),
+                            .width(cardWidth)
+                            .automationId("player-queue-item-$index")
+                            .semantics { selected = focused },
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             MotionArtwork(
                                 track = item,
                                 modifier = Modifier
                                     .size(176.dp)
-                                    .focusFrameTarget(
-                                        selected = focused,
-                                        key = "player-queue:${queueKeys.getOrNull(index) ?: index}",
-                                        cornerRadius = 16.dp,
-                                        visualScale = scale,
-                                    )
                                     .zIndex(if (focused) 1f else 0f)
                                     .graphicsLayer {
                                         scaleX = scale
                                         scaleY = scale
                                     },
-                                animate = focused,
+                                // Hiding the cursor must not stop the playing
+                                // cover. Keep a single candidate when browsing.
+                                animate = focused || (isCurrent && isPlaying && !selectionVisible),
                                 cornerRadius = 16.dp,
                             )
                             Spacer(Modifier.height(11.dp))
@@ -3962,7 +3962,6 @@ private fun QueueModeControls(
                     focused = focusedMode == QueueModeControl.Autoplay,
                     enabled = canSetAutoplay,
                     frameKey = "player-mode:autoplay",
-                    ytmBadge = false,
                 )
                 QueueModeButton(
                     icon = Icons.Rounded.AutoAwesome,
@@ -3975,7 +3974,6 @@ private fun QueueModeControls(
                     focused = focusedMode == QueueModeControl.Source,
                     enabled = true,
                     frameKey = "player-mode:source",
-                    ytmBadge = false,
                 )
                 QueueModeButton(
                     icon = Icons.Rounded.ClearAll,
@@ -3984,7 +3982,6 @@ private fun QueueModeControls(
                     focused = focusedMode == QueueModeControl.Clear,
                     enabled = canClearQueue,
                     frameKey = "player-mode:clear",
-                    ytmBadge = false,
                 )
             }
 }
@@ -3997,7 +3994,6 @@ private fun QueueModeButton(
     focused: Boolean,
     enabled: Boolean,
     frameKey: String,
-    ytmBadge: Boolean = false,
 ) {
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.06f else 1f,
@@ -4015,7 +4011,6 @@ private fun QueueModeButton(
             .background(
                 when {
                     focused -> Color.White.copy(alpha = 0.94f)
-                    selected && ytmBadge -> Color(0xFFE32636).copy(alpha = 0.38f)
                     selected -> Color.White.copy(alpha = 0.24f)
                     else -> Color.White.copy(alpha = 0.1f)
                 },
@@ -4044,22 +4039,5 @@ private fun QueueModeButton(
             fontSize = 13.sp,
             fontWeight = FontWeight.SemiBold,
         )
-        if (ytmBadge) {
-            Text(
-                text = stringResource(R.string.player_provider_ytm),
-                color = Color.White,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFFE32636))
-                    .padding(horizontal = 5.dp, vertical = 2.dp),
-            )
-        }
     }
-}
-
-private fun formatTime(ms: Long): String {
-    val totalSeconds = ms.coerceAtLeast(0L) / 1_000L
-    return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
 }

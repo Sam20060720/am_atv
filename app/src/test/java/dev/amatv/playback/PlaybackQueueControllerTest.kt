@@ -136,6 +136,63 @@ class PlaybackQueueControllerTest {
         )
     }
 
+    @Test fun manualInsertionKeepsThePlayingSessionAndRepeatedEntryIdentity() {
+        prefs.autoplayEnabled = true
+        fakeRecommendations.ytmRadioTracks = (10..30).map { testTrack("$it", "Radio $it", "Other $it") }
+        val controller = createController()
+        val repeated = testTrack("2", "Repeated", "Artist")
+        assertFalse(controller.enqueueNext(listOf(repeated)))
+        controller.playContext(listOf(testTrack("1", "Past", "One"), repeated, testTrack("3", "Future", "Three")), 1,
+            PlaybackContext(ContextKind.Album, "album", "Album"))
+        controller.markCurrentPlaybackStarted(controller.state.value.current!!.entryId)
+        val before = controller.state.value
+        val callbacks = playedTracks.size
+        assertFalse(controller.enqueueLast(emptyList()))
+        assertFalse(controller.enqueueLast(listOf(repeated.copy(catalogKind = CatalogKind.Album))))
+        assertTrue(controller.enqueueNext(listOf(repeated, repeated)))
+        assertTrue(controller.enqueueLast(listOf(testTrack("4", "Manual last", "Four"))))
+        val after = controller.state.value
+        assertEquals(before.current, after.current)
+        assertEquals(before.history, after.history)
+        assertEquals(before.context, after.context)
+        assertEquals(before.sessionId, after.sessionId)
+        assertEquals(before.persistenceId, after.persistenceId)
+        assertEquals(before.recommendationSeed, after.recommendationSeed)
+        assertEquals(before.autoplay, after.autoplay)
+        assertEquals(before.ytmContinuation, after.ytmContinuation)
+        assertEquals(callbacks, playedTracks.size)
+        assertEquals(listOf("2", "2", "3", "4"), after.upNext.map { it.track.id })
+        assertEquals(after.sessionEntries.size, after.sessionEntries.map { it.entryId }.toSet().size)
+        assertTrue(after.upNext.take(2).all { it.origin == EntryOrigin.Context && !it.wasPlayed })
+    }
+
+    @Test fun manualOrderSurvivesShuffleRestoreAndRepeatAllIncludesAddedOccurrences() {
+        val controller = createController()
+        controller.playContext((1..3).map { testTrack("$it", "Song $it", "Artist $it") }, 0)
+        controller.setShuffle(true)
+        val originalShuffled = controller.state.value.upNext
+        val next = testTrack("next", "Next", "New")
+        val last = testTrack("last", "Last", "New")
+        controller.enqueueNext(listOf(next, next))
+        controller.enqueueLast(listOf(last))
+        assertEquals(listOf("next", "next") + originalShuffled.map { it.track.id } + "last",
+            controller.state.value.upNext.map { it.track.id })
+        controller.setShuffle(false)
+        assertEquals(listOf("next", "next", "2", "3", "last"), controller.state.value.upNext.map { it.track.id })
+        controller.setRepeat(PlaybackRepeatMode.All)
+        repeat(5) { controller.advanceNext() }
+        assertEquals("last", controller.state.value.current?.track?.id)
+        controller.advanceNext(manual = false)
+        assertEquals("1", controller.state.value.current?.track?.id)
+        assertEquals(listOf("next", "next", "2", "3", "last"), controller.state.value.upNext.map { it.track.id })
+        assertEquals(6, (listOfNotNull(controller.state.value.current) + controller.state.value.upNext).map { it.entryId }.toSet().size)
+        controller.setRepeat(PlaybackRepeatMode.One)
+        val repeatedEntry = controller.state.value.current
+        controller.enqueueNext(listOf(next))
+        assertEquals(repeatedEntry, controller.advanceNext(manual = false))
+        assertEquals("next", controller.advanceNext(manual = true)?.track?.id)
+    }
+
     @Test
     fun testPlayContextSplitsHistoryCurrentAndUpNext() {
         val controller = createController()
@@ -238,19 +295,6 @@ class PlaybackQueueControllerTest {
         assertEquals("Track 2", state.current?.track?.title)
         assertTrue(state.upNext.isEmpty())
         assertTrue(state.autoplay.isEmpty())
-    }
-
-    @Test
-    fun testSwitchingAutoplaySourceDropsAutoplayAndResetsStation() {
-        val controller = createController()
-        controller.setAutoplaySource(AutoplaySource.YouTubeMusic)
-
-        controller.setAutoplaySource(AutoplaySource.AppleMusic)
-        val state = controller.state.value
-        assertEquals(AutoplaySource.AppleMusic, state.source)
-        assertTrue(state.autoplay.isEmpty())
-        assertNull(state.amStationId)
-        assertNull(state.ytmContinuation)
     }
 
     @Test
@@ -498,7 +542,19 @@ class PlaybackQueueControllerTest {
         controller.playContext(listOf(anchor), 0)
         controller.advanceNext()
         assertEquals("2", controller.state.value.current?.track?.id)
+        val before = controller.state.value
+        val oldRecommendations = before.autoplay.map { it.entryId }.toSet()
+        assertTrue(oldRecommendations.isNotEmpty())
+        assertNotNull(before.ytmContinuation)
+        assertNotNull(before.ytmSeedVideoId)
         controller.setAutoplaySource(AutoplaySource.AppleMusic)
+        val after = controller.state.value
+        assertEquals(AutoplaySource.AppleMusic, after.source)
+        assertTrue(after.autoplay.isNotEmpty())
+        assertTrue(after.autoplay.none { it.entryId in oldRecommendations })
+        assertNull(after.ytmContinuation)
+        assertNull(after.ytmSeedVideoId)
+        assertEquals("fake-station-1", after.amStationId)
         assertEquals(listOf("1"), fakeRecommendations.appleSeeds)
         assertEquals("1", controller.state.value.recommendationSeed?.id)
     }

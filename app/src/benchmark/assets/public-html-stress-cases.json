@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "target_html_bytes": 4194048,
+  "noise_count": 2048,
+  "cases": [
+    {
+      "kind": "new",
+      "html": "<html><head><script data-ignored=\"before\"></script></head><body><script TYPE=\"application/json\" ID=\"serialized-server-data\">{\"data\":[{\"intent\":{\"$kind\":\"BrowsePageIntent\",\"storefront\":\"tw\"},\"data\":{\"sections\":[{\"id\":\"stress-fixture\",\"presentation\":{\"kind\":\"collection\",\"layout\":{\"kind\":\"shelf\"}},\"itemKind\":\"squareLockup\",\"header\":{\"item\":{\"titleLink\":{\"title\":\"Stress fixture\"}}},\"items\":[{\"title\":\"Positions\",\"artistName\":\"Ariana Grande\",\"contentDescriptor\":{\"kind\":\"album\",\"identifiers\":{\"storeAdamID\":\"1553944254\"}},\"artwork\":{\"dictionary\":{\"width\":640,\"height\":640,\"url\":\"https://is1-ssl.mzstatic.com/image/thumb/primary/{w}x{h}{c}.{f}\"}}}]}]}}]}</script><script src=\"after.js\"></script></body></html>"
+    },
+    {
+      "kind": "radio",
+      "html": "<html><head><script data-ignored=\"before\"></script></head><body><script TYPE=\"application/json\" ID=\"serialized-server-data\">{\"data\":[{\"intent\":{\"$kind\":\"RadioPageIntent\",\"storefront\":\"tw\"},\"data\":{\"sections\":[{\"id\":\"stress-fixture\",\"presentation\":{\"kind\":\"collection\",\"layout\":{\"kind\":\"grid\",\"flowStyle\":\"row\"}},\"itemKind\":\"liveRadioGridLockup\",\"header\":{\"item\":{\"titleLink\":{\"title\":\"Stress fixture\"}}},\"items\":[{\"title\":\"Fixture Radio\",\"contentDescriptor\":{\"kind\":\"radioStation\",\"identifiers\":{\"storeAdamID\":\"ra.1\"}},\"artwork\":{\"dictionary\":{\"width\":640,\"height\":640,\"url\":\"https://is1-ssl.mzstatic.com/image/thumb/radio/{w}x{h}{c}.{f}\"}}}]}]}}]}</script><script src=\"after.js\"></script></body></html>"
+    },
+    {
+      "kind": "editorial",
+      "html": "<html><head><script data-ignored=\"before\"></script></head><body><script TYPE=\"application/json\" ID=\"serialized-server-data\">{\"data\":[{\"intent\":{\"$kind\":\"AlbumDetailPageIntent\",\"contentDescriptor\":{\"kind\":\"album\",\"identifiers\":{\"storeAdamID\":\"1553944254\"},\"locale\":{\"storefront\":\"tw\"}}},\"data\":{\"sections\":[{\"itemKind\":\"containerDetailHeaderLockup\",\"items\":[{\"contentDescriptor\":{\"kind\":\"album\",\"identifiers\":{\"storeAdamID\":\"1553944254\"}},\"videoArtwork\":{\"dictionary\":{\"motionDetailSquare\":{\"video\":\"https://mvod.itunes.apple.com/stress-fixture.m3u8\",\"previewFrame\":{\"width\":640,\"height\":640,\"url\":\"https://is1-ssl.mzstatic.com/image/thumb/editorial/{w}x{h}bb.{f}\"}}}}}]}]}}]}</script><script src=\"after.js\"></script></body></html>"
+    }
+  ]
+}

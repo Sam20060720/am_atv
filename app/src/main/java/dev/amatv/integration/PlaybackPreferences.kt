@@ -36,6 +36,17 @@ data class PlaybackSession(
     val persistenceId: String = "",
     /** Store-owned write revision; callers do not need to assign it. */
     val savedRevision: Long = 0L,
+    /** Unfinished selected collection; never replaced by generated autoplay. */
+    val pendingCollection: dev.amatv.playback.CollectionPlaybackCheckpoint? = null,
+    /** Empty in older snapshots: never infer original container membership from explicit queue edits. */
+    val containerEntryIds: Set<Long> = emptySet(),
+    val playbackContext: dev.amatv.playback.PlaybackContext? = null,
+    /** Source order of unplayed explicit occurrences while shuffle is enabled. */
+    val unshuffledEntryIds: List<Long> = emptyList(),
+    /** Canonical context identity for each queue occurrence; older sessions use their entry IDs. */
+    val queueSourceEntryIds: List<Long> = emptyList(),
+    /** Explicit Play Last occurrences that must stay behind an unfinished collection. */
+    val deferredLastEntryIds: Set<Long> = emptySet(),
 )
 
 /** Remove only malformed recommendations whose provenance was actually saved. */
@@ -53,10 +64,17 @@ internal fun PlaybackSession.sanitizedAutoplayEntries(): PlaybackSession? {
             ?: retained.last()
     }
     val changedCurrent = selected != oldCurrent
+    val removedEntryIds = queue.indices.asSequence().filter { index ->
+        index in autoplayEntryIndices && queue[index].catalogKind != CatalogKind.Song
+    }.mapNotNull(queueEntryIds::getOrNull).toSet()
     return copy(
         queue = retained.map(queue::get),
         currentIndex = retained.indexOf(selected),
         queueEntryIds = if (queueEntryIds.isEmpty()) emptyList() else retained.map { queueEntryIds.getOrElse(it) { 0L } },
+        queueSourceEntryIds = if (queueSourceEntryIds.isEmpty()) emptyList() else retained.map { index ->
+            queueSourceEntryIds.getOrElse(index) { queueEntryIds.getOrElse(index) { 0L } }
+        },
+        deferredLastEntryIds = deferredLastEntryIds - removedEntryIds,
         positionMs = if (changedCurrent) 0L else positionMs,
         autoplayEntryIndices = retained.withIndex().filter { it.value in autoplayEntryIndices }
             .map { it.index }.toSet(),
@@ -138,6 +156,13 @@ class PlaybackPreferences(context: Context) : QueuePreferences {
             preferences.edit().putBoolean(KEY_LYRIC_PRONUNCIATION_ENABLED, value).apply()
         }
 
+    /** Native Larger Text choice; false preserves the existing lyrics-first hierarchy. */
+    var lyricPronunciationLarger: Boolean
+        get() = preferences.getBoolean(KEY_LYRIC_PRONUNCIATION_LARGER, false)
+        set(value) {
+            preferences.edit().putBoolean(KEY_LYRIC_PRONUNCIATION_LARGER, value).apply()
+        }
+
     /** Empty means follow the current app language. */
     var lyricTranslationLanguageTag: String
         get() = preferences.getString(KEY_LYRIC_TRANSLATION_LANGUAGE, "").orEmpty()
@@ -187,6 +212,7 @@ class PlaybackPreferences(context: Context) : QueuePreferences {
         const val KEY_LYRIC_OFFSET_MS = "pref_playback_lyric_offset_ms"
         const val KEY_LYRIC_TRANSLATION_ENABLED = "pref_lyric_translation_enabled"
         const val KEY_LYRIC_PRONUNCIATION_ENABLED = "pref_lyric_pronunciation_enabled"
+        const val KEY_LYRIC_PRONUNCIATION_LARGER = "pref_lyric_pronunciation_larger"
         const val KEY_LYRIC_TRANSLATION_LANGUAGE = "pref_lyric_translation_language"
         const val KEY_LYRIC_PRONUNCIATION_LANGUAGE = "pref_lyric_pronunciation_language"
         const val KEY_LOW_PERFORMANCE_MODE = "pref_playback_low_performance_mode"

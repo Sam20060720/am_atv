@@ -13,6 +13,13 @@ android {
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["androidx.benchmark.compilation.enabled"] = "false"
+        // Optional smaller tester for real TV/ARM emulator runs. Production
+        // APK architecture coverage is configured independently in :app.
+        providers.gradleProperty("amatv.benchmarkAbis").orNull?.let { requested ->
+            val abis = requested.split(',').filter(String::isNotBlank)
+            require(abis.isNotEmpty() && abis.all { it in setOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64") })
+            ndk.abiFilters += abis
+        }
     }
     targetProjectPath = ":app"
     // Exercise the actual Android mask implementation in the self-instrumented

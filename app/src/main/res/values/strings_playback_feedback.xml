@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="playback_feedback_preparing">Preparing playback…</string>
+    <string name="playback_feedback_buffering">Buffering…</string>
+    <string name="playback_feedback_reconnecting">Reconnecting…</string>
+    <string name="playback_feedback_failed">Unable to play.</string>
+    <string name="playback_feedback_retry_hint">Press Play to retry.</string>
+    <string name="playback_feedback_sign_in_hint">Press Play to sign in again.</string>
+</resources>

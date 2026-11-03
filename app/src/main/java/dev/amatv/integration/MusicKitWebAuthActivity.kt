@@ -50,7 +50,6 @@ class MusicKitWebAuthActivity : Activity() {
     private var lastPopupResourceFailure: String? = null
     private var popupPageReady = false
     private var lastPopupReadiness: String? = null
-    private var popupHasShownInteractiveContent = false
     private var mainWebViewDestroyed = false
     private var rendererFailureReported = false
     private val signInUiScript by lazy {
@@ -194,7 +193,6 @@ class MusicKitWebAuthActivity : Activity() {
                     popupWebView?.let(::closePopupWebView)
                     val child = createConfiguredWebView(isPopup = true)
                     popupWebView = child
-                    popupHasShownInteractiveContent = false
                     lastPopupResourceFailure = null
                     browserContainer.addView(
                         child,
@@ -370,7 +368,6 @@ class MusicKitWebAuthActivity : Activity() {
                 // Stop readiness polling before the user starts typing. Input
                 // and authorization have no app-imposed deadline.
                 popupPageReady = true
-                popupHasShownInteractiveContent = true
                 popupLoadGeneration++
                 popup.settings.cacheMode = WebSettings.LOAD_DEFAULT
                 hideStatus()
@@ -417,13 +414,12 @@ class MusicKitWebAuthActivity : Activity() {
     private fun authorizationPage(developerToken: String): String =
         musicKitAuthorizationPage(this, developerToken)
 
-    private fun showStatus(message: String, onRetry: (() -> Unit)? = null) = runOnUiThread {
+    private fun showStatus(message: String) = runOnUiThread {
         status.text = message
         status.visibility = View.VISIBLE
-        status.isClickable = onRetry != null
-        status.isFocusable = onRetry != null
-        status.setOnClickListener(if (onRetry == null) null else View.OnClickListener { onRetry() })
-        if (onRetry != null && !popupHasShownInteractiveContent) status.requestFocus()
+        status.isClickable = false
+        status.isFocusable = false
+        status.setOnClickListener(null)
     }
 
     private fun hideStatus() = runOnUiThread {

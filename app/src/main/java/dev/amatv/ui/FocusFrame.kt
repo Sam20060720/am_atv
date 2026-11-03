@@ -1,5 +1,9 @@
 package dev.amatv.ui
 
+import android.graphics.LinearGradient
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Shader
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -19,13 +23,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 internal data class FocusFrameTarget(
     val key: Any,
@@ -108,6 +109,7 @@ internal fun FocusFrameOverlay(controller: FocusFrameController) {
     val frame = remember { mutableLongStateOf(0L) }
     val retained = remember { arrayOfNulls<FocusFrameTarget>(1) }
     val sampledBounds = remember { arrayOfNulls<Rect>(1) }
+    val painter = remember { FocusFramePainter() }
     LaunchedEffect(controller) {
         var observed: FocusFrameTarget? = null
         var previousNanos = 0L
@@ -163,38 +165,63 @@ internal fun FocusFrameOverlay(controller: FocusFrameController) {
         val w = (width * scale + inset * 2f).coerceAtLeast(0f)
         val h = (height * scale + inset * 2f).coerceAtLeast(0f)
         val r = (radius * scale + inset).coerceAtLeast(0f)
-        val corner = CornerRadius(r)
-        val origin = Offset(x, y)
-        val frameSize = Size(w, h)
-        // Uneven illumination is the characteristic glass edge: white near the
-        // light source, cool and quiet at the bottom right.
-        drawRoundRect(
-            brush = Brush.linearGradient(
-                listOf(
-                    Color.White.copy(alpha = 0.96f * opacity),
-                    Color(0xFFE0F4FF).copy(alpha = 0.66f * opacity),
-                    Color.White.copy(alpha = 0.23f * opacity),
-                    Color.White.copy(alpha = 0.12f * opacity),
-                ),
-                start = Offset(x, y),
-                end = Offset(x + w, y + h),
-            ),
-            topLeft = origin,
-            size = frameSize,
-            cornerRadius = corner,
-            style = Stroke(width = 2.5.dp.toPx()),
-        )
-        drawRoundRect(
-            brush = Brush.verticalGradient(
-                listOf(Color.White.copy(alpha = 0.37f * opacity), Color.Transparent),
-                startY = y + 1.dp.toPx(),
-                endY = y + h * 0.65f,
-            ),
-            topLeft = Offset(x + 2.dp.toPx(), y + 2.dp.toPx()),
-            size = Size((w - 4.dp.toPx()).coerceAtLeast(0f), (h - 4.dp.toPx()).coerceAtLeast(0f)),
-            cornerRadius = CornerRadius((r - 2.dp.toPx()).coerceAtLeast(0f)),
-            style = Stroke(width = 0.7.dp.toPx()),
-        )
+        painter.draw(drawContext.canvas.nativeCanvas, x, y, w, h, r, opacity, density)
+    }
+}
+
+/** Constant gradient colorizers; focus movement changes only their local matrices and paint alpha. */
+private class FocusFramePainter {
+    private val outerGradient = LinearGradient(0f, 0f, 1f, 0f, intArrayOf(
+        android.graphics.Color.argb((255f * .96f).roundToInt(), 255, 255, 255),
+        android.graphics.Color.argb((255f * .66f).roundToInt(), 224, 244, 255),
+        android.graphics.Color.argb((255f * .23f).roundToInt(), 255, 255, 255),
+        android.graphics.Color.argb((255f * .12f).roundToInt(), 255, 255, 255),
+    ), null, Shader.TileMode.CLAMP)
+    private val innerGradient = LinearGradient(0f, 0f, 1f, 0f, intArrayOf(
+        android.graphics.Color.argb((255f * .37f).roundToInt(), 255, 255, 255),
+        android.graphics.Color.TRANSPARENT,
+    ), null, Shader.TileMode.CLAMP)
+    private val outerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        shader = outerGradient
+    }
+    private val innerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        shader = innerGradient
+    }
+    private val matrix = Matrix()
+    private val values = floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 1f)
+
+    private fun position(shader: Shader, x: Float, y: Float, dx: Float, dy: Float) {
+        // Map a unit horizontal gradient by uniform scale+rotation. Stretching
+        // the two axes separately changes the diagonal's color-stop positions.
+        values[0] = dx; values[1] = -dy; values[2] = x
+        values[3] = dy; values[4] = dx; values[5] = y
+        matrix.setValues(values)
+        shader.setLocalMatrix(matrix)
+    }
+
+    fun draw(canvas: android.graphics.Canvas, x: Float, y: Float, w: Float, h: Float,
+        radius: Float, opacity: Float, density: Float) {
+        if (w <= 0f || h <= 0f) return
+        val alpha = (opacity.coerceIn(0f, 1f) * 255f).roundToInt()
+        outerPaint.alpha = alpha
+        innerPaint.alpha = alpha
+        outerPaint.strokeWidth = 2.5f * density
+        innerPaint.strokeWidth = .7f * density
+        position(outerGradient, x, y, w, h)
+        canvas.drawRoundRect(x, y, x + w, y + h, radius, radius, outerPaint)
+        val innerWidth = (w - 4f * density).coerceAtLeast(0f)
+        val innerHeight = (h - 4f * density).coerceAtLeast(0f)
+        val innerRadius = (radius - 2f * density).coerceAtLeast(0f)
+        // Original endpoints are y+1dp and y+.65*h, independent of the inset rect.
+        val span = h * .65f - density
+        if (innerWidth > 0f && innerHeight > 0f && span > 0f) {
+            position(innerGradient, x, y + density, 0f, span)
+            canvas.drawRoundRect(x + 2f * density, y + 2f * density,
+                x + 2f * density + innerWidth, y + 2f * density + innerHeight,
+                innerRadius, innerRadius, innerPaint)
+        }
     }
 }
 

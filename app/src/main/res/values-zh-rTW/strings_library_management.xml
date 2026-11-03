@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_management_edit_playlist">編輯歌單</string>
+    <string name="library_management_edit_folder">編輯資料夾</string>
+    <string name="library_management_rename">重新命名</string>
+    <string name="library_management_name">名稱</string>
+    <string name="library_management_save_name">儲存名稱</string>
+    <string name="library_management_order">調整順序</string>
+    <string name="library_management_save_order">儲存順序</string>
+    <string name="library_management_move">移至資料夾</string>
+    <string name="library_management_move_here">移入「%1$s」</string>
+    <string name="library_management_root">資料庫</string>
+    <string name="library_management_delete_playlist">刪除歌單</string>
+    <string name="library_management_delete_folder">刪除資料夾</string>
+    <string name="library_management_delete_confirm">要刪除「%1$s」嗎？</string>
+    <string name="library_management_cancel">取消</string>
+    <string name="library_management_pending">變更仍待確認，請先確認目前狀態。</string>
+    <string name="library_management_check">確認狀態</string>
+    <string name="library_management_failed">無法更新此項目。</string>
+    <string name="library_management_conflict">歌單已有變更，請重新載入後編輯。</string>
+    <string name="library_management_entry">%1$d. %2$s</string>
+    <string name="library_management_unavailable">無法播放的項目</string>
+    <string name="library_management_read_only">此項目無法編輯。</string>
+    <string name="library_management_remove_song">從資料庫移除</string>
+    <string name="library_management_remove_song_confirm">要從資料庫移除「%1$s」嗎？</string>
+    <string name="library_management_remove_favorite">取消喜好</string>
+    <string name="library_management_favorite_removed">已取消喜好</string>
+</resources>

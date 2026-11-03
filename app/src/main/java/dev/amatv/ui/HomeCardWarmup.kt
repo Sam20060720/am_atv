@@ -18,6 +18,32 @@ internal class HomeCardWarmup {
     private var nextSequence = 0L
     private var lastMountFrame = Long.MIN_VALUE
     private var closed = false
+    private var visibleCards: Set<Any> = emptySet()
+    // Retain only small identity keys, never painters, bitmaps or mount closures.
+    // A lazy slot leaving the viewport is not a first visit when it returns.
+    private val mountedContent = LinkedHashMap<Any, Unit>(128, .75f, true)
+
+    fun wasMounted(key: Any): Boolean = mountedContent[key] != null
+
+    fun rememberMounted(key: Any) {
+        if (closed) return
+        mountedContent[key] = Unit
+        if (mountedContent.size > 256) mountedContent.remove(mountedContent.keys.first())
+    }
+
+    /** One viewport sample serves every pending card; no per-ticket lazy scans. */
+    fun updateVisibleCards(cards: Set<Any>) {
+        if (cards == visibleCards) return
+        visibleCards = cards
+        notifyPrioritiesChanged()
+    }
+
+    /** Lazy stable item keys survive progressive shelf insertions and reordering. */
+    fun priority(cardKey: String, isFocused: Boolean): Int = when {
+        cardKey !in visibleCards -> 2
+        isFocused -> 0
+        else -> 1
+    }
 
     val pendingCount: Int get() = pending.size
 
@@ -73,6 +99,9 @@ internal class HomeCardWarmup {
             if (priority <= 1 && priority < bestPriority) {
                 best = ticket
                 bestPriority = priority
+                // No later ticket can outrank the focused card. Preserve FIFO
+                // for equal priorities without scanning the remaining feed.
+                if (priority == 0) break
             }
         }
         return best
@@ -82,6 +111,8 @@ internal class HomeCardWarmup {
         closed = true
         pending.values.forEach(::release)
         pending.clear()
+        visibleCards = emptySet()
+        mountedContent.clear()
         wakeup.close()
     }
 

@@ -6,6 +6,10 @@ import dev.amatv.model.LyricWord
 import dev.amatv.model.Track
 
 object MockCatalog {
+    /** Missing catalog metadata never turns a real Library resource into a demo. */
+    fun isDemoTrack(item: Track): Boolean = item.catalogId == null && item.resourceId == null &&
+        item.resourceType == null && tracks.any { it.id == item.id }
+
     val tracks = listOf(
         track(
             id = "aurora",

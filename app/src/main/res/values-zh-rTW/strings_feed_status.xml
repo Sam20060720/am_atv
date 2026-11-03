@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="feed_partial_unavailable">部分內容暫時無法更新，目前內容仍可使用。</string>
+    <string name="feed_partial_authorization">請到帳號重新登入，以更新個人內容。</string>
+</resources>

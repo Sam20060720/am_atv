@@ -7,7 +7,6 @@
     <string name="browse_sign_in_tv">在這台電視登入</string>
     <string name="browse_sign_out_tv">從這台電視登出</string>
     <string name="browse_retry_connection">重新嘗試連線</string>
-    <string name="browse_connection_error">無法連線，請重試。</string>
     <string name="browse_ytm_connected">YouTube Music 帳號已連結</string>
     <string name="browse_ytm_recommendations">YouTube Music 推薦</string>
     <string name="browse_pairing_instructions">用手機開啟 %1$s，輸入代碼 %2$s。</string>
@@ -28,13 +27,9 @@
     <string name="browse_ytm_name">YouTube Music</string>
     <string name="browse_apple_name">Apple Music</string>
     <string name="browse_selected_source">✓ %1$s</string>
-    <string name="browse_quick_mandopop">熱門華語</string>
     <string name="browse_search_hint">搜尋藝人、專輯、歌曲或播放列表</string>
     <string name="browse_search_hint_remote">搜尋藝人、專輯、歌曲或播放列表（按確認鍵開啟鍵盤）</string>
-    <string name="browse_search_results">搜尋結果</string>
     <string name="browse_recently_played">最近播放</string>
-    <string name="browse_search_empty">搜尋你喜歡的音樂</string>
-    <string name="browse_search_error">無法搜尋，請重試。</string>
     <string name="browse_content_unavailable">目前無法載入 Apple Music 內容</string>
     <string name="browse_sign_in_personalized">請先登入 Apple Music 帳號以載入你的個人化推薦與媒體庫。</string>
     <string name="browse_check_connection">請檢查網路連線後重試。</string>
@@ -57,25 +52,27 @@
     <string name="browse_play">播放</string>
     <string name="browse_shuffle">隨機播放</string>
     <string name="browse_tracks_empty">目前沒有可播放的歌曲</string>
-    <string name="browse_station_unavailable">目前無法收聽這個電台。</string>
     <string name="browse_back">返回</string>
     <string name="browse_track_index">%1$d</string>
     <string name="browse_song_duration">%1$d:%2$02d</string>
     <string name="browse_duration_hours">%1$d 小時 %2$d 分鐘</string>
     <string name="browse_duration_minutes">%1$d 分鐘</string>
-    <string name="browse_cache_title">封面與歌詞快取</string>
+    <string name="browse_cache_title">內容快取</string>
     <string name="browse_cache_storage">已使用 %1$s · 可用 %2$s</string>
     <string name="browse_cache_storage_low">空間不足，已暫停新增快取</string>
     <string name="browse_cache_disk_on">磁碟快取：開啟</string>
     <string name="browse_cache_disk_off">磁碟快取：關閉</string>
-    <string name="browse_cache_prefetch_on">後兩首封面與歌詞預載：開啟</string>
-    <string name="browse_cache_prefetch_off">後兩首封面與歌詞預載：關閉</string>
+    <string name="browse_cache_prefetch_on">背景預載：開啟</string>
+    <string name="browse_cache_prefetch_off">背景預載：關閉</string>
     <string name="browse_cache_clearing">清除中…</string>
-    <string name="browse_cache_clear">清除封面與歌詞快取</string>
+    <string name="browse_cache_clear">清除內容快取</string>
     <string name="browse_cache_clear_error">部分快取無法清除，請重試。</string>
     <string name="browse_cache_gigabytes">%1$.1f GB</string>
     <string name="browse_cache_megabytes">%1$d MB</string>
     <plurals name="browse_song_count">
         <item quantity="other">%1$d 首歌曲</item>
     </plurals>
+    <string name="browse_navigation_menu">導覽選單</string>
+    <string name="browse_navigation_expanded">已展開</string>
+    <string name="browse_navigation_collapsed">已收合</string>
 </resources>

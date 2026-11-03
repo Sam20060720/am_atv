@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="apple_music_manage_action">Manage in Apple Music</string>
+    <string name="apple_music_manage_title">Manage on Your Phone</string>
+    <string name="apple_music_manage_instructions">Scan with your phone to manage favorites or edit playlists in Apple Music. When finished, choose Done to refresh the status.</string>
+    <string name="apple_music_manage_done">Done</string>
+    <string name="actions_favorite_requested">Favorite request sent</string>
+    <string name="actions_favorite_unconfirmed">The favorite status could not be confirmed. Refresh the status before trying again.</string>
+    <string name="apple_music_manage_qr_unavailable">Could not create the QR code. Please try again.</string>
+</resources>

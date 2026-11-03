@@ -8,6 +8,7 @@ import android.opengl.EGLContext
 import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
 import android.opengl.GLES20
+import android.opengl.GLES30
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process
@@ -20,18 +21,11 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.roundToInt
 
-/** TextureView participates in the same composition as lyrics/focus; no separate surface hole. */
-internal class LavaBackdropView(context: Context) : TextureView(context), TextureView.SurfaceTextureListener {
+/** Keep only the phase/envelopes while its native output is not on screen. */
+internal class LavaBackdropController {
     private val worker = LavaRenderWorker()
     private var lastColors = IntArray(0)
     private var lastRunning = false
-
-    init {
-        isOpaque = true
-        isFocusable = false
-        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-        surfaceTextureListener = this
-    }
 
     fun update(colors: IntArray, running: Boolean, source: () -> AudioSpectrum) {
         worker.spectrum = source
@@ -45,6 +39,24 @@ internal class LavaBackdropView(context: Context) : TextureView(context), Textur
         }
     }
 
+    fun attach(surface: SurfaceTexture, width: Int, height: Int) = worker.attach(surface, width, height)
+    fun resize(surface: SurfaceTexture, width: Int, height: Int) = worker.resize(surface, width, height)
+    fun detach(surface: SurfaceTexture) = worker.detach(surface)
+    fun close() = worker.close()
+}
+
+/** TextureView participates in the same composition as lyrics/focus; no separate surface hole. */
+internal class LavaBackdropView(context: Context, private val renderer: LavaBackdropController) : TextureView(context), TextureView.SurfaceTextureListener {
+    private var ownedSurface: SurfaceTexture? = null
+    private var released = false
+
+    init {
+        isOpaque = true
+        isFocusable = false
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        surfaceTextureListener = this
+    }
+
     private fun bufferSize(width: Int, height: Int): Pair<Int, Int> {
         // Heavy blur needs no full-HD producer texture. Keep the original aspect, and let
         // TextureView's hardware composition enlarge this bounded texture behind the UI.
@@ -54,21 +66,32 @@ internal class LavaBackdropView(context: Context) : TextureView(context), Textur
         return w to h
     }
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+        ownedSurface = surface
+        if (released) return
         val (w, h) = bufferSize(width, height)
-        worker.attach(surface, w, h)
+        renderer.attach(surface, w, h)
     }
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+        if (released || ownedSurface !== surface) return
         val (w, h) = bufferSize(width, height)
-        worker.resize(surface, w, h)
+        renderer.resize(surface, w, h)
     }
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-        worker.detach(surface)
+        if (ownedSurface === surface) {
+            ownedSurface = null
+            renderer.detach(surface)
+        }
         // Release only after the producer thread has stopped using this surface.
         return false
     }
 
-    fun release() = worker.close()
+    fun release() {
+        released = true
+        // TextureView destroys its HWUI layer before invoking Destroyed. Let
+        // that callback hand off the SurfaceTexture, never free the consumer
+        // early merely because Compose has begun removing its AndroidView.
+    }
 }
 
 private class LavaRenderWorker {
@@ -78,17 +101,27 @@ private class LavaRenderWorker {
     @Volatile var spectrum: () -> AudioSpectrum = { SILENCE }
     @Volatile private var closed = false
     private var surface: SurfaceTexture? = null
+    private var surfaceWidth = 1
+    private var surfaceHeight = 1
+    private val recovery = BackdropRecovery()
+    private val recover = Runnable {
+        if (!closed && surface != null && egl == null) createSession()
+    }
     private var egl: LavaEglSession? = null
     private var enabled = false
     private var scheduled = false
     private var previousFrame = 0L
-    private var lastRenderNanos = 0L
     private var settlingFrames = 0
     private val motion = BackdropMotion()
     private val palette = LavaPaletteTransition(LavaPalette.from(intArrayOf(0xFF33333B.toInt())))
     private var activeFrames = 0
     private var drawNanos = 0L
     private var maximumDrawNanos = 0L
+    private var swapNanos = 0L
+    private var maximumSwapNanos = 0L
+    private var cadenceNanos = 0L
+    private var cadenceSamples = 0
+    private var maximumCadenceNanos = 0L
     private val bandMaximum = FloatArray(3)
     private var responseFrames = 0
     private var responseWindows = 0
@@ -99,28 +132,39 @@ private class LavaRenderWorker {
         val session = egl
         if (!closed && session != null) {
             try {
-                if (enabled && lastRenderNanos != 0L && (timestamp - lastRenderNanos) < 32_000_000L) {
-                    requestFrame()
-                    return@FrameCallback
-                }
-                lastRenderNanos = timestamp
                 val measured = if (enabled) spectrum() else SILENCE
                 if (enabled && previousFrame != 0L) {
-                    motion.advance(timestamp - previousFrame, measured)
+                    val interval = timestamp - previousFrame
+                    motion.advance(interval, measured)
+                    if (activeFrames < 300) {
+                        cadenceNanos += interval
+                        maximumCadenceNanos = maxOf(maximumCadenceNanos, interval)
+                        cadenceSamples++
+                    }
                 }
                 previousFrame = if (enabled) timestamp else 0L
-                val start = System.nanoTime()
-                session.draw(motion, palette.sample(timestamp))
-                val duration = System.nanoTime() - start
-                if (enabled && activeFrames < 300) {
+                val measureFrame = enabled && activeFrames < 300
+                val start = if (measureFrame) System.nanoTime() else 0L
+                session.draw(motion, palette.sample(timestamp), measureFrame)
+                val duration = if (measureFrame) System.nanoTime() - start else 0L
+                val swapStart = if (measureFrame) System.nanoTime() else 0L
+                session.swap()
+                val swapDuration = if (measureFrame) System.nanoTime() - swapStart else 0L
+                if (measureFrame) {
                     drawNanos += duration
                     maximumDrawNanos = maxOf(maximumDrawNanos, duration)
+                    swapNanos += swapDuration
+                    maximumSwapNanos = maxOf(maximumSwapNanos, swapDuration)
                     bandMaximum[0] = maxOf(bandMaximum[0], motion.bass)
                     bandMaximum[1] = maxOf(bandMaximum[1], motion.mid)
                     bandMaximum[2] = maxOf(bandMaximum[2], motion.treble)
                     activeFrames++
                     if (activeFrames == 300) {
-                        Log.i(TAG, "300 frames; CPU submit mean=${drawNanos / 300_000}us max=${maximumDrawNanos / 1_000}us; measured band maxima=${bandMaximum.joinToString { (it * 100).roundToInt().toString() }}%")
+                        Log.i(TAG, "300 frames; CPU submit mean=${drawNanos / 300_000}us max=${maximumDrawNanos / 1_000}us; " +
+                            "swap mean=${swapNanos / 300_000}us max=${maximumSwapNanos / 1_000}us; " +
+                            "${session.gpuTiming()}; " +
+                            "display callback mean=${if (cadenceSamples > 0) cadenceNanos / cadenceSamples / 1_000 else -1}us max=${maximumCadenceNanos / 1_000}us; " +
+                            "measured band maxima=${bandMaximum.joinToString { (it * 100).roundToInt().toString() }}%")
                     }
                 }
                 if (enabled && measured.available && motion.elapsedNanos > 2_000_000_000L && responseWindows < 4) {
@@ -137,13 +181,14 @@ private class LavaRenderWorker {
                         responseRange[2] = 1f; responseRange[3] = 0f
                     }
                 }
-                session.swap()
+                recovery.succeeded()
                 settlingFrames = (settlingFrames - 1).coerceAtLeast(0)
                 if (enabled || settlingFrames > 0 || palette.isChanging(timestamp)) requestFrame()
             } catch (error: Throwable) {
                 // Keep the last complete texture instead of clearing/retrying every frame.
-                Log.e(TAG, "Native background stopped after a renderer failure", error)
+                Log.e(TAG, "Native background renderer interrupted", error)
                 destroySession()
+                scheduleRecovery()
             }
         }
     }
@@ -162,26 +207,62 @@ private class LavaRenderWorker {
     fun running(value: Boolean) { handler.post {
         enabled = value
         previousFrame = 0L
-        lastRenderNanos = 0L
-        requestFrame()
+        if (value && egl == null && surface != null) {
+            // A new visible playback visit may retry a route whose previous
+            // consecutive failures exhausted the bounded recovery allowance.
+            recovery.succeeded()
+            handler.removeCallbacks(recover)
+            createSession()
+        } else requestFrame()
     } }
 
-    fun attach(texture: SurfaceTexture, width: Int, height: Int) { handler.post {
-        if (closed) return@post
-        destroySession()
-        surface = texture
+    private fun createSession() {
+        val texture = surface ?: return
+        if (closed) return
         try {
-            egl = LavaEglSession(texture, width, height)
+            egl = LavaEglSession(texture, surfaceWidth, surfaceHeight)
             settlingFrames = 2
             requestFrame()
         } catch (error: Throwable) {
             Log.e(TAG, "Native background initialization failed", error)
+            scheduleRecovery()
         }
-    } }
+    }
+
+    private fun scheduleRecovery() {
+        if (closed || surface == null) return
+        val delay = recovery.retryDelayMs() ?: return
+        handler.removeCallbacks(recover)
+        handler.postDelayed(recover, delay)
+    }
+
+    fun attach(texture: SurfaceTexture, width: Int, height: Int) {
+        handler.post {
+            // The View still owns its live consumer until Destroyed; that
+            // callback also releases a texture when this worker has quit.
+            if (closed) return@post
+            handler.removeCallbacks(recover)
+            recovery.succeeded()
+            destroySession()
+            surface = texture
+            surfaceWidth = width
+            surfaceHeight = height
+            createSession()
+            Log.i(TAG, "Output attached ${width}x$height; retained phase=${motion.elapsedNanos}ns")
+        }
+    }
 
     fun resize(texture: SurfaceTexture, width: Int, height: Int) { handler.post {
         if (closed || surface !== texture) return@post
+        surfaceWidth = width
+        surfaceHeight = height
         try {
+            if (egl == null) {
+                handler.removeCallbacks(recover)
+                recovery.succeeded()
+                createSession()
+                return@post
+            }
             egl?.resize(width, height)
             // A paused player also needs the resized producer's first complete buffers.
             settlingFrames = 2
@@ -189,12 +270,18 @@ private class LavaRenderWorker {
         } catch (error: Throwable) {
             Log.e(TAG, "Native background resize failed", error)
             destroySession()
+            scheduleRecovery()
         }
     } }
 
     fun detach(texture: SurfaceTexture) {
         if (!handler.post {
-            if (surface === texture) { destroySession(); surface = null }
+            if (surface === texture) {
+                handler.removeCallbacks(recover)
+                destroySession()
+                surface = null
+                Log.i(TAG, "Output released; retained phase=${motion.elapsedNanos}ns")
+            }
             texture.release()
         }) texture.release()
     }
@@ -203,6 +290,7 @@ private class LavaRenderWorker {
         if (closed) return
         closed = true
         handler.post {
+            handler.removeCallbacks(recover)
             destroySession()
             surface = null
             thread.quitSafely()
@@ -213,7 +301,6 @@ private class LavaRenderWorker {
         if (scheduled) choreographer.removeFrameCallback(frame)
         scheduled = false
         previousFrame = 0L
-        lastRenderNanos = 0L
         settlingFrames = 0
         egl?.release()
         egl = null
@@ -233,6 +320,7 @@ private class LavaEglSession(private val texture: SurfaceTexture, width: Int, he
     private val surfaceSize = IntArray(2)
     private val window = Surface(texture)
     private var renderer: LavaGlRenderer? = null
+    private var viewportSettlingFrames = 0
 
     init {
         try {
@@ -280,6 +368,10 @@ private class LavaEglSession(private val texture: SurfaceTexture, width: Int, he
         check(EGL14.eglMakeCurrent(display, eglSurface, eglSurface, context))
         check(EGL14.eglSwapInterval(display, 1))
         synchronizeViewport()
+        // Some producers apply the requested buffer size only after the first swap.
+        // Recheck a bounded settling window rather than trusting the requested size
+        // or permanently querying the driver on every animation frame.
+        viewportSettlingFrames = 8
     }
 
     private fun synchronizeViewport() {
@@ -301,10 +393,14 @@ private class LavaEglSession(private val texture: SurfaceTexture, width: Int, he
         createWindowSurface(width, height)
     }
 
-    fun draw(motion: BackdropMotion, colors: FloatArray) {
-        synchronizeViewport()
-        renderer?.draw(motion, colors)
+    fun draw(motion: BackdropMotion, colors: FloatArray, measureGpu: Boolean) {
+        if (viewportSettlingFrames > 0) {
+            synchronizeViewport()
+            viewportSettlingFrames--
+        }
+        renderer?.draw(motion, colors, measureGpu)
     }
+    fun gpuTiming(): String = renderer?.gpuTiming() ?: "GPU timer unavailable"
     fun swap() { check(EGL14.eglSwapBuffers(display, eglSurface)) { "EGL swap failed: ${EGL14.eglGetError()}" } }
     fun release() {
         if (display != EGL14.EGL_NO_DISPLAY) {
@@ -341,6 +437,7 @@ private class LavaGlRenderer(private var width: Int, private var height: Int) {
     private var bufferHeight = 0
     private val halfFloatType: Int
     private val halfFloatFormat: Int
+    private val gpuTimer: LavaGpuTimer?
 
     init {
         GLES20.glDisable(GLES20.GL_DEPTH_TEST)
@@ -357,6 +454,7 @@ private class LavaGlRenderer(private var width: Int, private var height: Int) {
         }
         val extensions = GLES20.glGetString(GLES20.GL_EXTENSIONS).orEmpty()
         val es3 = GLES20.glGetString(GLES20.GL_VERSION).orEmpty().contains("OpenGL ES 3")
+        gpuTimer = if (es3 && extensions.split(' ').contains("GL_EXT_disjoint_timer_query")) LavaGpuTimer.create() else null
         halfFloatType = when {
             es3 -> 0x140B // GL_HALF_FLOAT
             listOf("GL_OES_texture_half_float", "GL_OES_texture_half_float_linear", "GL_EXT_color_buffer_half_float").all(extensions::contains) -> 0x8D61
@@ -365,7 +463,7 @@ private class LavaGlRenderer(private var width: Int, private var height: Int) {
         halfFloatFormat = if (es3) 0x881A else GLES20.GL_RGBA // GL_RGBA16F on ES3
         GLES20.glEnableVertexAttribArray(0)
         GLES20.glVertexAttribPointer(0, 2, GLES20.GL_FLOAT, false, 0, vertices)
-        Log.i("AMATV-lava", "Native ${GLES20.glGetString(GLES20.GL_VERSION)} ${GLES20.glGetString(GLES20.GL_RENDERER)}; half-float candidate=${halfFloatType != 0}")
+        Log.i("AMATV-lava", "Native ${GLES20.glGetString(GLES20.GL_VERSION)} ${GLES20.glGetString(GLES20.GL_RENDERER)}; half-float candidate=${halfFloatType != 0}; nonblocking GPU timer=${gpuTimer != null}")
     }
 
     fun resize(w: Int, h: Int) { width = w.coerceAtLeast(1); height = h.coerceAtLeast(1) }
@@ -381,7 +479,7 @@ private class LavaGlRenderer(private var width: Int, private var height: Int) {
         return GLES20.glGetError() == GLES20.GL_NO_ERROR
     }
 
-    fun draw(motion: BackdropMotion, palette: FloatArray) {
+    fun draw(motion: BackdropMotion, palette: FloatArray, measureGpu: Boolean) {
         val aspect = width.toFloat() / height.coerceAtLeast(1)
         val lowHeight = 128
         val lowWidth = (lowHeight * aspect).roundToInt().coerceIn(64, 512)
@@ -394,6 +492,9 @@ private class LavaGlRenderer(private var width: Int, private var height: Int) {
             }
             Log.i("AMATV-lava", "Field ${bufferWidth}x$bufferHeight; intermediate=${if (highPrecision) "RGBA16F" else "RGBA8"}; output=${width}x$height")
         }
+        // The diagnostic window is bounded too: no query polling once its report
+        // has been emitted. Unsupported devices use exactly the normal draw path.
+        if (measureGpu) gpuTimer?.begin()
         GLES20.glUseProgram(field)
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, targets[0])
         GLES20.glViewport(0, 0, bufferWidth, bufferHeight)
@@ -410,7 +511,10 @@ private class LavaGlRenderer(private var width: Int, private var height: Int) {
         GLES20.glUniform2f(blurStepLocation, 0f, .02475f)
         sample(blur, textures[1], targets[0], bufferWidth, bufferHeight)
         sample(output, textures[0], 0, width, height)
+        if (measureGpu) gpuTimer?.end()
     }
+
+    fun gpuTiming(): String = gpuTimer?.report() ?: "GPU timer unavailable"
 
     private fun sample(program: Int, texture: Int, destination: Int, w: Int, h: Int) {
         GLES20.glUseProgram(program)
@@ -423,6 +527,7 @@ private class LavaGlRenderer(private var width: Int, private var height: Int) {
     }
 
     fun release() {
+        gpuTimer?.release()
         GLES20.glDeleteFramebuffers(2, targets, 0)
         GLES20.glDeleteTextures(2, textures, 0)
         GLES20.glDeleteProgram(field); GLES20.glDeleteProgram(blur); GLES20.glDeleteProgram(output)
@@ -497,5 +602,79 @@ private class LavaGlRenderer(private var width: Int, private var height: Int) {
               float n=fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(.06711056,.00583715))))-.5;
               gl_FragColor=vec4(clamp(color+n/255.,0.,1.),1.);}
         """.trimIndent()
+    }
+}
+
+/** Optional diagnostics: consume only completed queries; never wait for the GPU or call glFinish. */
+private class LavaGpuTimer private constructor() {
+    private val queries = IntArray(4)
+    private val pending = BooleanArray(4)
+    private val valid = BooleanArray(4)
+    private val completed = BooleanArray(4)
+    private val value = IntArray(1)
+    private var next = 0
+    private var active = -1
+    private var samples = 0
+    private var totalNanos = 0L
+    private var maximumNanos = 0L
+
+    init { GLES30.glGenQueries(queries.size, queries, 0) }
+
+    fun begin() {
+        // A query older than this frame may still be queued behind other GPU work.
+        // Leave it alone until availability is true rather than serializing rendering.
+        for (index in queries.indices) {
+            completed[index] = false
+            if (pending[index]) {
+                GLES30.glGetQueryObjectuiv(queries[index], GLES30.GL_QUERY_RESULT_AVAILABLE, value, 0)
+                completed[index] = value[0] != 0
+            }
+        }
+        GLES20.glGetIntegerv(GPU_DISJOINT, value, 0)
+        if (value[0] != 0) valid.fill(false)
+        for (index in queries.indices) {
+            if (!completed[index]) continue
+            GLES30.glGetQueryObjectuiv(queries[index], GLES30.GL_QUERY_RESULT, value, 0)
+            pending[index] = false
+            // The Java ES3 API exposes the 32-bit getter. A saturated result is
+            // not a usable sub-frame duration, and must not be reported as one.
+            if (valid[index] && value[0] != 0 && value[0] != -1) {
+                val duration = value[0].toLong() and 0xffffffffL
+                totalNanos += duration
+                maximumNanos = maxOf(maximumNanos, duration)
+                samples++
+            }
+        }
+        if (!pending[next]) {
+            active = next
+            valid[active] = true
+            GLES30.glBeginQuery(TIME_ELAPSED, queries[next])
+            next = (next + 1) % queries.size
+        }
+    }
+
+    fun end() {
+        if (active < 0) return
+        GLES30.glEndQuery(TIME_ELAPSED)
+        pending[active] = true
+        active = -1
+    }
+
+    fun release() { GLES30.glDeleteQueries(queries.size, queries, 0) }
+
+    fun report(): String = if (samples == 0) "GPU timer unavailable: no positive valid results"
+        else "GPU samples=$samples mean=${totalNanos / samples / 1_000}us max=${maximumNanos / 1_000}us"
+
+    companion object {
+        const val TIME_ELAPSED = 0x88BF // GL_TIME_ELAPSED_EXT
+        const val GPU_DISJOINT = 0x8FBB // GL_GPU_DISJOINT_EXT
+        private const val QUERY_COUNTER_BITS = 0x8864 // GL_QUERY_COUNTER_BITS_EXT
+
+        fun create(): LavaGpuTimer? {
+            val bits = IntArray(1)
+            GLES30.glGetQueryiv(TIME_ELAPSED, QUERY_COUNTER_BITS, bits, 0)
+            // EXT allows a zero-bit counter, which cannot provide timings.
+            return if (bits[0] >= 30) LavaGpuTimer() else null
+        }
     }
 }

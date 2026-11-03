@@ -2,9 +2,9 @@
 <resources>
     <string name="language_title">語言</string>
     <string name="language_system">跟隨系統</string>
-    <string name="nav_home">現在收聽</string>
-    <string name="nav_browse">最新發行</string>
-    <string name="nav_sing">歡唱</string>
+    <string name="nav_home">首頁</string>
+    <string name="nav_browse">新發現</string>
+    <string name="nav_sing">開唱</string>
     <string name="nav_videos">音樂影片</string>
     <string name="nav_radio">廣播</string>
     <string name="nav_library">資料庫</string>

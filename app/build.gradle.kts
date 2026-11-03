@@ -1,6 +1,7 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import com.android.build.api.instrumentation.FramesComputationMode
 import com.android.build.api.instrumentation.InstrumentationScope
+import dev.amatv.build.HomePrefetchBudgetVisitorFactory
 import dev.amatv.build.MusicKitSongIdVisitorFactory
 import dev.amatv.build.MusicKitStackMapFrames
 import dev.amatv.build.VerifyMusicKitSdkTask
@@ -45,6 +46,9 @@ android {
 
         buildConfigField("String", "AUTH_BROWSER_ACTIVITY", "\"dev.amatv.integration.MusicKitWebAuthActivity\"")
         buildConfigField("boolean", "AUTH_BROWSER_IS_GECKO", "false")
+        val nativePlayerBackdrop = providers.gradleProperty("amatv.nativeBackdrop").getOrElse("true")
+        require(nativePlayerBackdrop in setOf("true", "false")) { "amatv.nativeBackdrop must be true or false" }
+        buildConfigField("boolean", "NATIVE_PLAYER_BACKDROP", nativePlayerBackdrop)
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField(
@@ -156,6 +160,11 @@ androidComponents {
         ) { parameters ->
             parameters.frameRepairClasses.set(musicKitFrameRepairClasses)
         }
+        // Backport a finite idle-prefetch deadline for the pinned Foundation SDK.
+        variant.instrumentation.transformClassesWith(
+            HomePrefetchBudgetVisitorFactory::class.java,
+            InstrumentationScope.ALL,
+        ) { }
         variant.instrumentation.setAsmFramesComputationMode(
             FramesComputationMode.COMPUTE_FRAMES_FOR_INSTRUMENTED_CLASSES,
         )
@@ -189,7 +198,17 @@ dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("androidx.appcompat:appcompat:1.8.0")
-    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.foundation:foundation") {
+        // The guarded idle-prefetch bytecode backport matches this exact SDK.
+        // Remove the backport and this pin when adopting the upstream fix.
+        version { strictly("1.11.4") }
+    }
+    constraints {
+        implementation("androidx.compose.foundation:foundation-android") {
+            version { strictly("1.11.4") }
+            because("The idle-prefetch backport validates Foundation 1.11.4 bytecode")
+        }
+    }
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
@@ -200,6 +219,13 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.11.0")
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
+    implementation("com.google.zxing:core:3.5.4")
+
+    // Composition names in Perfetto only for the profileable benchmark APK.
+    // The native binary lets the shell TracingReceiver load tracing without
+    // side-loading libraries; its version matches runtime-tracing's bridge.
+    add("benchmarkImplementation", "androidx.compose.runtime:runtime-tracing")
+    add("benchmarkImplementation", "androidx.tracing:tracing-perfetto-binary:1.0.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")

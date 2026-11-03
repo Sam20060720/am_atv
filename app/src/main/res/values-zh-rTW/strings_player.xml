@@ -7,7 +7,6 @@
     <string name="player_lyrics">歌詞</string>
     <string name="player_lyrics_display_settings">歌詞顯示</string>
     <string name="player_lyrics_display_title">歌詞翻譯與發音</string>
-    <string name="player_lyrics_language_follow_app">翻譯語言會跟隨 App 語言。</string>
     <string name="player_lyrics_source_language">原文語言</string>
     <string name="player_lyrics_source_auto">由 Apple Music 自動辨識</string>
     <string name="player_lyrics_translate_to">翻譯成</string>
@@ -24,6 +23,9 @@
     <string name="player_lyrics_pronunciation">發音</string>
     <string name="player_lyrics_pronunciation_hint">在原文上方顯示羅馬拼音或注音</string>
     <string name="player_lyrics_pronunciation_unavailable">這首歌沒有提供發音</string>
+    <string name="player_lyrics_larger_text">較大文字</string>
+    <string name="player_lyrics_larger_lyrics">放大歌詞</string>
+    <string name="player_lyrics_larger_pronunciation">放大發音</string>
     <string name="player_lyrics_enhancement_loading">正在載入本地化歌詞…</string>
     <string name="player_lyrics_enhancement_load_failed">本地化歌詞載入失敗，請稍後再試</string>
     <string name="player_lyrics_display_on">開啟</string>
@@ -48,4 +50,15 @@
     <string name="player_artwork_loaded">已載入</string>
     <string name="player_loading">載入中</string>
     <string name="player_artwork_description">%1$s 封面</string>
+    <string name="actions_play_next">下一首播放</string>
+    <string name="actions_play_last">最後播放</string>
+    <string name="actions_queue_failed">無法加入目前的播放佇列</string>
+    <string name="actions_queue_remove">從待播佇列移除</string>
+    <string name="actions_queue_move_up">往前移動</string>
+    <string name="actions_queue_move_down">往後移動</string>
+    <string name="actions_sleep_timer">睡眠定時器</string>
+    <string name="actions_sleep_timer_off">關閉</string>
+    <string name="actions_sleep_timer_minutes">%1$d 分鐘</string>
+    <string name="actions_sleep_timer_track_end">目前曲目結束時</string>
+    <string name="actions_sleep_timer_context_end">本專輯／播放列表結束時</string>
 </resources>

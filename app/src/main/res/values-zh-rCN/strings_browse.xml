@@ -7,7 +7,6 @@
     <string name="browse_sign_in_tv">在这台电视登录</string>
     <string name="browse_sign_out_tv">从这台电视退出登录</string>
     <string name="browse_retry_connection">重试连接</string>
-    <string name="browse_connection_error">无法连接，请重试。</string>
     <string name="browse_ytm_connected">YouTube Music 账号已关联</string>
     <string name="browse_ytm_recommendations">YouTube Music 推荐</string>
     <string name="browse_pairing_instructions">用手机打开 %1$s，输入代码 %2$s。</string>
@@ -28,13 +27,9 @@
     <string name="browse_ytm_name">YouTube Music</string>
     <string name="browse_apple_name">Apple Music</string>
     <string name="browse_selected_source">✓ %1$s</string>
-    <string name="browse_quick_mandopop">热门华语</string>
     <string name="browse_search_hint">搜索艺人、专辑、歌曲或播放列表</string>
     <string name="browse_search_hint_remote">搜索艺人、专辑、歌曲或播放列表（按确认键打开键盘）</string>
-    <string name="browse_search_results">搜索结果</string>
     <string name="browse_recently_played">最近播放</string>
-    <string name="browse_search_empty">搜索你喜欢的音乐</string>
-    <string name="browse_search_error">无法搜索，请重试。</string>
     <string name="browse_content_unavailable">目前无法载入 Apple Music 内容</string>
     <string name="browse_sign_in_personalized">请先登录 Apple Music 账号以载入你的个性化推荐与资料库。</string>
     <string name="browse_check_connection">请检查网络连接后重试。</string>
@@ -57,25 +52,27 @@
     <string name="browse_play">播放</string>
     <string name="browse_shuffle">随机播放</string>
     <string name="browse_tracks_empty">目前没有可播放的歌曲</string>
-    <string name="browse_station_unavailable">目前无法收听这个电台。</string>
     <string name="browse_back">返回</string>
     <string name="browse_track_index">%1$d</string>
     <string name="browse_song_duration">%1$d:%2$02d</string>
     <string name="browse_duration_hours">%1$d 小时 %2$d 分钟</string>
     <string name="browse_duration_minutes">%1$d 分钟</string>
-    <string name="browse_cache_title">封面与歌词缓存</string>
+    <string name="browse_cache_title">内容缓存</string>
     <string name="browse_cache_storage">已使用 %1$s · 可用 %2$s</string>
     <string name="browse_cache_storage_low">空间不足，已暂停新增缓存</string>
     <string name="browse_cache_disk_on">磁盘缓存：开启</string>
     <string name="browse_cache_disk_off">磁盘缓存：关闭</string>
-    <string name="browse_cache_prefetch_on">后两首封面与歌词预载：开启</string>
-    <string name="browse_cache_prefetch_off">后两首封面与歌词预载：关闭</string>
+    <string name="browse_cache_prefetch_on">后台预载：开启</string>
+    <string name="browse_cache_prefetch_off">后台预载：关闭</string>
     <string name="browse_cache_clearing">清除中…</string>
-    <string name="browse_cache_clear">清除封面与歌词缓存</string>
+    <string name="browse_cache_clear">清除内容缓存</string>
     <string name="browse_cache_clear_error">部分缓存无法清除，请重试。</string>
     <string name="browse_cache_gigabytes">%1$.1f GB</string>
     <string name="browse_cache_megabytes">%1$d MB</string>
     <plurals name="browse_song_count">
         <item quantity="other">%1$d 首歌曲</item>
     </plurals>
+    <string name="browse_navigation_menu">导航菜单</string>
+    <string name="browse_navigation_expanded">已展开</string>
+    <string name="browse_navigation_collapsed">已收起</string>
 </resources>

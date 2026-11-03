@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="recovery_sign_in_required">Sign in again to continue.</string>
+    <string name="recovery_more_sign_in_required">Sign in again to load more content.</string>
+    <string name="recovery_content_unavailable">This content is unavailable or is not offered in your region.</string>
+    <string name="recovery_more_unavailable">The remaining content is unavailable or is not offered in your region.</string>
+    <string name="recovery_connection_failed">Unable to connect right now. Please try again.</string>
+    <string name="recovery_more_connection_failed">Unable to load more. Your current content is still available.</string>
+    <string name="recovery_sign_in">Sign In Again</string>
+    <string name="recovery_retry">Retry</string>
+</resources>

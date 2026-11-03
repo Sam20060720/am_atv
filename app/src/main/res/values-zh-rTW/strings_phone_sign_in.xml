@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="phone_sign_in_title">在手機上登入</string>
+    <string name="phone_sign_in_instructions">讓手機與電視連上相同 Wi-Fi，再掃描此代碼登入 Apple Music。</string>
+    <string name="phone_sign_in_starting">正在準備登入…</string>
+    <string name="phone_sign_in_waiting">請使用手機掃描代碼。</string>
+    <string name="phone_sign_in_authorizing">請在手機上完成登入。</string>
+    <string name="phone_sign_in_complete">已完成登入。</string>
+    <string name="phone_sign_in_expired">代碼已過期，請取得新代碼再繼續。</string>
+    <string name="phone_sign_in_failed">無法啟動手機登入。</string>
+    <string name="phone_sign_in_retry">重試</string>
+    <string name="phone_sign_in_cancel">取消</string>
+    <string name="phone_sign_in_done">完成</string>
+    <string name="phone_sign_in_qr_description">掃描以在此電視登入 Apple Music</string>
+</resources>

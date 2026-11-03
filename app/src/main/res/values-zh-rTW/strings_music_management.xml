@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="apple_music_manage_action">在 Apple Music 管理</string>
+    <string name="apple_music_manage_title">使用手機管理</string>
+    <string name="apple_music_manage_instructions">用手機掃描，在 Apple Music 管理喜好項目或編輯歌單。完成後按「完成」更新狀態。</string>
+    <string name="apple_music_manage_done">完成</string>
+    <string name="actions_favorite_requested">喜好項目請求已送出</string>
+    <string name="actions_favorite_unconfirmed">尚無法確認喜好狀態，請先重新整理狀態。</string>
+    <string name="apple_music_manage_qr_unavailable">無法產生 QR Code，請稍後再試。</string>
+</resources>

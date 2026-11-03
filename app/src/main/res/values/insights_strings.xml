@@ -1,0 +1,23 @@
+<resources>
+    <string name="insights_show_all">Show All</string>
+    <string name="insights_recent_tracks">Recently Played Songs</string>
+    <string name="insights_recent_resources">Recently Played Collections</string>
+    <string name="insights_heavy_rotation">Heavy Rotation</string>
+    <string name="insights_replay">Replay</string>
+    <string name="insights_recommendations">Made for You</string>
+    <string name="insights_recent_stations">Recently Played Stations</string>
+    <string name="insights_top_songs">Top Songs</string>
+    <string name="insights_top_albums">Top Albums</string>
+    <string name="insights_top_artists">Top Artists</string>
+    <string name="insights_period_year">Year</string>
+    <string name="insights_period_month">Month</string>
+    <string name="insights_period_label">%1$s · %2$s</string>
+    <string name="insights_empty">No items to show yet.</string>
+    <string name="insights_no_replay">Your Replay isn’t available yet.</string>
+    <string name="insights_replay_view_missing">This Replay collection isn’t available.</string>
+    <string name="insights_replay_summary_missing">This Replay is no longer in the latest results.</string>
+    <string name="insights_sign_in">Sign in to Apple Music to see your listening.</string>
+    <string name="insights_unavailable">This collection isn’t available right now.</string>
+    <string name="insights_request_failed">Couldn’t load your listening.</string>
+    <string name="insights_partial">Some items are temporarily unavailable.</string>
+</resources>

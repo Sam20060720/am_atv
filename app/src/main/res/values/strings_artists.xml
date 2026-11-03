@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="artist_library_albums">In Your Library</string>
+    <string name="artist_top_songs">Top Songs</string>
+    <string name="artist_latest_release">Latest Release</string>
+    <string name="artist_featured_albums">Essential Albums</string>
+    <string name="artist_full_albums">Studio Albums</string>
+    <string name="artist_singles">Singles &amp; EPs</string>
+    <string name="artist_live_albums">Live Albums</string>
+    <string name="artist_compilation_albums">Compilations</string>
+    <string name="artist_appears_on">Appears On</string>
+    <string name="artist_featured_playlists">Featured Playlists</string>
+    <string name="artist_playlists">Playlists</string>
+    <string name="artist_similar_artists">Similar Artists</string>
+    <string name="artist_featured_videos">Featured Music Videos</string>
+    <string name="artist_top_videos">Top Music Videos</string>
+    <string name="artist_videos">Music Videos</string>
+    <string name="artist_albums">All Albums</string>
+    <string name="artist_station">Artist Station</string>
+    <string name="artist_play_top_songs">Play Top Songs</string>
+    <string name="artist_read_more">Read More</string>
+    <string name="artist_show_less">Show Less</string>
+    <string name="artist_more">Show More</string>
+</resources>

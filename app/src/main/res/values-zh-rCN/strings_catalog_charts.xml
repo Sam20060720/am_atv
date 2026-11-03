@@ -1,0 +1,7 @@
+<resources>
+    <string name="catalog_charts_songs">热门歌曲</string>
+    <string name="catalog_charts_albums">热门专辑</string>
+    <string name="catalog_charts_playlists">热门歌单</string>
+    <string name="catalog_charts_city">城市排行榜</string>
+    <string name="catalog_charts_global">每日百大排行</string>
+</resources>

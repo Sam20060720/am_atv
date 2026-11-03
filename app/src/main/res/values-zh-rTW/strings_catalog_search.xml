@@ -1,0 +1,18 @@
+<resources>
+    <string name="catalog_search_scope_catalog">Apple Music</string>
+    <string name="catalog_search_scope_library">資料庫</string>
+    <string name="catalog_search_artists">藝人</string>
+    <string name="catalog_search_songs">歌曲</string>
+    <string name="catalog_search_albums">專輯</string>
+    <string name="catalog_search_playlists">播放列表</string>
+    <string name="catalog_search_videos">音樂影片</string>
+    <string name="catalog_search_stations">電台</string>
+    <string name="catalog_search_curators">策展人</string>
+    <string name="catalog_search_apple_curators">Apple Music 策展</string>
+    <string name="catalog_search_labels">唱片公司</string>
+    <string name="catalog_search_activities">情境與活動</string>
+    <string name="catalog_search_empty_library">輸入名稱以搜尋資料庫</string>
+    <string name="catalog_search_start">搜尋歌曲、藝人及更多內容</string>
+    <string name="catalog_search_empty">找不到結果</string>
+    <string name="catalog_search_more">更多搜尋結果</string>
+</resources>

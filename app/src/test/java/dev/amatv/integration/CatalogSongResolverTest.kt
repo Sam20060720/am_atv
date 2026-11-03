@@ -158,4 +158,40 @@ class CatalogSongResolverTest {
         val legacy = song("1465074689", resourceId = null).copy(resourceType = null)
         assertEquals("1465074689", resolvePlayableSongTrack(legacy) { "6790045614" }.resourceId)
     }
+
+    @Test fun unmatchedLibrarySongResolvesThroughItsSourceBeforeAcquiringACatalogId() = runBlocking {
+        val uploaded = song("unused", "i.uploaded").copy(id = "apple:i.uploaded", catalogId = null)
+        val resolved = resolvePlayableSongTrack(uploaded) { id ->
+            assertEquals("i.uploaded", id)
+            "6790045614"
+        }
+        assertEquals("6790045614", resolved.catalogId)
+        assertEquals("i.uploaded", resolved.resourceId)
+        assertEquals("library-songs", resolved.resourceType)
+    }
+
+    @Test fun unmatchedLibrarySongPropagatesUnavailableInsteadOfDisappearingFromLibrary() = runBlocking {
+        val uploaded = song("unused", "i.uploaded").copy(catalogId = null)
+        val unavailable = CatalogRequestException(CatalogFailureReason.Unavailable, "No catalog match")
+        try {
+            resolvePlayableSongTrack(uploaded) { throw unavailable }
+            fail("An unmatched upload is not a catalog recording")
+        } catch (actual: CatalogRequestException) {
+            assertSame(unavailable, actual)
+        }
+    }
+
+    @Test fun absentCatalogIdDoesNotAuthorizeAnArbitraryResourceAsASong() = runBlocking {
+        for (resourceType in listOf("songs", "library-albums", null)) {
+            val invalid = song("unused", "i.uploaded").copy(catalogId = null, resourceType = resourceType)
+            var requested = false
+            try {
+                resolvePlayableSongTrack(invalid) { requested = true; "unexpected" }
+                fail("Only an explicit library-songs resource can resolve without a catalog ID")
+            } catch (failure: CatalogRequestException) {
+                assertEquals(CatalogFailureReason.Unavailable, failure.reason)
+                assertFalse(requested)
+            }
+        }
+    }
 }

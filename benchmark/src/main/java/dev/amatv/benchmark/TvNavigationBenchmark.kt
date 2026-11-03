@@ -36,7 +36,7 @@ class TvNavigationBenchmark {
         metrics = listOf(FrameTimingMetric()),
         compilationMode = CompilationMode.Ignore(),
         iterations = configuredBenchmarkIterations(),
-        setupBlock = { startActivityAndWait(); TvUi(device).enterHomeShelf("熱門專輯") },
+        setupBlock = { startActivityAndWait(); TvUi(device).enterHomeShelf("app_top_albums") },
     ) {
         TvUi(device).apply {
             repeat(10) { right(100) }

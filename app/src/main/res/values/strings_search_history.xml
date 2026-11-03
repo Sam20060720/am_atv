@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="search_history_title">Recent Searches</string>
+    <string name="search_history_clear">Clear History</string>
+</resources>

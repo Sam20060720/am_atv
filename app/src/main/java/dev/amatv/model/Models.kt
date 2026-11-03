@@ -48,6 +48,13 @@ data class Track(
     /** Original API identity; library containers can also have a separate catalog ID. */
     val resourceId: String? = null,
     val resourceType: String? = null,
+    /** Collection editorial or user-authored description, when supplied by Apple. */
+    val description: String? = null,
+    /** Actual canonical URL returned by Apple; never reconstructed from a display name. */
+    val url: String? = null,
+    val motionArtworkVariants: List<EditorialMotionAsset> = emptyList(),
+    /** Apple's explicit/clean release metadata; null means the source did not supply a rating. */
+    val contentRating: String? = null,
 )
 
 /**
@@ -76,6 +83,10 @@ data class ContentShelf(
     val title: String,
     val items: List<Track>,
     val featured: Boolean = false,
+    /** A verified server header destination, independent of the preview items. */
+    val seeAll: Track? = null,
+    /** The same Home response proves additional items or an omitted child group. */
+    val hasMore: Boolean = false,
 )
 
 enum class CatalogKind {
@@ -84,6 +95,8 @@ enum class CatalogKind {
     Playlist,
     Station,
     MusicVideo,
+    Artist,
+    Page,
 }
 
 /** Mirrors `aj.a` (`SongInfo.getAvailableTiming()`) in Apple Music 6.5.3. */
@@ -263,23 +276,7 @@ object LyricTimeline {
     const val INSTRUMENTAL_DURATION_TRIM_MS = 800L
     const val INSTRUMENTAL_DOT_FINAL_SEGMENT_MS = 750L
 
-    data class EmphasisTiming(
-        val eligible: Boolean,
-        val groupIndices: List<Int> = emptyList(),
-        val indexInGroup: Int = -1,
-        val charCount: Int = 0,
-        val animationDurationMs: Long = 0L,
-        val riseStartMs: Long = 0L,
-        val settleStartMs: Long = 0L,
-        val maximumScale: Float = 1f,
-        val riseFraction: Float = 0f,
-        val settleFraction: Float = 0f,
-        val shouldLift: Boolean = false,
-    )
-
     data class CharacterEmphasisTiming(
-        val charIndex: Int,
-        val charCount: Int,
         val animationDurationMs: Long,
         val riseStartMs: Long,
         val settleStartMs: Long,
@@ -396,7 +393,7 @@ object LyricTimeline {
             get() = instrumentalScrollAnchor?.beforeLineIndex ?: anchorLineIndex
     }
 
-    /** Immutable per-song schedule; the playback clock only scans primitive timings. */
+    /** Per-song timings; equal timing intervals share their immutable visual snapshot. */
     class Schedule(lines: List<LyricLine>) {
         private val starts = LongArray(lines.size) { lines[it].startMs }
         private val ends = LongArray(lines.size) { lines[it].endMs }
@@ -427,7 +424,29 @@ object LyricTimeline {
             }
         }
 
+        // Nothing in Snapshot can change between these authored boundaries.
+        // snapshotFlow still runs for the word clock, so avoid rescanning the
+        // entire song and allocating an equal list/Snapshot on every frame.
+        private val snapshotBoundaries = buildList {
+            for (time in starts) add(time)
+            for (time in ends) add(time)
+            for (time in cueTimes) add(time)
+            instrumentalGaps.forEach { gap ->
+                add(gap.startMs)
+                add(gap.endMs + INSTRUMENTAL_LINE_OFFSET_MS + 1_000L)
+            }
+        }.distinct().sorted().toLongArray()
+        private data class IntervalSnapshot(val interval: Int, val snapshot: Snapshot)
+        @Volatile private var cachedInterval: IntervalSnapshot? = null
+
         fun snapshotAt(positionMs: Long): Snapshot {
+            var low = 0
+            var high = snapshotBoundaries.size
+            while (low < high) {
+                val middle = (low + high) ushr 1
+                if (positionMs >= snapshotBoundaries[middle]) low = middle + 1 else high = middle
+            }
+            cachedInterval?.takeIf { it.interval == low }?.let { return it.snapshot }
             var anchorIndex = -1
             for (index in cueTimes.indices) {
                 if (positionMs >= cueTimes[index]) anchorIndex = clusterStarts[index]
@@ -445,7 +464,7 @@ object LyricTimeline {
                 positionMs >= it.startMs &&
                     positionMs < it.endMs + INSTRUMENTAL_LINE_OFFSET_MS + 1_000L
             }
-            return Snapshot(singing, anchorIndex, gap)
+            return Snapshot(singing, anchorIndex, gap).also { cachedInterval = IntervalSnapshot(low, it) }
         }
 
         fun nextClusterStartIndex(lineIndex: Int): Int {
@@ -574,82 +593,6 @@ object LyricTimeline {
     }
 
     /**
-     * All vocal lines singing at [positionMs]. Their independent word timestamps
-     * drive concurrent sweeps. When a line's lead vocal finishes but background vocals
-     * are still singing, that line remains active while the next line also activates
-     * on its visual cue window.
-     */
-    fun activeLineIndicesAt(
-        lines: List<LyricLine>,
-        positionMs: Long,
-        applyTimeProcessorOffsets: Boolean = true,
-    ): List<Int> {
-        if (lines.isEmpty()) return emptyList()
-        val singing = lines.indices.filter { index ->
-            val line = lines[index]
-            !line.isStatic && positionMs >= line.startMs && positionMs < line.endMs
-        }
-        if (!applyTimeProcessorOffsets) return singing
-        val cueIndex = activeLineAt(lines, positionMs, applyTimeProcessorOffsets = true)
-        if (cueIndex !in lines.indices) return singing
-        val cuedLine = lines[cueIndex]
-        return if (positionMs < cuedLine.startMs && positionMs < cuedLine.endMs) {
-            if (cueIndex in singing) singing else singing + cueIndex
-        } else {
-            singing
-        }
-    }
-
-    /**
-     * Detects if an instrumental interlude (`gap >= 7000ms` with no active lines) is
-     * currently active at [positionMs], mirroring `A.l` (`lines 638-900`) and `U0.a`.
-     */
-    fun activeInstrumentalGapAt(lines: List<LyricLine>, positionMs: Long): InstrumentalGap? {
-        if (lines.isEmpty() || lines.all { it.isStatic }) return null
-        var prevEndMs = 0L
-        for (index in lines.indices) {
-            val line = lines[index]
-            if (line.isStatic) continue
-            val rawGap = line.startMs - prevEndMs
-            if (rawGap >= INSTRUMENTAL_MIN_GAP_MS) {
-                val leadMs = -INSTRUMENTAL_LINE_OFFSET_MS // 1300ms before next line
-                val gapActiveEnd = line.startMs - leadMs + 1_000L // includes 750ms + 250ms exit
-                if (positionMs in prevEndMs until gapActiveEnd) {
-                    return InstrumentalGap(
-                        beforeLineIndex = index,
-                        startMs = prevEndMs,
-                        endMs = line.startMs,
-                        rawGapDurationMs = rawGap,
-                        adjustedDurationMs = (rawGap - INSTRUMENTAL_DURATION_TRIM_MS).coerceAtLeast(1L),
-                    )
-                }
-            }
-            prevEndMs = maxOf(prevEndMs, line.endMs)
-        }
-        return null
-    }
-
-    fun wordProgress(
-        word: LyricWord,
-        positionMs: Long,
-        wordOffsetMs: Long = 0L,
-    ): Float {
-        val effectivePos = positionMs - wordOffsetMs
-        val duration = (word.endMs - word.startMs).coerceAtLeast(1L)
-        return ((effectivePos - word.startMs).toFloat() / duration)
-            .coerceIn(0f, 1f)
-    }
-
-    fun lineProgress(line: LyricLine, positionMs: Long): Float {
-        if (line.words.isEmpty()) return 0f
-        val totalWeight = line.words.sumOf { it.text.length.coerceAtLeast(1) }
-        val completed = line.words.sumOf { word ->
-            word.text.length.coerceAtLeast(1) * wordProgress(word, positionMs).toDouble()
-        }
-        return (completed / totalWeight).toFloat().coerceIn(0f, 1f)
-    }
-
-    /**
      * Computes per-character emphasis timings for a word/syllable group in `A.java`
      * (lines 2078-2491, `z0` character split).
      *
@@ -700,72 +643,12 @@ object LyricTimeline {
             val riseStart = groupStartMs + (stepDelayMs * charIndex).roundToLong()
             val settleStart = (groupStartMs + stepDelayMs * charIndex + returnOffsetMs).roundToLong()
             CharacterEmphasisTiming(
-                charIndex = charIndex,
-                charCount = charCount,
                 animationDurationMs = animDurationMs,
                 riseStartMs = riseStart,
                 settleStartMs = settleStart,
                 maximumScale = maximumScale,
             )
         }
-    }
-
-    /**
-     * Word/group-level emphasis timing summary.
-     */
-    fun emphasisTiming(
-        line: LyricLine,
-        wordIndex: Int,
-        positionMs: Long,
-    ): EmphasisTiming {
-        val word = line.words.getOrNull(wordIndex) ?: return EmphasisTiming(false)
-        if (word.isBackgroundVocal || line.isTranslation) return EmphasisTiming(false)
-
-        val groupId = word.emphasisGroupId
-        val groupIndices = if (groupId != null) {
-            line.words.indices.filter { line.words[it].emphasisGroupId == groupId }
-        } else {
-            listOf(wordIndex)
-        }
-        val indexInGroup = groupIndices.indexOf(wordIndex)
-        if (indexInGroup < 0) return EmphasisTiming(false)
-
-        val groupStartMs = groupIndices.minOf { line.words[it].startMs }
-        val groupEndMs = groupIndices.maxOf { line.words[it].endMs }
-        val groupDurationMs = (groupEndMs - groupStartMs).coerceAtLeast(0L)
-        val renderedText = groupIndices.joinToString("") { line.words[it].text.trim() }
-        val unitCount = groupIndices.size
-        val eligible = !line.isTranslation &&
-            !word.isBackgroundVocal &&
-            groupDurationMs >= 1_000L &&
-            renderedText.length in 1..7 &&
-            unitCount <= 7 &&
-            !containsExcludedEmphasisScript(renderedText)
-        if (!eligible) return EmphasisTiming(false)
-
-        val durationRatio = (groupDurationMs / 1_000f).coerceIn(1f, 2f)
-        val animationDurationMs = groupDurationMs.coerceAtMost(3_000L)
-        val staggerMs = (0.4f * animationDurationMs / unitCount).coerceAtMost(400f)
-        val returnOffsetMs = animationDurationMs.toFloat() / (unitCount / 2.0f)
-        val riseStartMs = groupStartMs + (staggerMs * indexInGroup).roundToLong()
-        val settleStartMs = (groupStartMs + staggerMs * indexInGroup + returnOffsetMs).roundToLong()
-        val duration = animationDurationMs.coerceAtLeast(1L)
-
-        return EmphasisTiming(
-            eligible = true,
-            groupIndices = groupIndices,
-            indexInGroup = indexInGroup,
-            charCount = renderedText.length,
-            animationDurationMs = animationDurationMs,
-            riseStartMs = riseStartMs,
-            settleStartMs = settleStartMs,
-            maximumScale = 1f + 0.14f * (durationRatio - 1f),
-            riseFraction = ((positionMs - riseStartMs).toFloat() / duration)
-                .coerceIn(0f, 1f),
-            settleFraction = ((positionMs - settleStartMs).toFloat() / duration)
-                .coerceIn(0f, 1f),
-            shouldLift = positionMs >= riseStartMs && positionMs < line.endMs,
-        )
     }
 
     /**

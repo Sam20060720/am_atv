@@ -6,19 +6,29 @@ import dev.amatv.i18n.AppText
 import android.util.Log
 import androidx.compose.ui.graphics.Color
 import dev.amatv.BuildConfig
+import dev.amatv.model.ArtistProfile
+import dev.amatv.model.ArtistSection
+import dev.amatv.model.CatalogSearchType
+import dev.amatv.model.CatalogSearchSuggestions
+import dev.amatv.model.CatalogSearchTerm
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.ContentShelf
 import dev.amatv.model.Track
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Locale
 
@@ -37,10 +47,12 @@ class DeveloperTokenClient(
         if (!forceRefresh) {
             cachedToken?.takeIf(::isJwtValid)?.let { return@withContext it }
             tokenStore?.readDeveloperToken()?.takeIf(::isJwtValid)?.let { stored ->
+                currentCoroutineContext().ensureActive()
                 cachedToken = stored
                 return@withContext stored
             }
         } else {
+            currentCoroutineContext().ensureActive()
             cachedToken = null
             tokenStore?.clearDeveloperToken()
         }
@@ -54,19 +66,11 @@ class DeveloperTokenClient(
         check(secureEndpoint || debugLanEndpoint) {
             AppText.text(R.string.services_token_https_required)
         }
-        val value = runCatching {
-            val connection = URI(endpoint).toURL().openConnection() as HttpURLConnection
-            try {
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 6_000
-                connection.readTimeout = 10_000
-                connection.setRequestProperty("Accept", "application/json, text/plain")
-                val status = connection.responseCode
-                val body = (if (status in 200..299) {
-                    connection.inputStream
-                } else {
-                    connection.errorStream
-                })?.bufferedReader()?.use { it.readText() }.orEmpty().trim()
+        val value = runCatching { withCatalogRequestDeadline {
+                val reply = CatalogHttpTransport().execute(Request.Builder().url(endpoint)
+                    .header("Accept", "application/json, text/plain").get().build())
+                val status = reply.status
+                val body = reply.body.trim()
                 check(status in 200..299) { AppText.text(R.string.services_token_http_error, status) }
                 val parsed = if (body.startsWith("{")) {
                     val json = JSONObject(body)
@@ -76,16 +80,15 @@ class DeveloperTokenClient(
                 }
                 check(isJwtValid(parsed)) { AppText.text(R.string.services_token_invalid) }
                 parsed
-            } finally {
-                connection.disconnect()
-            }
-        }.getOrElse { error ->
+        } }.getOrElse { error ->
+            if (error is CancellationException) throw error
             throw IllegalStateException(
                 AppText.text(R.string.services_token_connection_failed, endpoint, error.message ?: error.javaClass.simpleName),
                 error,
             )
         }
 
+        currentCoroutineContext().ensureActive()
         cachedToken = value
         tokenStore?.writeDeveloperToken(value)
         value
@@ -111,8 +114,33 @@ class AppleMusicApi(
         authorizationMessage = { AppText.text(R.string.services_sign_in_apple_music) },
     )
 
+    val actions = CatalogActions(::effectiveStorefront) { path, method, body ->
+        requestRoot(path, needsUserToken = true, method = method, postBody = body)
+    }
+
+    val catalogPages = CatalogPagesApi(::effectiveStorefront, { !userToken().isNullOrBlank() },
+        { path, user -> requestRoot(path, user) }, ::parseResourceItem, parseDispatcher)
+
+    val accountInsights = AccountInsightsApi(::effectiveStorefront,
+        { path, user -> editorialPage(path, user, setOf("songs", "albums", "artists", "playlists")) }, ::parseResourceItem, parseDispatcher)
+
+    val radioCatalog = RadioCatalogApi(::effectiveStorefront, { path, user -> requestRoot(path, user) },
+        ::parseResourceItem, parseDispatcher)
+
+    val catalogCharts = CatalogChartsApi(::effectiveStorefront,
+        { path, user -> requestRoot(path, user) }, ::parseResourceItem, parseDispatcher)
+
+    private suspend fun editorialPage(path: String, user: Boolean, types: Set<String>): JSONObject =
+        requestEditorialVideo(path, types) { requestRoot(it, user) }
+
     @Volatile
     private var userStorefrontCache: UserStorefrontCache? = null
+
+    /** Never request the account storefront merely to restore an idle cover. */
+    internal fun cachedEffectiveStorefront(): String? {
+        val currentUserToken = userToken()?.takeIf(String::isNotBlank) ?: return storefront
+        return userStorefrontCache?.takeIf { it.userToken == currentUserToken }?.storefront
+    }
 
     suspend fun userStorefront(): String {
         val currentUserToken = userToken()?.takeIf(String::isNotBlank)
@@ -136,107 +164,384 @@ class AppleMusicApi(
         return runCatching { userStorefront() }.getOrNull() ?: storefront
     }
 
-    suspend fun recommendations(): List<Track> = request(
-        path = "/v1/me/recommendations?limit=10&extend=editorialArtwork,editorialVideo",
-        needsUserToken = true,
-    )
-
     suspend fun recommendationShelves(): List<ContentShelf> {
         val root = requestRoot(
             path = "/v1/me/recommendations?limit=10&extend=editorialArtwork,editorialVideo",
             needsUserToken = true,
         )
-        return withContext(parseDispatcher) {
+        val shelves = withContext(parseDispatcher) { parseRecommendationShelves(root) }
+        val motionCount = shelves.sumOf { shelf -> shelf.items.count { it.motionArtworkUrl != null } }
+        Log.i(TAG, "Home motion artwork: $motionCount/${shelves.sumOf { it.items.size }}")
+        return shelves
+    }
+
+    /** Keep expansion evidence from the same response that supplies Home's cards. */
+    internal fun parseRecommendationShelves(root: JSONObject): List<ContentShelf> {
         val recommendations = root.optJSONArray("data") ?: JSONArray()
         val shelves = buildList {
             for (index in 0 until recommendations.length()) {
                 val recommendation = recommendations.optJSONObject(index) ?: continue
+                val recommendationId = recommendation.optString("id").takeIf { it.isNotBlank() && it != "null" }
                 val attributes = recommendation.optJSONObject("attributes")
                 val title = attributes?.displayText("title")
                     ?: attributes?.displayText("name")
                     ?: AppText.text(R.string.services_recommended_for_you)
-                val contents = recommendation.optJSONObject("relationships")
-                    ?.optJSONObject("contents")
-                    ?: continue
+                val contents = recommendation.optJSONObject("relationships")?.optJSONObject("contents") ?: continue
                 val tracks = parseResources(contents)
-                if (tracks.isNotEmpty()) {
-                    add(
-                        ContentShelf(
-                            id = "recommendation:${recommendation.optString("id", index.toString())}",
-                            title = title,
-                            items = tracks,
-                            featured = isEmpty(),
-                        ),
-                    )
-                }
+                if (tracks.isNotEmpty()) add(ContentShelf(
+                    id = "recommendation:${recommendationId ?: index}",
+                    title = title, items = tracks, featured = isEmpty(),
+                    hasMore = recommendationId != null && hasMoreHomeItems(contents),
+                ))
             }
         }
-        val motionCount = shelves.sumOf { shelf ->
-            shelf.items.count { it.motionArtworkUrl != null }
-        }
-        Log.i(TAG, "Home motion artwork: $motionCount/${shelves.sumOf { it.items.size }}")
-        if (shelves.isNotEmpty()) return@withContext shelves
+        if (shelves.isNotEmpty()) return shelves
         val fallback = parseResources(root)
-        if (fallback.isEmpty()) emptyList() else listOf(
-            ContentShelf("recommendations", AppText.text(R.string.services_top_picks_for_you), fallback, featured = true),
-        )
+        return if (fallback.isEmpty()) emptyList() else listOf(ContentShelf(
+            "recommendations", AppText.text(R.string.services_top_picks_for_you), fallback,
+            featured = true, hasMore = hasMoreHomeItems(root),
+        ))
+    }
+
+    private fun hasMoreHomeItems(root: JSONObject): Boolean {
+        val data = root.optJSONArray("data")
+        val rawCount = data?.length() ?: 0
+        val next = (root.opt("next") as? String)?.takeIf { it.isNotBlank() && it != "null" }
+        val total = (root.optJSONObject("meta")?.opt("total") as? Number)?.toLong()
+        // Child recommendations have no direct Home card. Their own contents
+        // and hierarchy are available only after opening the parent group.
+        val omittedGroup = data != null && (0 until data.length()).any {
+            data.optJSONObject(it)?.optString("type") == "personal-recommendation"
+        }
+        return next != null || data != null && total != null && total > rawCount || omittedGroup
+    }
+
+    suspend fun recentlyPlayedPage(): LibraryPage {
+        // Keep the same mixed-resource request and optional artwork fallback.
+        val path = "/v1/me/recent/played?types=albums,playlists,stations&limit=10"
+        val root = editorialPage(path, true, setOf("albums", "playlists"))
+        return withContext(parseDispatcher) { homeHistoryPage(root, path) }.also {
+            Log.i(TAG, "Recent containers loaded=${it.items.size}")
         }
     }
 
-    suspend fun recentlyPlayed(): List<Track> = request(
-        path = "/v1/me/recent/played?limit=16&extend=editorialArtwork,editorialVideo",
-        needsUserToken = true,
+    suspend fun recentlyPlayedTracksPage(): LibraryPage {
+        val path = "/v1/me/recent/played/tracks?types=songs,library-songs,music-videos,library-music-videos&limit=20&extend=editorialArtwork,editorialVideo"
+        val root = requestRoot(path, needsUserToken = true)
+        return withContext(parseDispatcher) { homeHistoryPage(root, path) }
+    }
+
+    private fun homeHistoryPage(root: JSONObject, path: String): LibraryPage = LibraryPage(
+        items = parseResources(root),
+        nextPage = (root.opt("next") as? String)?.takeIf { it.isNotBlank() && it != "null" },
+        requestedPage = path,
+        total = (root.optJSONObject("meta")?.opt("total") as? Number)?.toLong()
+            ?.takeIf { it in 0..Int.MAX_VALUE.toLong() }?.toInt(),
+        rawItemCount = root.optJSONArray("data")?.length() ?: 0,
     )
 
-    suspend fun recentlyPlayedTracks(): List<Track> = request(
-        path = "/v1/me/recent/played/tracks?limit=20&extend=editorialArtwork,editorialVideo",
-        needsUserToken = true,
+    suspend fun recentlyAddedPage(nextPage: String? = null): LibraryPage =
+        libraryPage(LibraryCollection.RecentlyAdded, nextPage) { editorialPage(it, true, LibraryCollection.RecentlyAdded.resourceTypes) }
+
+    suspend fun libraryAlbumsPage(nextPage: String? = null): LibraryPage =
+        libraryPage(LibraryCollection.Albums, nextPage) { editorialPage(it, true, LibraryCollection.Albums.resourceTypes) }
+
+    suspend fun libraryArtistsPage(nextPage: String? = null): LibraryPage =
+        libraryPage(LibraryCollection.Artists, nextPage) { editorialPage(it, true, LibraryCollection.Artists.resourceTypes) }
+
+    internal suspend fun libraryArtistAlbumsPage(
+        artist: Track,
+        nextPage: String? = null,
+        fetchPage: suspend (String) -> JSONObject,
+    ): LibraryPage = resourcePage(
+        artist.libraryArtistAlbumsRequest(), LibraryCollection.Albums.resourceTypes, nextPage,
+        { path -> requestRelationshipData { fetchPage(path) } },
     )
 
-    suspend fun recentlyAdded(): List<Track> = request(
-        path = "/v1/me/library/recently-added?limit=24&include=catalog",
-        needsUserToken = true,
-    )
+    suspend fun artistProfile(artist: Track): ArtistProfile =
+        artistProfile(artist, effectiveStorefront()) { path, authorized -> requestRoot(path, authorized) }
 
-    suspend fun libraryPlaylists(): List<Track> = libraryPlaylistsPage().items
+    internal suspend fun artistProfile(
+        artist: Track,
+        storefront: String,
+        fetch: suspend (String, Boolean) -> JSONObject,
+    ): ArtistProfile = withContext(parseDispatcher) {
+        require(artist.catalogKind == CatalogKind.Artist)
+        require(storefront.matches(Regex("[a-z]{2}")))
+        val sourceId = resourceId(artist)
+        val library = artist.resourceType == "library-artists"
+        require(library || artist.resourceType == "artists")
+        val source = if (library) {
+            val root = fetch("/v1/me/library/artists/$sourceId?include=catalog", true)
+            resource(root, sourceId, "library-artists")
+        } else null
+        val libraryAttributes = source?.optJSONObject("attributes")
+        val linked = source?.optJSONObject("relationships")?.optJSONObject("catalog")
+            ?.optJSONArray("data")?.optJSONObject(0)?.takeIf { it.optString("type") == "artists" }
+        val catalogId = if (library) linked?.optString("id")?.takeIf(::validResourceId)
+            ?: artist.catalogId?.takeIf { it != sourceId && validResourceId(it) }
+        else sourceId
+        val catalogResource = catalogId?.let { id ->
+            val base = "/v1/catalog/$storefront/artists/$id"
+            // Verified against the shipped public Apple Music web artist/bio requests.
+            // Optional web extensions enrich one opened profile, never every card.
+            val extended = "$base?extend=artistBio,bornOrFormed,origin,isGroup,editorialArtwork,editorialVideo,extendedAssetUrls,plainEditorialNotes"
+            val root = try { fetch(extended, false) }
+            catch (error: CatalogRequestException) {
+                if (error.httpStatus !in setOf(400, 403)) throw error
+                // API credentials/regions need not support every web extension.
+                fetch(base, false)
+            }
+            resource(root, id, "artists")
+        }
+        val catalogAttributes = catalogResource?.optJSONObject("attributes")
+        val catalogArtist = catalogAttributes?.toTrack(checkNotNull(catalogId), CatalogKind.Artist, resourceType = "artists")
+        val sourceArtist = if (library) {
+            libraryAttributes?.toTrack(sourceId, CatalogKind.Artist, linked, "library-artists", allowLibraryPlaceholder = true)
+                ?.let { parsed -> parsed.copy(
+                    artworkUrl = parsed.artworkUrl ?: catalogArtist?.artworkUrl,
+                    description = parsed.description ?: catalogArtist?.description,
+                    catalogId = catalogArtist?.catalogId ?: parsed.catalogId,
+                ) } ?: artist
+        } else checkNotNull(catalogArtist) { AppText.text(R.string.services_track_unavailable) }
+        ArtistProfile(
+            artist = sourceArtist,
+            catalogArtist = catalogArtist,
+            biography = catalogAttributes?.stringAttribute("artistBio")
+                ?: catalogAttributes?.collectionDescription() ?: libraryAttributes?.collectionDescription(),
+            genreNames = catalogAttributes?.optJSONArray("genreNames")?.stringValues().orEmpty(),
+            url = catalogAttributes?.optString("url")?.takeIf { it.startsWith("https://music.apple.com/") },
+            inFavorites = when {
+                libraryAttributes?.has("inFavorites") == true -> libraryAttributes.optBoolean("inFavorites")
+                catalogAttributes?.has("inFavorites") == true -> catalogAttributes.optBoolean("inFavorites")
+                else -> null
+            },
+            origin = catalogAttributes?.stringAttribute("origin"),
+            bornOrFormed = catalogAttributes?.stringAttribute("bornOrFormed"),
+            isGroup = catalogAttributes?.takeIf { it.has("isGroup") }?.optBoolean("isGroup"),
+        )
+    }
 
-    suspend fun librarySongs(): List<Track> = librarySongsPage().items
+    suspend fun artistSectionPage(artist: Track, section: ArtistSection, nextPage: String? = null): LibraryPage =
+        artistSectionPage(artist, section, effectiveStorefront(), nextPage) { path, authorized -> editorialPage(path, authorized, section.resourceTypes) }
+
+    internal suspend fun artistSectionPage(
+        artist: Track,
+        section: ArtistSection,
+        storefront: String,
+        nextPage: String? = null,
+        fetch: suspend (String, Boolean) -> JSONObject,
+    ): LibraryPage {
+        if (section == ArtistSection.LibraryAlbums) {
+            return libraryArtistAlbumsPage(artist, nextPage) { fetch(it, true) }
+        }
+        require(artist.catalogKind == CatalogKind.Artist && artist.resourceType == "artists") {
+            AppText.text(R.string.services_collection_required)
+        }
+        require(storefront.matches(Regex("[a-z]{2}")))
+        val id = resourceId(artist)
+        val component = if (section.isView) "view/${section.apiName}" else section.apiName
+        val request = CollectionRequest("/v1/catalog/$storefront/artists/$id/$component", false,
+            pageSize = section.pageSize, includeCatalog = false)
+        return resourcePage(request, section.resourceTypes, nextPage, { path -> requestRelationshipData { fetch(path, false) } },
+            firstPage = request.firstPage + if (section.isView) "&with=attributes" else "")
+    }
+
+    /** Read the actual artist relationship, never search an artistName and guess an identity. */
+    suspend fun relatedArtistsPage(item: Track, nextPage: String? = null): LibraryPage =
+        relatedArtistsPage(item, effectiveStorefront(), nextPage) { path, authorized -> editorialPage(path, authorized, setOf("artists")) }
+
+    internal suspend fun relatedArtistsPage(
+        item: Track,
+        storefront: String,
+        nextPage: String? = null,
+        fetch: suspend (String, Boolean) -> JSONObject,
+    ): LibraryPage {
+        val type = when (item.catalogKind) {
+            CatalogKind.Album -> "albums"
+            CatalogKind.Song -> "songs"
+            CatalogKind.MusicVideo -> "music-videos"
+            else -> error(AppText.text(R.string.services_collection_required))
+        }
+        require(storefront.matches(Regex("[a-z]{2}")))
+        val id = resourceId(item)
+        val library = item.resourceType?.startsWith("library-")
+            ?: (id.startsWith("i.") || id.startsWith("l."))
+        // The documented artist relationships for saved albums/songs return saved artists.
+        // Catalog and library paths retain their own resource IDs and token requirements.
+        val base = if (library) "/v1/me/library" else "/v1/catalog/$storefront"
+        val request = CollectionRequest("$base/$type/$id/artists", library,
+            pageSize = 10, includeCatalog = library)
+        return resourcePage(request, setOf(if (library) "library-artists" else "artists"), nextPage,
+            { path -> requestRelationshipData { fetch(path, library) } })
+    }
+
+    internal suspend fun searchHints(term: String, storefront: String, fetch: suspend (String) -> JSONObject): List<String> =
+        withContext(parseDispatcher) {
+            if (term.isBlank()) return@withContext emptyList()
+            require(storefront.matches(Regex("[a-z]{2}")))
+            val encoded = URLEncoder.encode(term.trim(), Charsets.UTF_8.name())
+            fetch("/v1/catalog/$storefront/search/hints?term=$encoded&limit=5")
+                .optJSONObject("results")?.optJSONArray("terms")?.stringValues().orEmpty().distinct()
+        }
+
+    suspend fun searchSuggestions(term: String): CatalogSearchSuggestions =
+        searchSuggestions(term, effectiveStorefront()) { path ->
+            if (path.substringBefore('?').endsWith("/hints")) requestRoot(path, false)
+            else editorialPage(path, false, CatalogSearchType.entries.mapTo(mutableSetOf()) { type -> type.resourceType })
+        }
+
+    internal suspend fun searchSuggestions(
+        term: String, storefront: String, fetch: suspend (String) -> JSONObject,
+    ): CatalogSearchSuggestions = withContext(parseDispatcher) {
+        if (term.isBlank()) return@withContext CatalogSearchSuggestions()
+        require(storefront.matches(Regex("[a-z]{2}")))
+        fun hinted(values: List<String>) = CatalogSearchSuggestions(values.map { CatalogSearchTerm(it, it) })
+        if (term.trim().length < 2) return@withContext hinted(searchHints(term, storefront, fetch))
+        val encoded = URLEncoder.encode(term.trim(), Charsets.UTF_8.name())
+        val types = CatalogSearchType.entries.joinToString(",") { it.resourceType }
+        val root = try { fetch("/v1/catalog/$storefront/search/suggestions?term=$encoded&kinds=terms,topResults&types=$types&limit=5") }
+        catch (error: CatalogRequestException) {
+            if (error.httpStatus !in setOf(400, 404, 501)) throw error
+            return@withContext hinted(searchHints(term, storefront, fetch))
+        }
+        val data = root.optJSONObject("results")?.optJSONArray("suggestions") ?: JSONArray()
+        val terms = ArrayList<CatalogSearchTerm>()
+        val topResults = ArrayList<Track>()
+        for (index in 0 until data.length()) {
+            val suggestion = data.optJSONObject(index) ?: continue
+            when (suggestion.optString("kind")) {
+                "terms" -> {
+                    val searchTerm = suggestion.stringAttribute("searchTerm") ?: continue
+                    val displayTerm = suggestion.stringAttribute("displayTerm") ?: continue
+                    terms += CatalogSearchTerm(displayTerm, searchTerm)
+                }
+                "topResults" -> suggestion.optJSONObject("content")?.let(::parseResourceItem)?.let(topResults::add)
+            }
+        }
+        CatalogSearchSuggestions(terms.distinctBy { it.searchTerm }, mergeLibraryPage(emptyList(), topResults))
+    }
+
+    suspend fun searchPage(term: String, type: CatalogSearchType, nextPage: String? = null): LibraryPage =
+        searchPage(term, type, effectiveStorefront(), nextPage, library = false) { path, authorized -> editorialPage(path, authorized, setOf(type.resourceType)) }
+
+    suspend fun librarySearchPage(term: String, type: CatalogSearchType, nextPage: String? = null): LibraryPage =
+        searchPage(term, type, effectiveStorefront(), nextPage, library = true) { path, authorized -> editorialPage(path, authorized, setOf(type.resourceType)) }
+
+    internal suspend fun searchPage(
+        term: String,
+        type: CatalogSearchType,
+        storefront: String,
+        nextPage: String? = null,
+        library: Boolean = false,
+        fetch: suspend (String, Boolean) -> JSONObject,
+    ): LibraryPage {
+        require(term.isNotBlank())
+        require(storefront.matches(Regex("[a-z]{2}")))
+        val resourceType = if (library) checkNotNull(type.libraryResourceType) else type.resourceType
+        val base = if (library) "/v1/me/library" else "/v1/catalog/$storefront"
+        val request = CollectionRequest("$base/search", library, pageSize = 25, includeCatalog = false)
+        val encoded = URLEncoder.encode(term.trim(), Charsets.UTF_8.name())
+        fun continuation(href: String): String {
+            val path = request.nextPage(href)
+            val parameters = URI(path).rawQuery.orEmpty().split('&').filter(String::isNotEmpty).map { parameter ->
+                val pair = parameter.split('=', limit = 2)
+                URLDecoder.decode(pair[0], "UTF-8") to URLDecoder.decode(pair.getOrElse(1) { "" }, "UTF-8")
+            }.groupBy({ it.first }, { it.second })
+            check(parameters["term"] == listOf(term.trim()) && parameters["types"] == listOf(resourceType)) {
+                AppText.text(R.string.services_collection_next_page_failed)
+            }
+            return path
+        }
+        val result = resourcePage(request, setOf(resourceType), nextPage?.let(::continuation), { fetch(it, library) },
+            firstPage = "${request.endpoint}?term=$encoded&types=$resourceType&limit=25",
+            select = { root -> root.optJSONObject("results")?.optJSONObject(resourceType)
+                ?: JSONObject().put("data", JSONArray()) })
+        val page = result.copy(nextPage = result.nextPage?.let(::continuation))
+        if (!library || type != CatalogSearchType.Artists || page.items.none { it.artworkUrl.isNullOrBlank() }) return page
+        // Library search doesn't document include=catalog. One supported batch
+        // lookup enriches this page; never issue a request for each artist card.
+        return withContext(parseDispatcher) {
+            val ids = page.items.mapNotNull { it.resourceId }.filter(::validResourceId).distinct()
+            if (ids.isEmpty()) return@withContext page
+            try {
+                currentCoroutineContext().ensureActive()
+                val root = fetch("/v1/me/library/artists?ids=${URLEncoder.encode(ids.joinToString(","), "UTF-8")}&include=catalog", true)
+                val data = root.optJSONArray("data") ?: return@withContext page
+                val enriched = (0 until data.length()).mapNotNull { data.optJSONObject(it) }
+                    .filter { it.optString("type") == "library-artists" }.mapNotNull(::parseResourceItem)
+                    .associateBy { it.resourceId }
+                page.copy(items = page.items.map { item -> enriched[item.resourceId]?.let { extra -> item.copy(
+                    artworkUrl = item.artworkUrl ?: extra.artworkUrl, catalogId = item.catalogId ?: extra.catalogId,
+                    motionArtworkUrl = item.motionArtworkUrl ?: extra.motionArtworkUrl,
+                    motionPreviewUrl = item.motionPreviewUrl ?: extra.motionPreviewUrl,
+                    motionArtworkVariants = item.motionArtworkVariants.ifEmpty { extra.motionArtworkVariants },
+                    description = item.description ?: extra.description, url = item.url ?: extra.url,
+                ) } ?: item })
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { page } // A thumbnail lookup cannot erase successful search results.
+        }
+    }
+
+    private fun resourceId(item: Track): String = (item.resourceId ?: item.catalogId ?: item.id.removePrefix("apple:"))
+        .also { require(validResourceId(it)) { AppText.text(R.string.services_collection_unrecognized) } }
+
+    private fun validResourceId(id: String): Boolean = id.matches(Regex("[A-Za-z0-9._-]+"))
+
+    private fun resource(root: JSONObject, id: String, type: String): JSONObject {
+        val data = root.optJSONArray("data")
+        return (0 until (data?.length() ?: 0)).asSequence().mapNotNull { data?.optJSONObject(it) }
+            .firstOrNull { it.optString("id") == id && it.optString("type") == type }
+            ?: error(AppText.text(R.string.services_track_unavailable))
+    }
+
+    private fun JSONArray.stringValues(): List<String> = (0 until length()).mapNotNull {
+        optString(it).takeIf { value -> value.isNotBlank() && value != "null" }
+    }
 
     suspend fun libraryPlaylistsPage(nextPage: String? = null): LibraryPage =
-        libraryPage(LibraryCollection.Playlists, nextPage) { requestRoot(it, needsUserToken = true) }
+        libraryPage(LibraryCollection.Playlists, nextPage) { editorialPage(it, true, LibraryCollection.Playlists.resourceTypes) }
 
     suspend fun librarySongsPage(nextPage: String? = null): LibraryPage =
-        libraryPage(LibraryCollection.Songs, nextPage) { requestRoot(it, needsUserToken = true) }
+        libraryPage(LibraryCollection.Songs, nextPage) { editorialPage(it, true, LibraryCollection.Songs.resourceTypes) }
 
     internal suspend fun libraryPage(
         collection: LibraryCollection,
         nextPage: String? = null,
         fetchPage: suspend (String) -> JSONObject,
+    ): LibraryPage = resourcePage(collection.request, collection.resourceTypes, nextPage, fetchPage)
+
+    private suspend fun resourcePage(
+        request: CollectionRequest,
+        resourceTypes: Set<String>,
+        nextPage: String?,
+        fetchPage: suspend (String) -> JSONObject,
+        firstPage: String = request.firstPage,
+        select: (JSONObject) -> JSONObject = { it },
     ): LibraryPage = withContext(parseDispatcher) {
-        val request = collection.request
-        val path = nextPage?.let(request::nextPage) ?: request.firstPage
+        val path = nextPage?.let(request::nextPage) ?: firstPage
         currentCoroutineContext().ensureActive()
-        val root = fetchPage(path)
+        val root = select(fetchPage(path))
         val data = checkNotNull(root.optJSONArray("data")) {
             AppText.text(R.string.services_playlist_tracks_unavailable)
         }
-        // Only root resources belong to this page. Catalog relationships enrich
-        // those resources; they must not become additional library shelf cards.
         val tracks = buildList {
             for (index in 0 until data.length()) {
+                currentCoroutineContext().ensureActive()
                 val item = data.optJSONObject(index) ?: continue
                 val type = item.optString("type")
-                if (type != collection.resourceType) continue
+                if (type !in resourceTypes) continue
                 val attributes = item.optJSONObject("attributes") ?: continue
                 val linked = item.optJSONObject("relationships")?.optJSONObject("catalog")
                     ?.optJSONArray("data")?.optJSONObject(0)
-                attributes.toTrack(item.getString("id"), checkNotNull(catalogKind(type)), linked, type)?.let(::add)
+                attributes.toTrack(item.getString("id"), checkNotNull(catalogKind(type)), linked, type,
+                    allowLibraryPlaceholder = type.startsWith("library-"))?.let(::add)
             }
         }
-        val next = root.optString("next").takeIf { it.isNotBlank() && it != "null" }
-            ?.let(request::nextPage)
+        val next = root.optString("next").takeIf { it.isNotBlank() && it != "null" }?.let(request::nextPage)
         check(next != path) { AppText.text(R.string.services_playlist_page_repeated) }
-        LibraryPage(items = mergeLibraryPage(emptyList(), tracks), nextPage = next, requestedPage = path)
+        val total = root.optJSONObject("meta")?.optInt("total", -1)?.takeIf { it >= 0 }
+        LibraryPage(mergeLibraryPage(emptyList(), tracks), next, path, total)
     }
 
     suspend fun resolveCatalogSongId(id: String): String = catalogSongResolver.resolve(id)
@@ -255,7 +560,7 @@ class AppleMusicApi(
             item.optJSONObject("attributes")?.optJSONObject("playParams"), linked)
         if (resolved == id || resolved.startsWith("i.")) {
             throw CatalogRequestException(CatalogFailureReason.Unavailable,
-                AppText.text(R.string.services_uploaded_song_lyrics_unavailable))
+                AppText.text(R.string.services_track_unavailable))
         }
         Log.i(TAG, "Library source catalog: $id -> $resolved")
         return resolved
@@ -275,33 +580,6 @@ class AppleMusicApi(
         )
         Log.i(TAG, "Catalog equivalence: $id -> $playable (storefront=$storefront)")
         return playable
-    }
-
-    suspend fun charts(types: String = "albums,songs,playlists"): List<Track> {
-        val sf = effectiveStorefront()
-        return request(
-            path = "/v1/catalog/$sf/charts?types=$types&limit=14&" +
-                "extend=editorialArtwork,editorialVideo",
-            needsUserToken = false,
-        )
-    }
-
-    suspend fun liveRadio(): List<Track> {
-        val sf = effectiveStorefront()
-        return request(
-            path = "/v1/catalog/$sf/stations?filter%5Bfeatured%5D=apple-music-live-radio",
-            needsUserToken = false,
-        )
-    }
-
-    suspend fun search(term: String): List<Track> {
-        if (term.isBlank()) return emptyList()
-        val sf = effectiveStorefront()
-        val encoded = URLEncoder.encode(term.trim(), Charsets.UTF_8.name())
-        return request(
-            path = "/v1/catalog/$sf/search?term=$encoded&types=songs,albums,playlists,music-videos,stations&limit=15",
-            needsUserToken = false,
-        )
     }
 
     /** Search only playable songs for cross-catalog resolution. */
@@ -356,109 +634,7 @@ class AppleMusicApi(
         return stationId to songs.filter { it.catalogKind == CatalogKind.Song }
     }
 
-    internal fun parseStationTracks(root: JSONObject): List<Track> = parseAllTracks(root, songsOnly = true)
-
-    suspend fun collectionTracks(collection: Track): List<Track> =
-        collectionTracks(collection) { path, needsUserToken -> requestRoot(path, needsUserToken) }
-
-    internal suspend fun collectionTracks(
-        collection: Track,
-        fetchPage: suspend (String, Boolean) -> JSONObject,
-    ): List<Track> = withContext(parseDispatcher) {
-        val request = collection.collectionRequest(effectiveStorefront())
-        val visited = mutableSetOf<String>()
-        val tracks = mutableListOf<Track>()
-        var path: String? = request.firstPage
-        while (path != null) {
-            currentCoroutineContext().ensureActive()
-            check(visited.add(path)) { AppText.text(R.string.services_playlist_page_repeated) }
-            val root = fetchPage(path, request.needsUserToken)
-            val data = root.optJSONArray("data") ?: error(AppText.text(R.string.services_playlist_tracks_unavailable))
-            // Read only this relationship, in order. Nested catalog resources are metadata,
-            // and repeated songs are separate playlist entries, not duplicates to remove.
-            for (index in 0 until data.length()) {
-                val item = data.optJSONObject(index) ?: continue
-                val type = item.optString("type")
-                if (catalogKind(type) != CatalogKind.Song) continue
-                val attributes = item.optJSONObject("attributes") ?: continue
-                val linked = item.optJSONObject("relationships")?.optJSONObject("catalog")
-                    ?.optJSONArray("data")?.optJSONObject(0)
-                attributes.toTrack(item.getString("id"), CatalogKind.Song, linked, type)?.let(tracks::add)
-            }
-            path = root.optString("next").takeIf { it.isNotBlank() && it != "null" }
-                ?.let(request::nextPage)
-        }
-        tracks
-    }
-
-    private suspend fun request(path: String, needsUserToken: Boolean): List<Track> {
-        val root = requestRoot(path, needsUserToken)
-        return withContext(parseDispatcher) { parseResources(root) }
-    }
-
-    private suspend fun requestRoot(
-        path: String,
-        needsUserToken: Boolean,
-        method: String = "GET",
-        postBody: String? = null,
-    ): JSONObject = withContext(Dispatchers.IO) {
-        val musicUserToken = userToken()
-        if (needsUserToken) {
-            if (musicUserToken.isNullOrBlank()) {
-                throw CatalogRequestException(CatalogFailureReason.Authorization,
-                    AppText.text(R.string.services_sign_in_apple_music))
-            }
-        }
-
-        suspend fun execute(forceTokenRefresh: Boolean): Pair<Int, String> {
-            val developerToken = developerTokens.token(forceRefresh = forceTokenRefresh)
-            val connection = URI("https://api.music.apple.com$path").toURL()
-                .openConnection() as HttpURLConnection
-            return try {
-                connection.requestMethod = method
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 15_000
-                connection.setRequestProperty("Authorization", "Bearer $developerToken")
-                connection.setRequestProperty("Accept", "application/json")
-                if (!musicUserToken.isNullOrBlank()) {
-                    connection.setRequestProperty("Music-User-Token", musicUserToken)
-                }
-                if (postBody != null) {
-                    connection.doOutput = true
-                    connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    connection.outputStream.bufferedWriter(Charsets.UTF_8).use { it.write(postBody) }
-                }
-                val status = connection.responseCode
-                val body = (if (status in 200..299) {
-                    connection.inputStream
-                } else {
-                    connection.errorStream
-                })?.bufferedReader()?.use { it.readText() }.orEmpty()
-                status to body
-            } finally {
-                connection.disconnect()
-            }
-        }
-
-        var (status, body) = execute(forceTokenRefresh = false)
-        if (status == HttpURLConnection.HTTP_UNAUTHORIZED) {
-            val retried = execute(forceTokenRefresh = true)
-            status = retried.first
-            body = retried.second
-        }
-        if (status !in 200..299) {
-            val message = when (status) {
-                HttpURLConnection.HTTP_UNAUTHORIZED,
-                HttpURLConnection.HTTP_FORBIDDEN,
-                -> AppText.text(R.string.services_apple_auth_http_error, status)
-                else -> AppText.text(R.string.services_apple_api_http_error, status)
-            }
-            throw CatalogRequestException(catalogHttpFailure(status), message, status)
-        }
-        JSONObject(body)
-    }
-
-    private fun parseAllTracks(root: JSONObject, songsOnly: Boolean = false): List<Track> {
+    internal fun parseStationTracks(root: JSONObject): List<Track> {
         val output = LinkedHashMap<String, Track>()
 
         fun visit(value: Any?) {
@@ -469,9 +645,7 @@ class AppleMusicApi(
                     val type = value.optString("type")
                     val attributes = value.optJSONObject("attributes")
                     val kind = catalogKind(type)
-                    if (id.isNotBlank() && attributes != null && kind != null &&
-                        (!songsOnly || kind == CatalogKind.Song)
-                    ) {
+                    if (id.isNotBlank() && attributes != null && kind == CatalogKind.Song) {
                         val linkedCatalog = value.optJSONObject("relationships")
                             ?.optJSONObject("catalog")
                             ?.optJSONArray("data")
@@ -493,6 +667,152 @@ class AppleMusicApi(
         return output.values.toList()
     }
 
+    suspend fun collectionTracks(collection: Track): List<Track> =
+        collectionTracks(collection) { path, needsUserToken -> requestRoot(path, needsUserToken) }
+
+    /** A relationship page preserves occurrences: repeated playlist songs are intentional. */
+    suspend fun collectionTracksPage(collection: Track, nextPage: String? = null): LibraryPage =
+        collectionTracksPage(collection, nextPage) { path, needsUserToken -> requestRoot(path, needsUserToken) }
+
+    internal suspend fun sampleCollectionShuffleSong(collection: Track, total: Int): CollectionShuffleSample? =
+        sampleCollectionShuffleSong(collection, total, { path, user -> requestRoot(path, user) })
+
+    internal suspend fun sampleCollectionShuffleSong(
+        collection: Track,
+        total: Int,
+        fetchPage: suspend (String, Boolean) -> JSONObject,
+        randomIndex: (Int) -> Int = { kotlin.random.Random.nextInt(it) },
+    ): CollectionShuffleSample? {
+        if (total <= 0 || collection.catalogKind != CatalogKind.Playlist) return null
+        val request = collection.collectionRequest(effectiveStorefront())
+        // Rejection sampling over RAW occurrences is uniform among parsed songs,
+        // including repeats. Exhaustion falls back to the complete population.
+        repeat(6) {
+            val index = randomIndex(total).also { require(it in 0 until total) }
+            val page = collectionTracksPage(request, request.singleOccurrence(index), fetchPage)
+            if (page.total != total || page.rawItemCount != 1) return CollectionShuffleSample(null, index, total, request.firstPage)
+            val nextOffset = page.nextPage?.let { java.net.URI(it).rawQuery.orEmpty().split('&')
+                .singleOrNull { part -> part.substringBefore('=') == "offset" }?.substringAfter('=')?.toIntOrNull() }
+            if (if (index == total - 1) page.nextPage != null else nextOffset != index + 1)
+                return CollectionShuffleSample(null, index, total, request.firstPage)
+            page.items.singleOrNull()?.let { return CollectionShuffleSample(it, index, total, request.firstPage) }
+        }
+        return null
+    }
+
+    internal suspend fun collectionTracksPage(
+        collection: Track,
+        nextPage: String? = null,
+        fetchPage: suspend (String, Boolean) -> JSONObject,
+    ): LibraryPage = collectionTracksPage(collection.collectionRequest(effectiveStorefront()), nextPage, fetchPage)
+
+    private suspend fun collectionTracksPage(
+        request: CollectionRequest,
+        nextPage: String?,
+        fetchPage: suspend (String, Boolean) -> JSONObject,
+    ): LibraryPage = withContext(parseDispatcher) {
+        val path = nextPage?.let { request.nextPage(it, retainPageSize = true) } ?: request.firstPage
+        currentCoroutineContext().ensureActive()
+        val root = fetchPage(path, request.needsUserToken)
+        currentCoroutineContext().ensureActive()
+        val data = root.optJSONArray("data") ?: error(AppText.text(R.string.services_playlist_tracks_unavailable))
+        val rawOffsets = mutableListOf<Int>()
+        val tracks = buildList {
+            for (index in 0 until data.length()) {
+                currentCoroutineContext().ensureActive()
+                val item = data.optJSONObject(index) ?: continue
+                val type = item.optString("type")
+                if (catalogKind(type) != CatalogKind.Song) continue
+                val attributes = item.optJSONObject("attributes") ?: continue
+                val linked = item.optJSONObject("relationships")?.optJSONObject("catalog")
+                    ?.optJSONArray("data")?.optJSONObject(0)
+                attributes.toTrack(item.getString("id"), CatalogKind.Song, linked, type,
+                    allowLibraryPlaceholder = type.startsWith("library-"))?.let { add(it); rawOffsets += index }
+            }
+        }
+        val next = root.optString("next").takeIf { it.isNotBlank() && it != "null" }
+            ?.let { request.nextPage(it, retainPageSize = true) }
+        check(next != path) { AppText.text(R.string.services_playlist_page_repeated) }
+        LibraryPage(tracks, next, path, root.optJSONObject("meta")?.optInt("total", -1)?.takeIf { it >= 0 },
+            rawItemCount = data.length(), itemRawOffsets = rawOffsets)
+    }
+
+    internal suspend fun collectionTracks(
+        collection: Track,
+        fetchPage: suspend (String, Boolean) -> JSONObject,
+    ): List<Track> {
+        val request = collection.collectionRequest(effectiveStorefront())
+        val visited = mutableSetOf<String>()
+        val tracks = mutableListOf<Track>()
+        var next: String? = null
+        do {
+            currentCoroutineContext().ensureActive()
+            val page = collectionTracksPage(request, next, fetchPage)
+            check(visited.add(page.requestedPage) && (page.nextPage == null || page.nextPage !in visited)) {
+                AppText.text(R.string.services_playlist_page_repeated)
+            }
+            tracks += page.items
+            next = page.nextPage
+        } while (next != null)
+        return tracks
+    }
+
+    private suspend fun request(path: String, needsUserToken: Boolean): List<Track> {
+        val root = requestRoot(path, needsUserToken)
+        return withContext(parseDispatcher) { parseResources(root) }
+    }
+
+    private suspend fun requestRoot(
+        path: String,
+        needsUserToken: Boolean,
+        method: String = "GET",
+        postBody: String? = null,
+    ): JSONObject = withContext(Dispatchers.IO) { withCatalogRequestDeadline {
+        val endpoint = URI("https://api.music.apple.com$path")
+        require(path.startsWith("/v1/") && endpoint.scheme == "https" && endpoint.host == "api.music.apple.com" &&
+            endpoint.port == -1 && endpoint.userInfo == null && endpoint.fragment == null)
+        require(method in setOf("GET", "POST", "PUT", "DELETE"))
+        val musicUserToken = userToken()
+        if (needsUserToken) {
+            if (musicUserToken.isNullOrBlank()) {
+                throw CatalogRequestException(CatalogFailureReason.Authorization,
+                    AppText.text(R.string.services_sign_in_apple_music))
+            }
+        }
+
+        suspend fun execute(forceTokenRefresh: Boolean): CatalogHttpReply {
+            val developerToken = developerTokens.token(forceRefresh = forceTokenRefresh)
+            val requestBody = (postBody ?: if (method == "POST" || method == "PUT") "" else null)
+                ?.toRequestBody("application/json; charset=utf-8".toMediaType())
+            val request = Request.Builder().url(endpoint.toString())
+                .header("Authorization", "Bearer $developerToken").header("Accept", "application/json")
+                .apply { if (!musicUserToken.isNullOrBlank()) header("Music-User-Token", musicUserToken) }
+                .method(method, requestBody).build()
+            return CatalogHttpTransport().execute(request)
+        }
+
+        val (status, body) = catalogRequestWithTokenRefresh(::execute)
+        if (status !in 200..299) {
+            val message = when (status) {
+                HttpURLConnection.HTTP_UNAUTHORIZED,
+                HttpURLConnection.HTTP_FORBIDDEN,
+                -> AppText.text(R.string.services_apple_auth_http_error, status)
+                else -> AppText.text(R.string.services_apple_api_http_error, status)
+            }
+            throw catalogRequestFailure(status, body, message)
+        }
+        if (body.isBlank()) JSONObject() else JSONObject(body)
+    } }
+
+    internal fun parseResourceItem(item: JSONObject): Track? {
+        val id = item.stringAttribute("id") ?: return null
+        val type = item.stringAttribute("type") ?: return null
+        val kind = catalogKind(type) ?: return null
+        val attributes = item.optJSONObject("attributes") ?: return null
+        val linked = item.optJSONObject("relationships")?.optJSONObject("catalog")?.optJSONArray("data")?.optJSONObject(0)
+        return attributes.toTrack(id, kind, linked, type, allowLibraryPlaceholder = type.startsWith("library-"))
+    }
+
     private fun parseResources(root: JSONObject): List<Track> {
         val output = LinkedHashMap<String, Track>()
 
@@ -510,9 +830,7 @@ class AppleMusicApi(
                             ?.optJSONArray("data")
                             ?.optJSONObject(0)
                         val track = attributes.toTrack(id, kind, linkedCatalog, type)
-                        if (track != null && !output.containsKey(track.id)) {
-                            output[track.id] = track
-                        }
+                        if (track != null) output.putIfAbsent(libraryResourceKey(track), track)
                         return
                     }
                     value.keys().forEachRemaining { key ->
@@ -523,7 +841,7 @@ class AppleMusicApi(
         }
 
         visit(root)
-        return output.values.take(24)
+        return output.values.toList()
     }
 
     private fun JSONObject.toTrack(
@@ -531,6 +849,7 @@ class AppleMusicApi(
         kind: CatalogKind,
         linkedCatalog: JSONObject? = null,
         resourceType: String? = null,
+        allowLibraryPlaceholder: Boolean = false,
     ): Track? {
         val catalogAttrs = linkedCatalog?.optJSONObject("attributes")
         val playParams = optJSONObject("playParams")
@@ -556,14 +875,28 @@ class AppleMusicApi(
             resolvedCatalogId == id &&
             artwork == null &&
             (rawName.isBlank() || rawName == "Unknown Album" || rawArtist.isBlank())
-        if (isUnmatchedLocalContainer) return null
+        if (isUnmatchedLocalContainer && !allowLibraryPlaceholder) return null
 
         val editorialNotes = optJSONObject("editorialNotes")
             ?: catalogAttrs?.optJSONObject("editorialNotes")
         val name = rawName.ifBlank {
-            editorialNotes?.optString("name").orEmpty().ifBlank { AppText.text(R.string.services_unknown_title) }
+            editorialNotes?.optString("name").orEmpty().ifBlank {
+                if (allowLibraryPlaceholder) when (kind) {
+                    CatalogKind.Album -> AppText.text(R.string.services_kind_album)
+                    CatalogKind.Playlist -> AppText.text(R.string.services_kind_playlist)
+                    CatalogKind.MusicVideo -> AppText.text(R.string.services_kind_music_video)
+                    CatalogKind.Song -> AppText.text(R.string.services_kind_song)
+                    else -> AppText.text(R.string.services_unknown_title)
+                } else AppText.text(R.string.services_unknown_title)
+            }
         }
-        val artist = rawArtist.ifBlank { "Apple Music" }
+        val artist = rawArtist.ifBlank {
+            when {
+                kind == CatalogKind.Artist -> name
+                allowLibraryPlaceholder -> ""
+                else -> "Apple Music"
+            }
+        }
         val album = optString("albumName").ifBlank {
             catalogAttrs?.optString("albumName").orEmpty().ifBlank {
                 when (kind) {
@@ -572,10 +905,15 @@ class AppleMusicApi(
                     CatalogKind.Station -> AppText.text(R.string.services_kind_station)
                     CatalogKind.MusicVideo -> AppText.text(R.string.services_kind_music_video)
                     CatalogKind.Song -> AppText.text(R.string.services_kind_song)
+                    CatalogKind.Artist -> ""
+                    CatalogKind.Page -> ""
                 }
             }
         }
-        val motion = findEditorialMotion() ?: catalogAttrs?.findEditorialMotion()
+        val motionVariants = editorialMotionVariants(kind == CatalogKind.Artist).ifEmpty {
+            catalogAttrs?.editorialMotionVariants(kind == CatalogKind.Artist).orEmpty()
+        }
+        val motion = motionVariants.firstOrNull()
         val palettes = paletteFor(resolvedCatalogId)
         val hasLyrics = optBoolean("hasLyrics", false) ||
             (catalogAttrs?.optBoolean("hasLyrics", false) == true)
@@ -584,22 +922,47 @@ class AppleMusicApi(
             title = name,
             artist = artist,
             album = album,
-            durationMs = optLong(
-                "durationInMillis",
-                catalogAttrs?.optLong("durationInMillis", 48_000L) ?: 48_000L,
-            ).coerceAtLeast(1L),
+            durationMs = optLong("durationInMillis", 0L).takeIf { it > 0L }
+                ?: catalogAttrs?.optLong("durationInMillis", 0L)?.coerceAtLeast(0L) ?: 0L,
             palette = palettes,
             lyrics = emptyList(),
-            catalogId = resolvedCatalogId,
+            // A source-library ID is not proof of an Apple Music catalog match.
+            // Keep it as resourceId for browsing and the resolver's library lookup.
+            catalogId = resolvedCatalogId.takeUnless { allowLibraryPlaceholder && it == id },
             catalogKind = kind,
             artworkUrl = artwork,
             motionArtworkUrl = motion?.videoUrl,
             motionPreviewUrl = motion?.previewUrl,
+            motionArtworkVariants = motionVariants,
             hasLyricsAvailable = hasLyrics,
             resourceId = id,
             resourceType = resourceType,
+            description = collectionDescription() ?: catalogAttrs?.collectionDescription(),
+            url = canonicalUrl() ?: catalogAttrs?.canonicalUrl(),
+            contentRating = sequenceOf(stringAttribute("contentRating"), catalogAttrs?.stringAttribute("contentRating"))
+                .firstOrNull { it == "explicit" || it == "clean" },
         )
     }
+
+    private fun JSONObject.collectionDescription(): String? {
+        fun text(key: String): String? = when (val value = opt(key)) {
+            is String -> value.takeIf { it.isNotBlank() && it != "null" }
+            is JSONObject -> sequenceOf("standard", "short", "stringForDisplay")
+                .map { value.optString(it) }.firstOrNull { it.isNotBlank() && it != "null" }
+            else -> null
+        }
+        return text("description") ?: text("plainEditorialNotes") ?: text("editorialNotes")
+    }
+
+    private fun JSONObject.stringAttribute(key: String): String? = (opt(key) as? String)
+        ?.takeIf { it.isNotBlank() && it != "null" }
+
+    private fun JSONObject.canonicalUrl(): String? = stringAttribute("url")?.takeIf { value ->
+        runCatching { URI(value) }.getOrNull()?.let {
+            it.scheme == "https" && it.host == "music.apple.com" && it.userInfo == null && it.port == -1
+        } == true
+    }
+
 
     private fun JSONObject.displayText(key: String): String? {
         val value = opt(key)
@@ -612,49 +975,7 @@ class AppleMusicApi(
         }
     }
 
-    private data class MotionAsset(val videoUrl: String, val previewUrl: String?)
-
-    private fun JSONObject.findEditorialMotion(): MotionAsset? {
-        editorialMotion()?.let { return it }
-        val editorialCard = optJSONObject("editorialCard") ?: return null
-        return editorialCard.editorialMotion()
-    }
-
-    private fun JSONObject.editorialMotion(): MotionAsset? {
-        val videos = optJSONObject("editorialVideo") ?: return null
-        val preferredFlavors = listOf(
-            "motionSquareVideo1x1",
-            "motionDetailSquare",
-            "backgroundMotion1x1",
-            "motionArtistSquare1x1",
-            "motionMediumVideo16x9",
-            "motionArtistWide16x9",
-            "motionWideVideo21x9",
-            "motionDetailTall",
-            "motionTallVideo3x4",
-        )
-        for (flavor in preferredFlavors) {
-            val item = videos.optJSONObject(flavor) ?: continue
-            val videoUrl = item.optString("video").takeIf { it.startsWith("https://") }
-                ?: item.optJSONArray("videoFile")?.let { files ->
-                    (files.length() - 1 downTo 0).firstNotNullOfOrNull { index ->
-                        files.optJSONObject(index)?.optString("assetUrl")
-                            ?.takeIf { it.startsWith("https://") }
-                    }
-                }
-                ?: continue
-            val previewUrl = item.optJSONObject("previewFrame")
-                ?.optString("url")
-                ?.asArtworkUrl()
-            return MotionAsset(videoUrl, previewUrl)
-        }
-        return null
-    }
-
-    private fun String.asArtworkUrl(): String? = replace("{w}", "600")
-        .replace("{h}", "600")
-        .replace("{f}", "jpg")
-        .takeIf { it.startsWith("https://") }
+    private fun String.asArtworkUrl(): String? = editorialArtworkUrl()
 
     private fun catalogKind(type: String): CatalogKind? = when (type) {
         "songs", "library-songs" -> CatalogKind.Song
@@ -662,6 +983,8 @@ class AppleMusicApi(
         "playlists", "library-playlists" -> CatalogKind.Playlist
         "stations" -> CatalogKind.Station
         "music-videos", "library-music-videos" -> CatalogKind.MusicVideo
+        "artists", "library-artists" -> CatalogKind.Artist
+        "curators", "apple-curators", "record-labels", "activities", "genres", "station-genres", "library-playlist-folders" -> CatalogKind.Page
         else -> null
     }
 

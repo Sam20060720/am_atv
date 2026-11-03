@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="phone_sign_in_title">在手机上登录</string>
+    <string name="phone_sign_in_instructions">让手机与电视连接相同 Wi-Fi，再扫描此代码登录 Apple Music。</string>
+    <string name="phone_sign_in_starting">正在准备登录…</string>
+    <string name="phone_sign_in_waiting">请使用手机扫描代码。</string>
+    <string name="phone_sign_in_authorizing">请在手机上完成登录。</string>
+    <string name="phone_sign_in_complete">已完成登录。</string>
+    <string name="phone_sign_in_expired">代码已过期，请获取新代码后继续。</string>
+    <string name="phone_sign_in_failed">无法启动手机登录。</string>
+    <string name="phone_sign_in_retry">重试</string>
+    <string name="phone_sign_in_cancel">取消</string>
+    <string name="phone_sign_in_done">完成</string>
+    <string name="phone_sign_in_qr_description">扫描以在此电视登录 Apple Music</string>
+</resources>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="radio_browse_genres">依曲風瀏覽</string>
+    <string name="radio_for_you">為你推薦</string>
+    <string name="radio_recent">最近播放</string>
+</resources>

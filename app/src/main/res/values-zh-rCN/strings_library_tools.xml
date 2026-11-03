@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_tools_artist">艺人</string>
+    <string name="library_tools_original">原始顺序</string>
+    <string name="library_tools_name">名称</string>
+    <string name="library_tools_filter">筛选此分类</string>
+    <string name="library_tools_apply">应用</string>
+    <string name="library_tools_clear_filter">清除筛选</string>
+    <string name="library_tools_letters">字母定位</string>
+    <string name="library_tools_other">其他</string>
+    <string name="library_tools_loaded">正在准备此分类完整内容・已加载 %1$d 项</string>
+    <string name="library_tools_indexing">正在整理资料库…</string>
+    <string name="library_tools_cancel">取消</string>
+    <string name="library_tools_continue">继续</string>
+    <string name="library_tools_paused">准备已暂停・已加载 %1$d 项</string>
+    <string name="library_tools_failed">准备已中止・已加载 %1$d 项</string>
+    <string name="library_tools_filtered_count">符合筛选：%1$d 项</string>
+    <string name="library_tools_no_matches">没有符合筛选的内容。</string>
+    <string name="library_tools_search_all">搜索整个资料库</string>
+</resources>

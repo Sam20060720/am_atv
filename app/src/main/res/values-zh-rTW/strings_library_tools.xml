@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_tools_artist">藝人</string>
+    <string name="library_tools_original">原始順序</string>
+    <string name="library_tools_name">名稱</string>
+    <string name="library_tools_filter">篩選此分類</string>
+    <string name="library_tools_apply">套用</string>
+    <string name="library_tools_clear_filter">清除篩選</string>
+    <string name="library_tools_letters">字母定位</string>
+    <string name="library_tools_other">其他</string>
+    <string name="library_tools_loaded">正在準備此分類完整內容・已載入 %1$d 項</string>
+    <string name="library_tools_indexing">正在整理資料庫…</string>
+    <string name="library_tools_cancel">取消</string>
+    <string name="library_tools_continue">繼續</string>
+    <string name="library_tools_paused">準備已暫停・已載入 %1$d 項</string>
+    <string name="library_tools_failed">準備已中止・已載入 %1$d 項</string>
+    <string name="library_tools_filtered_count">符合篩選：%1$d 項</string>
+    <string name="library_tools_no_matches">沒有符合篩選的內容。</string>
+    <string name="library_tools_search_all">搜尋整個資料庫</string>
+</resources>

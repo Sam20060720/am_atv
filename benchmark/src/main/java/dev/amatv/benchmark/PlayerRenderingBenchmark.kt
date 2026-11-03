@@ -13,6 +13,7 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import org.junit.After
+import org.junit.Before
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
@@ -28,17 +29,27 @@ import org.junit.runner.RunWith
 class PlayerRenderingBenchmark {
     @get:Rule val benchmark = MacrobenchmarkRule()
     @get:Rule val failures = UiFailureArtifacts()
+    private var playbackStarted = false
+
+    @Before fun requireExplicitPlayback() {
+        requirePlayerPlaybackOptIn()
+    }
+
+    private fun prepareRetainedPausedSong(ui: TvUi): PlayerUi {
+        assumeTrue("SKIPPED: need a previously selected real song", ui.openRetainedSong())
+        val player = PlayerUi(ui)
+        // Later repetitions may still own playback from the preceding window.
+        if (playbackStarted && player.state() in setOf("playing", "preparing")) player.pause()
+        assumeTrue("SKIPPED: retained song must already be paused", player.state() == "paused")
+        return player
+    }
 
     private fun MacrobenchmarkScope.prepareLivePlayer(showLyrics: Boolean) {
         startActivityAndWait()
         val ui = TvUi(device)
-        ui.ensurePlayableSong()
-        val player = PlayerUi(ui)
-        when (player.state()) {
-            "playing" -> Unit
-            "preparing" -> player.awaitState("playing", 60_000)
-            else -> player.play()
-        }
+        val player = prepareRetainedPausedSong(ui)
+        playbackStarted = true
+        player.play()
         // Normalize both cases through a genuinely rendered TTML panel. This
         // makes the artwork run a comparator for the same lyric-capable song,
         // rather than accidentally measuring an instrumental/failed request.
@@ -81,12 +92,12 @@ class PlayerRenderingBenchmark {
         setupBlock = {
             startActivityAndWait()
             val preparingUi = TvUi(device)
-            assumeTrue("SKIPPED: need a previously selected real song", !preparingUi.ensurePlayableSong())
-            val preparingPlayer = PlayerUi(preparingUi)
+            val preparingPlayer = prepareRetainedPausedSong(preparingUi)
             // Keep TTML word drawing cold while setting the real saved cursor.
             preparingPlayer.focusControl("player-lyrics")
             preparingUi.center(0)
             preparingUi.center(0)
+            playbackStarted = true
             preparingPlayer.play()
             preparingPlayer.focusControl("player-play-pause")
             preparingUi.up(0)
@@ -105,7 +116,7 @@ class PlayerRenderingBenchmark {
             device.executeShellCommand("am force-stop $TARGET")
             startActivityAndWait()
             val ui = TvUi(device)
-            assumeTrue("SKIPPED: need a previously selected real song", !ui.ensurePlayableSong())
+            assumeTrue("SKIPPED: need a previously selected real song", ui.openRetainedSong())
             val player = PlayerUi(ui)
             player.awaitState("paused")
             // Restored queue metadata excludes TTML; show its empty stage before
@@ -171,6 +182,7 @@ class PlayerRenderingBenchmark {
     }
 
     @After fun pauseRealAudio() {
+        if (!playbackStarted) return
         val ui = TvUi(UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()))
         if (!ui.has("player-screen")) return
         val player = PlayerUi(ui)

@@ -26,6 +26,11 @@ class TextureAlphaMask {
         xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
     }
     private val matrix = Matrix()
+    private val matrixValues = floatArrayOf(
+        0f, 0f, 0f,
+        0f, 0f, 0f,
+        0f, 0f, 1f,
+    )
     private var textureKey = -1
     private var shader: BitmapShader? = null
     private var edgeKey: List<Any>? = null
@@ -63,10 +68,15 @@ class TextureAlphaMask {
             } else {
                 paint.color = Color.argb(if (end <= start && start <= edge) last else first, 255, 255, 255)
             }
-        } else if (end - start < max(2f, (if (vertical) bottom - top else right - left) * RAMP_SIZE / 16_384f)) {
+        } else if (!canvas.isHardwareAccelerated &&
+            end - start < max(2f, (if (vertical) bottom - top else right - left) * RAMP_SIZE / 16_384f)
+        ) {
             // Skia's Android 12 software sampler uses fixed-point coordinates.
             // A tiny clipped feather can overflow those coordinates far beyond
             // the ramp, so rasterize just this 1-D edge at destination pixels.
+            // HWUI samples the existing ramp with floating-point coordinates;
+            // rerasterizing this moving edge there creates/uploads a bitmap on
+            // every lyric frame instead of updating the shader's matrix.
             val origin = if (vertical) top else left
             val count = ceil((if (vertical) bottom - top else right - left).toDouble()).toInt().coerceAtLeast(1)
             val key = listOf(first, last, start, end, origin, count, vertical)
@@ -97,11 +107,11 @@ class TextureAlphaMask {
             // The first/last texel centres map exactly onto the feather's
             // endpoints. Clamp supplies the constant alpha on either side.
             if (vertical) {
-                matrix.setValues(floatArrayOf(
-                    0f, right - left, left,
-                    scale, 0f, start - scale * .5f,
-                    0f, 0f, 1f,
-                ))
+                matrixValues[1] = right - left
+                matrixValues[2] = left
+                matrixValues[3] = scale
+                matrixValues[5] = start - scale * .5f
+                matrix.setValues(matrixValues)
             } else {
                 matrix.setScale(scale, bottom - top)
                 matrix.postTranslate(start - scale * .5f, top)

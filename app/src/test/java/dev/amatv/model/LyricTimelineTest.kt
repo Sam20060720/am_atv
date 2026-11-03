@@ -4,6 +4,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertNotSame
 import org.junit.Test
 
 class LyricTimelineTest {
@@ -11,6 +13,20 @@ class LyricTimelineTest {
         LyricLine(listOf(LyricWord("one", 1_000, 1_500))),
         LyricLine(listOf(LyricWord("two", 2_000, 2_500))),
     )
+
+    @Test fun preparedScheduleReusesFramesOnlyWithinUnchangedAuthoredBoundaries() {
+        val schedule = LyricTimeline.Schedule(lines)
+        val singing = schedule.snapshotAt(1_100L)
+        assertSame(singing, schedule.snapshotAt(1_499L))
+        val completed = schedule.snapshotAt(1_500L)
+        assertNotSame(singing, completed)
+        assertEquals(emptyList<Int>(), completed.activeLineIndices)
+        assertSame(completed, schedule.snapshotAt(1_516L))
+        val next = schedule.snapshotAt(2_010L)
+        assertEquals(listOf(1), next.activeLineIndices)
+        assertSame(next, schedule.snapshotAt(2_026L))
+        assertEquals(listOf(0), schedule.snapshotAt(1_100L).activeLineIndices)
+    }
 
     @Test
     fun activeLineTracksLatestStartedLine() {
@@ -51,9 +67,9 @@ class LyricTimelineTest {
             ),
         )
         assertEquals(0, LyricTimeline.activeLineAt(adjacent, 1_999, true))
-        assertEquals(listOf(0), LyricTimeline.activeLineIndicesAt(adjacent, 1_999))
+        assertEquals(listOf(0), LyricTimeline.Schedule(adjacent).snapshotAt(1_999).activeLineIndices)
         assertEquals(1, LyricTimeline.activeLineAt(adjacent, 2_000, true))
-        assertEquals(listOf(1), LyricTimeline.activeLineIndicesAt(adjacent, 2_000))
+        assertEquals(listOf(1), LyricTimeline.Schedule(adjacent).snapshotAt(2_000).activeLineIndices)
     }
 
     @Test
@@ -63,8 +79,8 @@ class LyricTimelineTest {
             LyricLine(listOf(LyricWord("next", 2_000, 2_500))),
         )
         assertEquals(0, LyricTimeline.activeLineAt(overlap, 2_119, true))
-        assertEquals(listOf(0, 1), LyricTimeline.activeLineIndicesAt(overlap, 2_119))
-        assertEquals(listOf(1), LyricTimeline.activeLineIndicesAt(overlap, 2_120))
+        assertEquals(listOf(0, 1), LyricTimeline.Schedule(overlap).snapshotAt(2_119).activeLineIndices)
+        assertEquals(listOf(1), LyricTimeline.Schedule(overlap).snapshotAt(2_120).activeLineIndices)
         assertEquals(1, LyricTimeline.activeLineAt(overlap, 2_120, true))
         assertEquals(1, LyricTimeline.nextClusterStartIndex(overlap, 0))
         assertEquals(-120L, LyricTimeline.lineLeadOffsetMs(overlap, 1))
@@ -86,7 +102,7 @@ class LyricTimelineTest {
             LyricLine(listOf(LyricWord("four", 3_000, 3_500))),
         )
 
-        assertEquals(listOf(0, 1), LyricTimeline.activeLineIndicesAt(phrases, 2_050))
+        assertEquals(listOf(0, 1), LyricTimeline.Schedule(phrases).snapshotAt(2_050).activeLineIndices)
         assertEquals(0, LyricTimeline.activeLineAt(phrases, 2_099, true))
         assertEquals(1, LyricTimeline.activeLineAt(phrases, 2_100, true))
         assertEquals(1, LyricTimeline.activeLineAt(phrases, 2_599, true))
@@ -109,7 +125,7 @@ class LyricTimelineTest {
         // The 100 ms overlap is half of the short singer's phrase, rather
         // than a release tail. The long first singer must not dilute that ratio.
         assertEquals(3, LyricTimeline.nextClusterStartIndex(layered, 0))
-        assertEquals(listOf(1, 2), LyricTimeline.activeLineIndicesAt(layered, 10_050))
+        assertEquals(listOf(1, 2), LyricTimeline.Schedule(layered).snapshotAt(10_050).activeLineIndices)
         assertEquals(0, LyricTimeline.activeLineAt(layered, 10_999, true))
         assertEquals(0L, LyricTimeline.lineLeadOffsetMs(layered, 2))
         assertEquals(3, LyricTimeline.activeLineAt(layered, 11_000, true))
@@ -125,9 +141,9 @@ class LyricTimelineTest {
 
         assertEquals(2, LyricTimeline.activeLineAt(phrases, 3_000, true))
         assertEquals(0, LyricTimeline.activeLineAt(phrases, 1_500, true))
-        assertEquals(listOf(0), LyricTimeline.activeLineIndicesAt(phrases, 1_500))
+        assertEquals(listOf(0), LyricTimeline.Schedule(phrases).snapshotAt(1_500).activeLineIndices)
         assertEquals(1, LyricTimeline.activeLineAt(phrases, 2_200, true))
-        assertEquals(listOf(1), LyricTimeline.activeLineIndicesAt(phrases, 2_200))
+        assertEquals(listOf(1), LyricTimeline.Schedule(phrases).snapshotAt(2_200).activeLineIndices)
         assertEquals(-1, LyricTimeline.activeLineAt(phrases, 0, true))
     }
 
@@ -325,8 +341,6 @@ class LyricTimelineTest {
     @Test
     fun longNoteCharacterWaveFinishesWithoutFreezingOrResettingAtVocalEnd() {
         val timing = LyricTimeline.CharacterEmphasisTiming(
-            charIndex = 0,
-            charCount = 1,
             animationDurationMs = 2_000,
             riseStartMs = 1_000,
             settleStartMs = 2_000,
@@ -393,16 +407,16 @@ class LyricTimelineTest {
             LyricLine(listOf(LyricWord("next", 18_500, 22_000))),
         )
 
-        assertEquals(listOf(0), LyricTimeline.activeLineIndicesAt(duet, 11_999))
-        assertEquals(listOf(0, 1), LyricTimeline.activeLineIndicesAt(duet, 12_000))
-        assertEquals(listOf(0, 1), LyricTimeline.activeLineIndicesAt(duet, 15_999))
-        assertEquals(listOf(1), LyricTimeline.activeLineIndicesAt(duet, 16_000))
+        assertEquals(listOf(0), LyricTimeline.Schedule(duet).snapshotAt(11_999).activeLineIndices)
+        assertEquals(listOf(0, 1), LyricTimeline.Schedule(duet).snapshotAt(12_000).activeLineIndices)
+        assertEquals(listOf(0, 1), LyricTimeline.Schedule(duet).snapshotAt(15_999).activeLineIndices)
+        assertEquals(listOf(1), LyricTimeline.Schedule(duet).snapshotAt(16_000).activeLineIndices)
         assertEquals(0, LyricTimeline.activeLineAt(duet, 16_999, true))
-        assertEquals(emptyList<Int>(), LyricTimeline.activeLineIndicesAt(duet, 17_000))
+        assertEquals(emptyList<Int>(), LyricTimeline.Schedule(duet).snapshotAt(17_000).activeLineIndices)
         assertEquals(0, LyricTimeline.activeLineAt(duet, 18_319, true))
         assertEquals(180L, LyricTimeline.lineLeadOffsetMs(duet, 2))
         assertEquals(2, LyricTimeline.activeLineAt(duet, 18_320, true))
-        assertEquals(listOf(2), LyricTimeline.activeLineIndicesAt(duet, 18_320))
+        assertEquals(listOf(2), LyricTimeline.Schedule(duet).snapshotAt(18_320).activeLineIndices)
         assertEquals(750, LyricTimeline.dynamicKaraokeClusterAdvanceMs(duet, 0, 2))
     }
 
@@ -416,7 +430,7 @@ class LyricTimelineTest {
 
         assertEquals(0, LyricTimeline.activeLineAt(duet, 16_999, true))
         assertEquals(2, LyricTimeline.activeLineAt(duet, 17_000, true))
-        assertEquals(listOf(2), LyricTimeline.activeLineIndicesAt(duet, 17_000))
+        assertEquals(listOf(2), LyricTimeline.Schedule(duet).snapshotAt(17_000).activeLineIndices)
         assertEquals(100L, LyricTimeline.lineLeadOffsetMs(duet, 2))
         assertEquals(480, LyricTimeline.dynamicKaraokeClusterAdvanceMs(duet, 0, 2))
     }
@@ -435,8 +449,8 @@ class LyricTimelineTest {
 
         assertEquals(14_000L, layered[0].endMs)
         assertEquals(3, LyricTimeline.nextClusterStartIndex(layered, 0))
-        assertEquals(listOf(0, 1), LyricTimeline.activeLineIndicesAt(layered, 12_500))
-        assertEquals(listOf(1, 2), LyricTimeline.activeLineIndicesAt(layered, 14_000))
+        assertEquals(listOf(0, 1), LyricTimeline.Schedule(layered).snapshotAt(12_500).activeLineIndices)
+        assertEquals(listOf(1, 2), LyricTimeline.Schedule(layered).snapshotAt(14_000).activeLineIndices)
         assertEquals(0, LyricTimeline.activeLineAt(layered, 16_999, true))
         assertEquals(3, LyricTimeline.activeLineAt(layered, 17_000, true))
         assertEquals(480, LyricTimeline.dynamicKaraokeClusterAdvanceMs(layered, 0, 3))
@@ -458,20 +472,20 @@ class LyricTimelineTest {
 
         // Before lead ends: line 0 focused and active
         assertEquals(0, LyricTimeline.activeLineAt(lines, 12_500, true))
-        assertEquals(listOf(0), LyricTimeline.activeLineIndicesAt(lines, 12_500))
+        assertEquals(listOf(0), LyricTimeline.Schedule(lines).snapshotAt(12_500).activeLineIndices)
 
         // Lead ended at 13_000; lookahead cues line 1 at 13_500 - 180 = 13_320
         assertEquals(1, LyricTimeline.activeLineAt(lines, 13_350, true))
         // Both lines active: line 0 background still singing, line 1 cued!
-        assertEquals(listOf(0, 1), LyricTimeline.activeLineIndicesAt(lines, 13_350))
+        assertEquals(listOf(0, 1), LyricTimeline.Schedule(lines).snapshotAt(13_350).activeLineIndices)
 
         // At 14_000: line 1 is singing, line 0 background still singing
         assertEquals(1, LyricTimeline.activeLineAt(lines, 14_000, true))
-        assertEquals(listOf(0, 1), LyricTimeline.activeLineIndicesAt(lines, 14_000))
+        assertEquals(listOf(0, 1), LyricTimeline.Schedule(lines).snapshotAt(14_000).activeLineIndices)
 
         // At 16_000: line 0 background finished, only line 1 remains active
         assertEquals(1, LyricTimeline.activeLineAt(lines, 16_000, true))
-        assertEquals(listOf(1), LyricTimeline.activeLineIndicesAt(lines, 16_000))
+        assertEquals(listOf(1), LyricTimeline.Schedule(lines).snapshotAt(16_000).activeLineIndices)
     }
 
     @Test
@@ -480,41 +494,21 @@ class LyricTimelineTest {
             LyricLine(listOf(LyricWord("intro", 9_000, 10_000))),
             LyricLine(listOf(LyricWord("verse", 18_000, 20_000))),
         )
-        val firstGap = LyricTimeline.activeInstrumentalGapAt(withInterlude, 3_000)
+        val firstGap = LyricTimeline.Schedule(withInterlude).snapshotAt(3_000).instrumentalGap
         assertNotNull(firstGap)
         assertEquals(0, firstGap!!.beforeLineIndex)
         assertEquals(8_200L, firstGap.adjustedDurationMs)
 
-        val secondGap = LyricTimeline.activeInstrumentalGapAt(withInterlude, 12_000)
+        val secondGap = LyricTimeline.Schedule(withInterlude).snapshotAt(12_000).instrumentalGap
         assertNotNull(secondGap)
         assertEquals(1, secondGap!!.beforeLineIndex)
         assertEquals(7_200L, secondGap.adjustedDurationMs)
 
         assertEquals(500L, LyricTimeline.lineLeadOffsetMs(withInterlude, 0))
-        assertEquals(emptyList<Int>(), LyricTimeline.activeLineIndicesAt(withInterlude, 7_800))
-        assertEquals(listOf(0), LyricTimeline.activeLineIndicesAt(withInterlude, 8_500))
+        assertEquals(emptyList<Int>(), LyricTimeline.Schedule(withInterlude).snapshotAt(7_800).activeLineIndices)
+        assertEquals(listOf(0), LyricTimeline.Schedule(withInterlude).snapshotAt(8_500).activeLineIndices)
 
-        assertNull(LyricTimeline.activeInstrumentalGapAt(lines, 1_700))
-    }
-
-    @Test
-    fun wordProgressIsClamped() {
-        val word = LyricWord("test", 1_000, 2_000)
-        assertEquals(0f, LyricTimeline.wordProgress(word, 500), 0f)
-        assertEquals(0.5f, LyricTimeline.wordProgress(word, 1_500), 0f)
-        assertEquals(1f, LyricTimeline.wordProgress(word, 2_500), 0f)
-    }
-
-    @Test
-    fun lineProgressWeightsWordsByVisibleLength() {
-        val line = LyricLine(
-            listOf(
-                LyricWord("a", 0, 1_000),
-                LyricWord("three", 1_000, 2_000),
-            ),
-        )
-        assertEquals(1f / 6f, LyricTimeline.lineProgress(line, 1_000), 0.0001f)
-        assertEquals(7f / 12f, LyricTimeline.lineProgress(line, 1_500), 0.0001f)
+        assertNull(LyricTimeline.Schedule(lines).snapshotAt(1_700).instrumentalGap)
     }
 
     @Test
@@ -526,18 +520,15 @@ class LyricTimelineTest {
             ),
         )
 
-        val first = LyricTimeline.emphasisTiming(line, 0, 1_500)
-        val second = LyricTimeline.emphasisTiming(line, 1, 1_500)
         val charTimings = LyricTimeline.characterEmphasisTimings(line, 0)
 
-        assertEquals(true, first.eligible)
-        assertEquals(1.14f, first.maximumScale, 0.0001f)
-        assertEquals(1_000L, first.riseStartMs)
-        assertEquals(1_400L, second.riseStartMs)
-        assertEquals(3_000L, first.settleStartMs)
+        assertEquals(charTimings, LyricTimeline.characterEmphasisTimings(line, 1))
         assertEquals(4, charTimings.size)
+        assertEquals(1.14f, charTimings[0].maximumScale, 0.0001f)
+        assertEquals(2_000L, charTimings[0].animationDurationMs)
         assertEquals(1_000L, charTimings[0].riseStartMs)
         assertEquals(1_200L, charTimings[1].riseStartMs)
+        assertEquals(1_400L, charTimings[2].riseStartMs)
         assertEquals(2_000L, charTimings[0].settleStartMs)
     }
 
@@ -551,8 +542,8 @@ class LyricTimelineTest {
             isTranslation = true,
         )
 
-        assertEquals(false, LyricTimeline.emphasisTiming(cjk, 0, 500).eligible)
-        assertEquals(false, LyricTimeline.emphasisTiming(translation, 0, 500).eligible)
+        assertTrue(LyricTimeline.characterEmphasisTimings(cjk, 0).isEmpty())
+        assertTrue(LyricTimeline.characterEmphasisTimings(translation, 0).isEmpty())
     }
 
     @Test

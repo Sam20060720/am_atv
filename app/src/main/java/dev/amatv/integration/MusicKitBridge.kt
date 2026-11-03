@@ -4,7 +4,7 @@ import dev.amatv.R
 import dev.amatv.i18n.AppText
 
 import android.content.Context
-import android.content.Intent
+import android.view.Surface
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -18,46 +18,34 @@ import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
 import java.util.concurrent.atomic.AtomicLong
 
-enum class PlaybackRepeatMode(val sdkValue: Int) {
-    Off(0),
-    One(1),
-    All(2),
-    ;
-
-    companion object {
-        fun fromSdk(value: Int): PlaybackRepeatMode = entries.firstOrNull {
-            it.sdkValue == value
-        } ?: Off
-    }
+enum class PlaybackRepeatMode {
+    Off,
+    One,
+    All,
 }
 
 data class PlaybackSnapshot(
     val currentTrack: Track?,
     /** True only when the backing player, rather than a requested-track fallback, reports this item. */
     val hasPlayerCurrentTrack: Boolean = false,
-    val queue: List<Track>,
     val positionMs: Long,
     val durationMs: Long,
     val isPlaying: Boolean,
     val isBuffering: Boolean,
     val canSkipNext: Boolean,
     val canSkipPrevious: Boolean,
-    val repeatMode: PlaybackRepeatMode,
-    val shuffleEnabled: Boolean,
-    val autoplayEnabled: Boolean,
-    val canSetRepeat: Boolean,
-    val canSetShuffle: Boolean,
-    val canSetAutoplay: Boolean,
-    /** Null when the backing player does not expose subscription capability. */
-    val subscriptionActive: Boolean? = null,
-    /** Null when the backing player does not expose its DRM capability. */
-    val drmPlaybackSupported: Boolean? = null,
     val errorMessage: String? = null,
     val capturedAtElapsedRealtimeMs: Long = SystemClock.elapsedRealtime(),
     val isEnded: Boolean = false,
     val requestGeneration: Long = 0L,
     val isPrepared: Boolean = true,
     val failureKind: PlaybackFailureKind? = null,
+    val isLiveStream: Boolean = false,
+    val canSeek: Boolean = true,
+    /** Stable app occurrence, bound through the observed native queue ID. */
+    val appQueueEntryId: Long? = null,
+    /** This request has naturally advanced within its bounded native rail. */
+    val nativeQueueHandoff: Boolean = false,
 )
 
 /**
@@ -67,7 +55,6 @@ data class PlaybackSnapshot(
  */
 class MusicKitBridge(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var authenticationManager: Any? = null
     @Volatile private var controller: Any? = null
     @Volatile private var controllerListener: Any? = null
     private var playbackThread: HandlerThread? = null
@@ -75,8 +62,6 @@ class MusicKitBridge(private val context: Context) {
     private var playbackListener: ((PlaybackSnapshot) -> Unit)? = null
     @Volatile
     private var requestedTrack: Track? = null
-    @Volatile
-    private var latestSnapshot: PlaybackSnapshot? = null
     @Volatile
     private var snapshotScheduled = false
     @Volatile private var pendingPlaybackError: String? = null
@@ -93,6 +78,12 @@ class MusicKitBridge(private val context: Context) {
     @Volatile private var preparing = false
     @Volatile private var endedCatalogId: String? = null
     @Volatile private var preparedNativeQueueId: Long? = null
+    private val nativeRail = NativeQueueRail()
+    private var nativeEndWaitSince: Long? = null
+    private var nativeEndWaitQueueId: Long? = null
+    private var nativeEndWaitPositionMs = 0L
+    private var railRetryAfterMs = 0L
+    private var loggedRailEligibilityGeneration = Long.MIN_VALUE
     private val snapshotPoll = object : Runnable {
         override fun run() {
             if (playbackListener == null) return
@@ -104,42 +95,28 @@ class MusicKitBridge(private val context: Context) {
     val isInstalled: Boolean
         get() = classExists(AUTH_FACTORY) && classExists(PLAYER_FACTORY)
 
-    fun authenticationIntent(developerToken: String): Intent {
-        check(isInstalled) { AppText.text(R.string.services_sdk_unavailable) }
-        val factory = Class.forName(AUTH_FACTORY)
-        val manager = factory.getMethod(
-            "createAuthenticationManager",
-            Context::class.java,
-        ).invoke(null, context)
-        authenticationManager = manager
-        val builder = manager.javaClass.getMethod(
-            "createIntentBuilder",
-            String::class.java,
-        ).invoke(manager, developerToken)
-        return builder.javaClass.getMethod("build").invoke(builder) as Intent
-    }
+    val mediaCapabilities: NativeMediaCapabilities by lazy { NativeMediaCapabilities.inspect(context.classLoader) }
+    @Volatile private var videoOutputSurface: Surface? = null
 
-    fun userTokenFromResult(data: Intent): String {
-        val manager = authenticationManager ?: run {
-            val factory = Class.forName(AUTH_FACTORY)
-            factory.getMethod("createAuthenticationManager", Context::class.java)
-                .invoke(null, context)
-                .also { authenticationManager = it }
-        }
-        val tokenResult = manager.javaClass.getMethod("handleTokenResult", Intent::class.java)
-            .invoke(manager, data)
-        val isError = tokenResult.javaClass.getMethod("isError").invoke(tokenResult) as Boolean
-        check(!isError) {
-            val error = tokenResult.javaClass.getMethod("getError").invoke(tokenResult)
-            AppText.text(R.string.services_auth_failed, error?.toString() ?: "")
-        }
-        return tokenResult.javaClass.getMethod("getMusicUserToken")
-            .invoke(tokenResult) as String
-    }
+    fun playbackRoute(track: Track): NativeMediaRoute =
+        mediaCapabilities.route(track.catalogKind, videoOutputSurface?.isValid == true)
 
+    /** The caller owns the Surface and must detach it before destruction. */
     @Synchronized
-    fun prepareAndPlay(track: Track, developerToken: String, userToken: String): Long =
-        preparePlayback(track, developerToken, userToken, 0L, true)
+    fun setVideoOutputSurface(surface: Surface?): Boolean {
+        if (!mediaCapabilities.hasVideoOutputSurface) return false
+        videoOutputSurface = surface?.takeIf { it.isValid }
+        val current = controller ?: return true
+        val handler = playbackHandler ?: return false
+        // Surface destruction must not be discarded by a playback-generation
+        // guard. Read the latest binding on the controller thread instead.
+        return handler.post {
+            if (controller === current) runCatching {
+                current.javaClass.getMethod("setVideoOutputSurface", Surface::class.java)
+                    .invoke(current, videoOutputSurface?.takeIf { it.isValid })
+            }.onFailure { Log.w(TAG, "Video surface binding failed (${it.javaClass.simpleName})") }
+        }
+    }
 
     @Synchronized
     fun preparePlayback(
@@ -148,7 +125,17 @@ class MusicKitBridge(private val context: Context) {
         userToken: String,
         positionMs: Long = 0L,
         playWhenReady: Boolean = true,
+        currentAppEntryId: Long? = null,
+        upcoming: List<NativeQueueEntry> = emptyList(),
     ): Long {
+        val route = playbackRoute(track)
+        check(route !is NativeMediaRoute.Unavailable) {
+            AppText.text(when (track.catalogKind) {
+                CatalogKind.MusicVideo -> R.string.services_video_unsupported
+                CatalogKind.Station -> R.string.services_station_unsupported
+                else -> R.string.services_container_unsupported
+            })
+        }
         if (controller != null && (playbackDeveloperToken != developerToken || playbackUserToken != userToken)) {
             release()
         }
@@ -173,56 +160,65 @@ class MusicKitBridge(private val context: Context) {
         postPlaybackAction("prepare") {
             if (generation != prepareGeneration.get()) return@postPlaybackAction
             activeGeneration = generation
+            nativeRail.begin(generation,
+                currentAppEntryId?.takeIf { it > 0L && track.catalogKind == CatalogKind.Song &&
+                    storeId.matches(Regex("[1-9][0-9]*")) }?.let { NativeQueueEntry(it, track) }, upcoming)
+            nativeEndWaitSince = null
+            nativeEndWaitQueueId = null
+            nativeEndWaitPositionMs = 0L
+            railRetryAfterMs = 0L
             installRequestListener(currentController, generation)
             playbackIntent.begin(track.catalogId, positionMs, desiredPlaying, SystemClock.elapsedRealtime())
             val builderClass = Class.forName(QUEUE_BUILDER)
             val builder = builderClass.getConstructor().newInstance()
-            when (track.catalogKind) {
-                CatalogKind.Song -> builderClass.getMethod(
-                    "items",
-                    Int::class.javaPrimitiveType,
-                    Array<String>::class.java,
-                ).invoke(builder, 1, arrayOf(storeId))
-
-                CatalogKind.MusicVideo -> error(
-                    AppText.text(R.string.services_video_unsupported),
-                )
-
-                CatalogKind.Album,
-                CatalogKind.Playlist,
-                -> {
-                    val containerType = when (track.catalogKind) {
-                        CatalogKind.Album -> 1
-                        CatalogKind.Playlist -> 2
-                        CatalogKind.Song,
-                        CatalogKind.MusicVideo,
-                        CatalogKind.Station,
-                        -> error(AppText.text(R.string.services_container_unsupported))
+            when (route) {
+                is NativeMediaRoute.Item -> {
+                    if (route.requiresVideoSurface) {
+                        val surface = checkNotNull(videoOutputSurface).also { check(it.isValid) }
+                        currentController.javaClass.getMethod("setVideoOutputSurface", Surface::class.java)
+                            .invoke(currentController, surface)
                     }
-                    builderClass.getMethod(
-                        "containers",
-                        Int::class.javaPrimitiveType,
-                        Array<String>::class.java,
-                    ).invoke(builder, containerType, arrayOf(storeId))
+                    builderClass.getMethod("items", Int::class.javaPrimitiveType, Array<String>::class.java)
+                        .invoke(builder, route.itemType, arrayOf(storeId))
                 }
-
-                CatalogKind.Station -> error(
-                    AppText.text(R.string.services_station_unsupported),
-                )
+                is NativeMediaRoute.Container -> builderClass
+                    .getMethod("containers", Int::class.javaPrimitiveType, Array<String>::class.java)
+                    .invoke(builder, route.containerType, arrayOf(storeId))
+                is NativeMediaRoute.Unavailable -> error(AppText.text(R.string.services_container_unsupported))
             }
             val provider = builderClass.getMethod("build").invoke(builder)
-            val prepare = currentController.javaClass.methods.first {
-                it.name == "prepare" && it.parameterTypes.size == 2 &&
-                    it.parameterTypes[1] == Boolean::class.javaPrimitiveType
-            }
             // Never emit the beginning of a restored song. Readiness and any
             // resume seek are confirmed before the intent machine issues play().
             issuedPrepareGeneration = generation
             Log.i(TAG, "Prepare generation=$generation catalog=$storeId kind=${track.catalogKind} " +
-                "source=${track.resourceType}:${track.resourceId} positionMs=$positionMs playWhenReady=$desiredPlaying")
-            prepare.invoke(currentController, provider, false)
+                "source=${track.resourceType}:${track.resourceId} positionMs=$positionMs playWhenReady=$desiredPlaying " +
+                "railEntry=${nativeRail.current?.entryId} railRequestedUpcoming=${upcoming.size} railEligibleUpcoming=${nativeRail.desiredCount}")
+            // This is a new app context, including a replacement while paused.
+            // The SDK's two-argument overload uses REPLACE(1), which rejects a
+            // static provider when a native lookahead provider remains after
+            // the current item. CLEAR_AND_REPLACE(5) explicitly replaces that
+            // native rail; app Queue/history ownership remains unchanged.
+            prepareNewNativeContext(currentController, provider)
         }
         return generation
+    }
+
+    /**
+     * Sync only this active request's next two known catalog occurrences. Actual
+     * edits run on the existing controller handler, never on a second player.
+     */
+    @Synchronized
+    fun updateUpcoming(requestGeneration: Long, entries: List<NativeQueueEntry>): Boolean {
+        val handler = playbackHandler ?: return false
+        if (requestGeneration != prepareGeneration.get() || controller == null) return false
+        val snapshot = entries.toList()
+        return handler.post {
+            if (requestGeneration == prepareGeneration.get() && requestGeneration == activeGeneration &&
+                nativeRail.updateUpcoming(requestGeneration, snapshot)) {
+                railRetryAfterMs = 0L
+                dispatchSnapshot()
+            }
+        }
     }
 
     fun play() {
@@ -249,26 +245,14 @@ class MusicKitBridge(private val context: Context) {
         postPlaybackAction("seekToPosition") {
             playbackIntent.requestSeek()
             endedCatalogId = null
+            nativeEndWaitSince = null
+            nativeEndWaitQueueId = null
+            nativeEndWaitPositionMs = 0L
             value.javaClass.getMethod("seekToPosition", Long::class.javaPrimitiveType).invoke(value, positionMs)
         }
     }
     fun skipToNext() = invokeController("skipToNextItem")
     fun skipToPrevious() = invokeController("skipToPreviousItem")
-    fun skipToQueueItem(queueId: Long) = invokeController("skipToQueueItemWithId", queueId)
-    fun setRepeatMode(mode: PlaybackRepeatMode) =
-        invokeController("setRepeatMode", mode.sdkValue)
-    fun setShuffleEnabled(enabled: Boolean) =
-        invokeController("setShuffleMode", if (enabled) 1 else 0)
-
-    /**
-     * Continuous playback arrived in the controller bundled with Apple Music
-     * after the public 1.1.1 AAR. Keep the capability runtime-driven: a newer
-     * licensed SDK can expose it without changing this app, while 1.1.1 never
-     * presents a control that cannot affect playback.
-     */
-    fun setAutoplayEnabled(enabled: Boolean) =
-        invokeController("setContinuousPlaybackState", enabled)
-
     fun setPlaybackListener(listener: ((PlaybackSnapshot) -> Unit)?) {
         playbackListener = listener
         mainHandler.removeCallbacks(snapshotPoll)
@@ -290,11 +274,9 @@ class MusicKitBridge(private val context: Context) {
     /** Includes SDK-restored queues; querying never prepares or constructs a renderer. */
     fun audioSessionId(): Int = if (controller != null) MusicKitAudioSession.currentId() else 0
 
-    fun playbackSnapshot(): PlaybackSnapshot? = latestSnapshot
-
     @Synchronized
     fun release() {
-        prepareGeneration.incrementAndGet()
+        val releasedGeneration = prepareGeneration.incrementAndGet()
         mainHandler.removeCallbacks(snapshotPoll)
         snapshotScheduled = false
         val currentController = controller
@@ -309,14 +291,24 @@ class MusicKitBridge(private val context: Context) {
                     }.invoke(currentController, listener)
                 }
             }
+            if (mediaCapabilities.hasVideoOutputSurface && currentController != null) {
+                runCatching { currentController.javaClass.getMethod("setVideoOutputSurface", Surface::class.java).invoke(currentController, null) }
+            }
             runCatching { currentController?.callVoid("release") }
+            synchronized(this) {
+                if (prepareGeneration.get() == releasedGeneration) {
+                    nativeRail.reset()
+                    nativeEndWaitSince = null
+                    nativeEndWaitQueueId = null
+                    nativeEndWaitPositionMs = 0L
+                }
+            }
             oldThread?.quitSafely()
             Unit
         }
         if (oldHandler == null || !oldHandler.post(cleanup)) cleanup()
         controllerListener = null
         controller = null
-        latestSnapshot = null
         pendingPlaybackError = null
         pendingFailureKind = null
         activeGeneration = 0L
@@ -444,7 +436,13 @@ class MusicKitBridge(private val context: Context) {
                                 endedNativeQueueId = endedTrack?.playbackQueueId,
                                 endPositionMs = endPosition,
                                 durationMs = endedTrack?.durationMs ?: 0L,
-                            )) endedCatalogId = endedTrack?.catalogId
+                            )) {
+                                if (desiredPlaying && nativeRail.hasReadySuccessor()) {
+                                    nativeEndWaitSince = SystemClock.elapsedRealtime()
+                                    nativeEndWaitQueueId = endedTrack?.playbackQueueId
+                                    nativeEndWaitPositionMs = endPosition.coerceAtLeast(0L)
+                                } else endedCatalogId = endedTrack?.catalogId
+                            }
                             dispatchSnapshot()
                         }
                         else -> if (method.name.startsWith("on")) {
@@ -480,7 +478,6 @@ class MusicKitBridge(private val context: Context) {
             snapshotScheduled = false
             if (generation != prepareGeneration.get() || generation != activeGeneration) return@readAndDeliver
             val snapshot = controller?.let { readSnapshot(it, generation) } ?: return@readAndDeliver
-            latestSnapshot = snapshot
             mainHandler.post {
                 if (generation == prepareGeneration.get()) playbackListener?.invoke(snapshot)
             }
@@ -492,21 +489,72 @@ class MusicKitBridge(private val context: Context) {
     }
 
     private fun readSnapshot(currentController: Any, generation: Long): PlaybackSnapshot {
-        val currentQueueItem = currentController.callOrNull("getCurrentItem")
-        val currentTrack = currentQueueItem?.let(::trackFromQueueItem) ?: requestedTrack
+        val currentBeforeWindow = currentController.callOrNull("getCurrentItem")
         @Suppress("UNCHECKED_CAST")
-        val queueItems = currentController.callOrNull("getQueueItems") as? List<Any?>
-        val queue = queueItems.orEmpty().mapNotNull { it?.let(::trackFromQueueItem) }
-            .ifEmpty { currentTrack?.let(::listOf).orEmpty() }
+        val followingQueueItems = currentController.callOrNull("getQueueItems") as? List<Any?>
+        val currentQueueItem = currentController.callOrNull("getCurrentItem")
+        fun observation(item: Any?): NativeQueueObservation? {
+            item ?: return null
+            val id = (item.callOrNull("getPlaybackQueueId") as? Number)?.toLong() ?: return null
+            val catalogId = item.callOrNull("getItem")?.callOrNull("getSubscriptionStoreId") as? String
+            return NativeQueueObservation(id, catalogId)
+        }
+        // SDK getQueueItems() is a bounded FUTURE-only window. An empty result
+        // after a single-item prepare is correct, not an absent current anchor.
+        val currentObservation = observation(currentQueueItem)
+        val stableCurrent = observation(currentBeforeWindow)?.nativeId == currentObservation?.nativeId
+        // SDK queue/current getters are separate reads. If a handoff happened
+        // between them, combining the two windows could misbind duplicates.
+        val followingObservations = if (stableCurrent) followingQueueItems.orEmpty().map(::observation) else emptyList()
+        val completeObservationWindow = stableCurrent && followingQueueItems != null && followingObservations.all { it != null }
+        // Do not skip an unreadable occurrence and accidentally bind a later
+        // duplicate as the expected next item. Incomplete windows cannot edit.
+        val observations = nativeQueueObservationWindow(currentObservation,
+            followingObservations.takeWhile { it != null }.filterNotNull())
+        val nativeId = currentObservation?.nativeId
         val position = (currentController.callOrNull("getCurrentPosition") as? Long)
             ?.coerceAtLeast(0L) ?: 0L
+        val adoption = nativeRail.observe(observations, nativeId)
+        if (adoption?.rejected == true) {
+            // A stale async provider must never make a removed/reordered item
+            // silently become the app's current selection.
+            runCatching { currentController.callVoid("pause") }
+            pendingFailureKind = PlaybackFailureKind.Unexpected
+            pendingPlaybackError = AppText.text(R.string.services_playback_failed)
+        } else if (adoption?.changed == true) {
+            requestedTrack = adoption.entry.track
+            endedCatalogId = null
+            nativeEndWaitSince = null
+            nativeEndWaitQueueId = null
+            nativeEndWaitPositionMs = 0L
+            preparedNativeQueueId = nativeId
+            // The SDK has already adopted/started this occurrence. Seed its
+            // observed position rather than seeking the new song back to zero.
+            playbackIntent.adoptPrepared(adoption.entry.track.catalogId, position, desiredPlaying, SystemClock.elapsedRealtime())
+            Log.i(TAG, "Native rail handoff generation=$generation entry=${adoption.entry.entryId} native=$nativeId")
+        }
+        val currentTrack = currentQueueItem?.let(::trackFromQueueItem) ?: requestedTrack
         val controllerDuration = (currentController.callOrNull("getDuration") as? Long)
             ?.takeIf { it > 0L }
         val playbackState = currentController.callOrNull("getPlaybackState") as? Int ?: 0
         val playbackRate = currentController.callOrNull("getPlaybackRate") as? Float ?: 0f
         val buffering = currentController.callOrNull("isBuffering") as? Boolean ?: false
+        val waitingSince = nativeEndWaitSince
+        val waitingForNativeNext = waitingSince != null &&
+            (nativeId == nativeEndWaitQueueId || currentQueueItem == null) &&
+            SystemClock.elapsedRealtime() - waitingSince < NATIVE_HANDOFF_TIMEOUT_MS
+        if (waitingSince != null && !waitingForNativeNext && adoption?.changed != true) {
+            // If this SDK route does not advance its prepared queue, restore
+            // the existing app-driven end path rather than waiting forever.
+            endedCatalogId = requestedTrack?.catalogId
+            nativeEndWaitSince = null
+            nativeEndWaitQueueId = null
+            nativeEndWaitPositionMs = 0L
+        }
         val nativeEnded = !preparing && endedCatalogId != null && endedCatalogId == currentTrack?.catalogId
-        val decision = playbackIntent.observe(NativePlaybackProbe(
+        val decision = if (waitingForNativeNext) NativePlaybackDecision(
+            prepared = true, playing = false, positionMs = maxOf(position, nativeEndWaitPositionMs),
+        ) else playbackIntent.observe(NativePlaybackProbe(
             catalogId = currentTrack?.catalogId,
             hasCurrentItem = currentQueueItem != null,
             positionMs = position,
@@ -540,7 +588,7 @@ class MusicKitBridge(private val context: Context) {
                 Log.w(TAG, "Native readiness failure generation=$generation requested=${requestedTrack?.catalogId} " +
                     "native=${currentTrack?.catalogId} hasItem=${currentQueueItem != null} " +
                     "state=$playbackState rate=$playbackRate buffering=$buffering " +
-                    "positionMs=$position queue=${queue.take(5).map { it.catalogId }} reason=${decision.failure}")
+                    "positionMs=$position queue=${observations.take(5).map { it.catalogId }} reason=${decision.failure}")
                 pendingFailureKind = decision.failure
                 pendingPlaybackError = when (decision.failure) {
                     PlaybackFailureKind.PositionRestore -> AppText.text(R.string.services_playback_restore_failed)
@@ -552,14 +600,9 @@ class MusicKitBridge(private val context: Context) {
         if (decision.prepared && currentQueueItem != null && currentTrack?.catalogId == requestedTrack?.catalogId) {
             preparedNativeQueueId = currentTrack?.playbackQueueId
         }
-        val repeatMode = PlaybackRepeatMode.fromSdk(
-            currentController.callOrNull("getRepeatMode") as? Int ?: 0,
-        )
-        val shuffleEnabled =
-            (currentController.callOrNull("getShuffleMode") as? Int ?: 0) == 1
-        val continuousState = currentController.callOrNull("getContinuousPlaybackState") as? Int
-        val canSetAutoplay = currentController.hasNoArgMethod("canSetContinuousPlaybackMode") &&
-            (currentController.callOrNull("canSetContinuousPlaybackMode") as? Boolean ?: false)
+        if (decision.prepared && pendingPlaybackError == null && !waitingForNativeNext) {
+            synchronizeNativeRail(currentController, observations, nativeId, completeObservationWindow)
+        }
         if (lastLoggedPlaybackState != playbackState || lastLoggedTrackId != currentTrack?.id) {
             Log.i(
                 TAG,
@@ -575,25 +618,67 @@ class MusicKitBridge(private val context: Context) {
         return PlaybackSnapshot(
             currentTrack = currentTrack,
             hasPlayerCurrentTrack = currentQueueItem != null,
-            queue = queue,
             positionMs = decision.positionMs,
             durationMs = controllerDuration ?: currentTrack?.durationMs ?: 1L,
             isPlaying = decision.playing && pendingPlaybackError == null,
-            isBuffering = buffering,
+            isBuffering = buffering || waitingForNativeNext,
             canSkipNext = currentController.callOrNull("canSkipToNextItem") as? Boolean ?: false,
             canSkipPrevious = currentController.callOrNull("canSkipToPreviousItem") as? Boolean ?: false,
-            repeatMode = repeatMode,
-            shuffleEnabled = shuffleEnabled,
-            autoplayEnabled = continuousState == CONTINUOUS_PLAYBACK_ON,
-            canSetRepeat = currentController.callOrNull("canSetRepeatMode") as? Boolean ?: false,
-            canSetShuffle = currentController.callOrNull("canSetShuffleMode") as? Boolean ?: false,
-            canSetAutoplay = canSetAutoplay,
             errorMessage = pendingPlaybackError,
             isEnded = decision.ended,
             requestGeneration = generation,
             isPrepared = decision.prepared,
             failureKind = pendingFailureKind,
+            isLiveStream = currentController.callOrNull("isLiveStream") as? Boolean ?: false,
+            canSeek = currentController.callOrNull("canSeek") as? Boolean ?: false,
+            appQueueEntryId = nativeRail.entryForNativeId(nativeId)?.entryId,
+            nativeQueueHandoff = nativeRail.handedOff,
         )
+    }
+
+    private fun synchronizeNativeRail(currentController: Any, queue: List<NativeQueueObservation>, nativeId: Long?, completeWindow: Boolean) {
+        if (SystemClock.elapsedRealtime() < railRetryAfterMs) return
+        val canEdit = currentController.callOrNull("canEditPlaybackQueue") as? Boolean
+        val canAppend = currentController.callOrNull("canAppendToPlaybackQueue") as? Boolean
+        if (loggedRailEligibilityGeneration != nativeRail.generation) {
+            loggedRailEligibilityGeneration = nativeRail.generation
+            val currentEntry = nativeRail.current?.entryId
+            val boundEntry = nativeRail.entryForNativeId(nativeId)?.entryId
+            // One prepared sample per request. null distinguishes an unavailable
+            // SDK read from false; a false first sample is not a capability verdict.
+            // Only occurrence IDs/counts are logged, never tokens or provider URLs.
+            Log.i(TAG, "Native rail eligibility generation=${nativeRail.generation} " +
+                "entry=$currentEntry upcoming=${nativeRail.desiredCount} observed=${queue.size} " +
+                "hasNativeCurrent=${nativeId != null} boundCurrent=${currentEntry != null && currentEntry == boundEntry} " +
+                "completeWindow=$completeWindow canEdit=$canEdit canAppend=$canAppend")
+        }
+        if (!completeWindow || canEdit != true || canAppend != true) return
+        val edit = nativeRail.edit(queue, nativeId) ?: return
+        try {
+            for (removed in edit.removeIds) {
+                val actualCurrent = (currentController.callOrNull("getCurrentItem")?.callOrNull("getPlaybackQueueId") as? Number)?.toLong()
+                if (actualCurrent != nativeId || removed == actualCurrent) return
+                currentController.javaClass.getMethod("removeQueueItemWithId", Long::class.javaPrimitiveType)
+                    .invoke(currentController, removed)
+            }
+            if (edit.append.isNotEmpty()) {
+                val builderClass = Class.forName(QUEUE_BUILDER)
+                val builder = builderClass.getConstructor().newInstance()
+                builderClass.getMethod("items", Int::class.javaPrimitiveType, Array<String>::class.java)
+                    .invoke(builder, checkNotNull(mediaCapabilities.songItemType), edit.append.map { checkNotNull(it.track.catalogId) }.toTypedArray())
+                val provider = builderClass.getMethod("build").invoke(builder)
+                currentController.javaClass.methods.first { it.name == "addQueueItems" && it.parameterTypes.size == 2 }
+                    .invoke(currentController, provider, INSERTION_TYPE_AT_END)
+            }
+            nativeRail.committed(edit)
+            Log.i(TAG, "Native rail sync generation=${nativeRail.generation} current=${nativeRail.current?.entryId} " +
+                "remove=${edit.removeIds.size} append=${edit.append.map { it.entryId }}")
+        } catch (error: Exception) {
+            // Prefetch is optional. Do not interrupt valid current audio just
+            // because this route cannot append; the legacy end path remains.
+            railRetryAfterMs = SystemClock.elapsedRealtime() + 5_000L
+            Log.w(TAG, "Native queue preparation unavailable (${error.javaClass.simpleName})")
+        }
     }
 
     private fun trackFromQueueItem(queueItem: Any): Track? {
@@ -608,9 +693,10 @@ class MusicKitBridge(private val context: Context) {
         }?.invoke(item, 600, 600) as? String
         val duration = (item.callOrNull("getDuration") as? Long)?.takeIf { it > 0L }
             ?: requestedTrack?.durationMs ?: 1L
-        val fallback = requestedTrack?.takeIf { requested ->
-            requested.catalogId == storeId || requested.title == title
-        }
+        val nativeId = (queueItem.callOrNull("getPlaybackQueueId") as? Number)?.toLong()
+        val fallback = nativeRail.entryForNativeId(nativeId)?.track
+            ?: nativeRail.plannedTracks.firstOrNull { it.catalogId == storeId }
+            ?: requestedTrack?.takeIf { requested -> requested.catalogId == storeId || requested.title == title }
         val identity = storeId?.takeIf(String::isNotBlank)
             ?: "queue:${queueItem.callOrNull("getPlaybackQueueId") ?: title.hashCode()}"
         return Track(
@@ -622,7 +708,8 @@ class MusicKitBridge(private val context: Context) {
             palette = fallback?.palette ?: playbackPalette(identity),
             lyrics = fallback?.lyrics.orEmpty(),
             catalogId = storeId,
-            catalogKind = CatalogKind.Song,
+            catalogKind = if (mediaCapabilities.musicVideoItemType != null &&
+                item.callOrNull("getType") == mediaCapabilities.musicVideoItemType) CatalogKind.MusicVideo else CatalogKind.Song,
             resourceId = fallback?.resourceId,
             resourceType = fallback?.resourceType,
             artworkUrl = artwork?.takeIf { it.startsWith("https://") } ?: fallback?.artworkUrl,
@@ -646,10 +733,6 @@ class MusicKitBridge(private val context: Context) {
     private fun Any.callOrNull(name: String): Any? = runCatching {
         javaClass.methods.first { it.name == name && it.parameterTypes.isEmpty() }.invoke(this)
     }.getOrNull()
-
-    private fun Any.hasNoArgMethod(name: String): Boolean = javaClass.methods.any {
-        it.name == name && it.parameterTypes.isEmpty()
-    }
 
     /**
      * MusicKit's hosted Javadoc documents timed-text selection, but the
@@ -767,8 +850,9 @@ class MusicKitBridge(private val context: Context) {
         const val QUEUE_BUILDER =
             "com.apple.android.music.playback.queue.CatalogPlaybackQueueItemProvider\$Builder"
         const val PLAYBACK_STATE_PLAYING = 1
-        const val CONTINUOUS_PLAYBACK_ON = 2
         const val SNAPSHOT_DELAY_MS = 80L
+        const val INSERTION_TYPE_AT_END = 2 // Public PlaybackQueueInsertionType in the bundled AAR/Javadoc.
+        const val NATIVE_HANDOFF_TIMEOUT_MS = 5_000L
         const val TAG = "AMATV-MusicKit"
         @Volatile
         var runtimeLoaded = false

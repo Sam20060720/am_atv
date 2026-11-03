@@ -1,0 +1,5 @@
+<resources>
+    <string name="catalog_all_genres">All Genres</string>
+    <string name="catalog_roots_empty">No genres to show right now.</string>
+    <string name="catalog_roots_failed">Couldn’t load genres.</string>
+</resources>

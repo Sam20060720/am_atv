@@ -34,7 +34,7 @@ import dev.amatv.R
 
 /** Language changes update configuration in place, preserving the active player. */
 @Composable
-internal fun LanguageSettings() {
+internal fun LanguageSettings(navigationFocus: FocusRequester? = null) {
     val configuration = LocalConfiguration.current
     var selectedLanguage by remember(configuration) {
         mutableStateOf(AppCompatDelegate.getApplicationLocales().get(0)?.let { locale ->
@@ -73,7 +73,7 @@ internal fun LanguageSettings() {
                         .semantics { this.selected = selected }
                         .focusRequester(focus[index])
                         .focusProperties {
-                            left = focus.getOrNull(index - 1) ?: FocusRequester.Cancel
+                            left = focus.getOrNull(index - 1) ?: navigationFocus ?: FocusRequester.Cancel
                             right = focus.getOrNull(index + 1) ?: FocusRequester.Cancel
                         },
                     cornerRadius = 23.dp,

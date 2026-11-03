@@ -1,0 +1,343 @@
+{
+  "_capture": {
+    "source": "credits-origin-01.json",
+    "operation": "web_origin_anonymous_credits",
+    "source_shape": "format[resources]=map; public credits-only projection",
+    "account_mutations": 0
+  },
+  "data": [
+    {
+      "id": "1553944257",
+      "type": "songs"
+    }
+  ],
+  "resources": {
+    "songs": {
+      "1553944257": {
+        "id": "1553944257",
+        "type": "songs",
+        "relationships": {
+          "credits": {
+            "href": "/v1/catalog/tw/songs/1553944257/credits?l=zh-Hant-TW",
+            "data": [
+              {
+                "id": "1553944257-4",
+                "type": "role-categories"
+              },
+              {
+                "id": "1553944257-3",
+                "type": "role-categories"
+              },
+              {
+                "id": "1553944257-5",
+                "type": "role-categories"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "role-categories": {
+      "1553944257-4": {
+        "id": "1553944257-4",
+        "type": "role-categories",
+        "attributes": {
+          "kind": "performer",
+          "title": "演出藝人"
+        },
+        "relationships": {
+          "credit-artists": {
+            "data": [
+              {
+                "id": "4-ami:identity:b7ce039aac2c803c4620ff4ff18920ca",
+                "type": "credit-artists"
+              },
+              {
+                "id": "4-ami:identity:7c87bf14a053481ea81d5c8bdc09a670",
+                "type": "credit-artists"
+              }
+            ]
+          }
+        }
+      },
+      "1553944257-3": {
+        "id": "1553944257-3",
+        "type": "role-categories",
+        "attributes": {
+          "kind": "composer-and-lyrics",
+          "title": "詞曲"
+        },
+        "relationships": {
+          "credit-artists": {
+            "data": [
+              {
+                "id": "3-ami:identity:b7ce039aac2c803c4620ff4ff18920ca",
+                "type": "credit-artists"
+              },
+              {
+                "id": "3-ami:identity:7c87bf14a053481ea81d5c8bdc09a670",
+                "type": "credit-artists"
+              },
+              {
+                "id": "3-ami:identity:137292133ca2e9363b0842c74423316d",
+                "type": "credit-artists"
+              },
+              {
+                "id": "3-ami:identity:313eff771340e7f0b1947977fa2e7bc3",
+                "type": "credit-artists"
+              },
+              {
+                "id": "3-ami:identity:42764413ba6be21a26b3ca23383f622d",
+                "type": "credit-artists"
+              },
+              {
+                "id": "3-ami:identity:95d5cd11012277239be6c187abd5971f",
+                "type": "credit-artists"
+              },
+              {
+                "id": "3-ami:identity:3715f9cf16dc9ec5b6ff00cd20ccc1fc",
+                "type": "credit-artists"
+              },
+              {
+                "id": "3-ami:identity:b16f6d6e77be08baff9e9b202a076005",
+                "type": "credit-artists"
+              },
+              {
+                "id": "3-ami:identity:8da8dd8326ca8b6a7cd761a258e7ed81",
+                "type": "credit-artists"
+              }
+            ]
+          }
+        }
+      },
+      "1553944257-5": {
+        "id": "1553944257-5",
+        "type": "role-categories",
+        "attributes": {
+          "kind": "production-and-engineering",
+          "title": "製作與工程團隊"
+        },
+        "relationships": {
+          "credit-artists": {
+            "data": [
+              {
+                "id": "5-ami:identity:b7ce039aac2c803c4620ff4ff18920ca",
+                "type": "credit-artists"
+              },
+              {
+                "id": "5-ami:identity:48759eb9a9e3c1a61e48aaa080bcb7d0",
+                "type": "credit-artists"
+              },
+              {
+                "id": "5-ami:identity:c89193dbf69a6fabd86616b459e86bce",
+                "type": "credit-artists"
+              },
+              {
+                "id": "5-ami:identity:5695813116f888163d860ec611367b9f",
+                "type": "credit-artists"
+              },
+              {
+                "id": "5-ami:identity:42764413ba6be21a26b3ca23383f622d",
+                "type": "credit-artists"
+              },
+              {
+                "id": "5-ami:identity:95d5cd11012277239be6c187abd5971f",
+                "type": "credit-artists"
+              },
+              {
+                "id": "5-ami:identity:9493bbf2bc94de0a363a9600474764a9",
+                "type": "credit-artists"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "credit-artists": {
+      "4-ami:identity:b7ce039aac2c803c4620ff4ff18920ca": {
+        "id": "4-ami:identity:b7ce039aac2c803c4620ff4ff18920ca",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Ariana Grande",
+          "roleNames": [
+            "演唱",
+            "和聲"
+          ]
+        }
+      },
+      "4-ami:identity:7c87bf14a053481ea81d5c8bdc09a670": {
+        "id": "4-ami:identity:7c87bf14a053481ea81d5c8bdc09a670",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Peter Lee Johnson",
+          "roleNames": [
+            "弦樂器"
+          ]
+        }
+      },
+      "3-ami:identity:b7ce039aac2c803c4620ff4ff18920ca": {
+        "id": "3-ami:identity:b7ce039aac2c803c4620ff4ff18920ca",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Ariana Grande",
+          "roleNames": [
+            "詞曲創作",
+            "聲樂編曲"
+          ]
+        }
+      },
+      "3-ami:identity:7c87bf14a053481ea81d5c8bdc09a670": {
+        "id": "3-ami:identity:7c87bf14a053481ea81d5c8bdc09a670",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Peter Lee Johnson",
+          "roleNames": [
+            "詞曲創作",
+            "弦樂編曲"
+          ]
+        }
+      },
+      "3-ami:identity:137292133ca2e9363b0842c74423316d": {
+        "id": "3-ami:identity:137292133ca2e9363b0842c74423316d",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Scott Nicholson",
+          "roleNames": [
+            "詞曲創作"
+          ]
+        }
+      },
+      "3-ami:identity:313eff771340e7f0b1947977fa2e7bc3": {
+        "id": "3-ami:identity:313eff771340e7f0b1947977fa2e7bc3",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Victoria Monét",
+          "roleNames": [
+            "詞曲創作"
+          ]
+        }
+      },
+      "3-ami:identity:42764413ba6be21a26b3ca23383f622d": {
+        "id": "3-ami:identity:42764413ba6be21a26b3ca23383f622d",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Courageous Xavier Herrera",
+          "roleNames": [
+            "詞曲創作"
+          ]
+        }
+      },
+      "3-ami:identity:95d5cd11012277239be6c187abd5971f": {
+        "id": "3-ami:identity:95d5cd11012277239be6c187abd5971f",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Steven Franks",
+          "roleNames": [
+            "詞曲創作"
+          ]
+        }
+      },
+      "3-ami:identity:3715f9cf16dc9ec5b6ff00cd20ccc1fc": {
+        "id": "3-ami:identity:3715f9cf16dc9ec5b6ff00cd20ccc1fc",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Albert Stanaj",
+          "roleNames": [
+            "詞曲創作"
+          ]
+        }
+      },
+      "3-ami:identity:b16f6d6e77be08baff9e9b202a076005": {
+        "id": "3-ami:identity:b16f6d6e77be08baff9e9b202a076005",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Taylor Monet Parks",
+          "roleNames": [
+            "詞曲創作"
+          ]
+        }
+      },
+      "3-ami:identity:8da8dd8326ca8b6a7cd761a258e7ed81": {
+        "id": "3-ami:identity:8da8dd8326ca8b6a7cd761a258e7ed81",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Thomas Brown",
+          "roleNames": [
+            "詞曲創作"
+          ]
+        }
+      },
+      "5-ami:identity:b7ce039aac2c803c4620ff4ff18920ca": {
+        "id": "5-ami:identity:b7ce039aac2c803c4620ff4ff18920ca",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Ariana Grande",
+          "roleNames": [
+            "聲樂製作人",
+            "錄音師"
+          ]
+        }
+      },
+      "5-ami:identity:48759eb9a9e3c1a61e48aaa080bcb7d0": {
+        "id": "5-ami:identity:48759eb9a9e3c1a61e48aaa080bcb7d0",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Serban Ghenea",
+          "roleNames": [
+            "混音師"
+          ]
+        }
+      },
+      "5-ami:identity:c89193dbf69a6fabd86616b459e86bce": {
+        "id": "5-ami:identity:c89193dbf69a6fabd86616b459e86bce",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Randy Merrill",
+          "roleNames": [
+            "母帶工程師"
+          ]
+        }
+      },
+      "5-ami:identity:5695813116f888163d860ec611367b9f": {
+        "id": "5-ami:identity:5695813116f888163d860ec611367b9f",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Billy Hickey",
+          "roleNames": [
+            "錄音師"
+          ]
+        }
+      },
+      "5-ami:identity:42764413ba6be21a26b3ca23383f622d": {
+        "id": "5-ami:identity:42764413ba6be21a26b3ca23383f622d",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Courageous Xavier Herrera",
+          "roleNames": [
+            "共同製作人"
+          ]
+        }
+      },
+      "5-ami:identity:95d5cd11012277239be6c187abd5971f": {
+        "id": "5-ami:identity:95d5cd11012277239be6c187abd5971f",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Steven Franks",
+          "roleNames": [
+            "製作人"
+          ]
+        }
+      },
+      "5-ami:identity:9493bbf2bc94de0a363a9600474764a9": {
+        "id": "5-ami:identity:9493bbf2bc94de0a363a9600474764a9",
+        "type": "credit-artists",
+        "attributes": {
+          "name": "Tommy Brown",
+          "roleNames": [
+            "製作人"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -2,10 +2,10 @@
 <resources>
     <string name="language_title">Language</string>
     <string name="language_system">System default</string>
-    <string name="nav_home">Listen Now</string>
+    <string name="nav_home">Home</string>
     <string name="nav_browse">New</string>
     <string name="nav_sing">Sing</string>
-    <string name="nav_videos">Videos</string>
+    <string name="nav_videos">Music Videos</string>
     <string name="nav_radio">Radio</string>
     <string name="nav_library">Library</string>
     <string name="nav_account">Account</string>

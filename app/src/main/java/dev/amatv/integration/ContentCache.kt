@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -46,6 +47,8 @@ class ContentCache private constructor(context: Context) {
     val settings = mutableSettings.asStateFlow()
     val generation: Long get() = epoch.get()
     val artworkDirectory = File(appContext.cacheDir, "artwork")
+    internal val metadataDirectory = File(appContext.cacheDir, "catalog-feeds-v1")
+    internal val metadataMutations = Mutex()
 
     // The write gate, rather than an arbitrary small LRU, leaves room for the OS.
     // Bound disk cache to at most 256MB to avoid consuming storage on small TV flash memory.
@@ -55,14 +58,14 @@ class ContentCache private constructor(context: Context) {
         get() = maxOf(256L * 1024 * 1024, appContext.filesDir.totalSpace / 20)
 
     fun setEnabled(enabled: Boolean) {
-        epoch.incrementAndGet()
+        val revision = epoch.incrementAndGet()
         preferences.edit().putBoolean("enabled", enabled).apply()
-        mutableSettings.value = mutableSettings.value.copy(enabled = enabled, revision = generation)
+        mutableSettings.update { it.copy(enabled = enabled, revision = maxOf(it.revision, revision)) }
     }
 
     fun setPrefetch(enabled: Boolean) {
         preferences.edit().putBoolean("prefetch-next-two", enabled).apply()
-        mutableSettings.value = mutableSettings.value.copy(prefetchNextTwo = enabled)
+        mutableSettings.update { it.copy(prefetchNextTwo = enabled) }
     }
 
     /** Call on IO; keeping a reserve also bounds concurrent artwork downloads. */
@@ -105,11 +108,16 @@ class ContentCache private constructor(context: Context) {
     suspend fun clear(clearArtwork: suspend () -> Unit) = withContext(NonCancellable + Dispatchers.IO) {
         clearOperation.withLock {
             mutations.withLock {
-                epoch.incrementAndGet()
-                mutableSettings.value = settings.value.copy(clearing = true, revision = generation)
+                val revision = epoch.incrementAndGet()
+                mutableSettings.update { it.copy(clearing = true, revision = maxOf(it.revision, revision)) }
             }
             try {
                 clearArtwork()
+                metadataMutations.withLock {
+                    metadataDirectory.listFiles()?.forEach { file ->
+                        if (file.isFile && !file.delete()) error(AppText.text(R.string.services_cache_clear_failed))
+                    }
+                }
                 mutations.withLock {
                     lyricsDirectory.listFiles()?.forEach { file ->
                         if (file.isFile && !file.delete()) error(AppText.text(R.string.services_cache_clear_failed))
@@ -117,8 +125,8 @@ class ContentCache private constructor(context: Context) {
                 }
             } finally {
                 mutations.withLock {
-                    epoch.incrementAndGet()
-                    mutableSettings.value = settings.value.copy(clearing = false, revision = generation)
+                    val revision = epoch.incrementAndGet()
+                    mutableSettings.update { it.copy(clearing = false, revision = maxOf(it.revision, revision)) }
                 }
             }
         }
@@ -126,7 +134,10 @@ class ContentCache private constructor(context: Context) {
 
     suspend fun storage(artworkBytes: Long): ContentCacheStorage = withContext(Dispatchers.IO) {
         val lyricsBytes = lyricsDirectory.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
-        ContentCacheStorage(lyricsBytes + artworkBytes, appContext.filesDir.usableSpace, reserveBytes)
+        val metadataBytes = metadataMutations.withLock {
+            metadataDirectory.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+        }
+        ContentCacheStorage(lyricsBytes + artworkBytes + metadataBytes, appContext.filesDir.usableSpace, reserveBytes)
     }
 
     private fun lyricFile(key: String): File {

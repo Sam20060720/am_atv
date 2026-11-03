@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_management_edit_playlist">Edit Playlist</string>
+    <string name="library_management_edit_folder">Edit Folder</string>
+    <string name="library_management_rename">Rename</string>
+    <string name="library_management_name">Name</string>
+    <string name="library_management_save_name">Save Name</string>
+    <string name="library_management_order">Change Order</string>
+    <string name="library_management_save_order">Save Order</string>
+    <string name="library_management_move">Move to Folder</string>
+    <string name="library_management_move_here">Move to “%1$s”</string>
+    <string name="library_management_root">Library</string>
+    <string name="library_management_delete_playlist">Delete Playlist</string>
+    <string name="library_management_delete_folder">Delete Folder</string>
+    <string name="library_management_delete_confirm">Delete “%1$s”?</string>
+    <string name="library_management_cancel">Cancel</string>
+    <string name="library_management_pending">The change is awaiting confirmation. Check its status before trying again.</string>
+    <string name="library_management_check">Check Status</string>
+    <string name="library_management_failed">Could not update this item.</string>
+    <string name="library_management_conflict">This playlist changed. Reload it before editing.</string>
+    <string name="library_management_entry">%1$d. %2$s</string>
+    <string name="library_management_unavailable">Unavailable Item</string>
+    <string name="library_management_read_only">This item cannot be edited.</string>
+    <string name="library_management_remove_song">Remove from Library</string>
+    <string name="library_management_remove_song_confirm">Remove “%1$s” from your library?</string>
+    <string name="library_management_remove_favorite">Remove from Favorites</string>
+    <string name="library_management_favorite_removed">Removed from Favorites</string>
+</resources>

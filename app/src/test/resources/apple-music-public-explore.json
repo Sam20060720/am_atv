@@ -1,0 +1,197 @@
+{
+  "id": "link-list-shelf - 6504784849",
+  "itemKind": "linkComponentModel",
+  "presentation": {
+    "kind": "collection",
+    "layout": {
+      "kind": "grid",
+      "flowStyle": "column"
+    }
+  },
+  "header": {
+    "kind": "default",
+    "item": {
+      "titleLink": {
+        "title": "探索更多"
+      }
+    },
+    "isForPaginatedPage": false
+  },
+  "items": [
+    {
+      "id": "link-list-shelf - 6504784849 - 音樂會",
+      "title": "音樂會",
+      "segue": {
+        "$kind": "flowAction",
+        "destination": {
+          "kind": "concertHubPage",
+          "intent": {
+            "storefront": "tw",
+            "language": null,
+            "showLocationPrompt": false,
+            "$kind": "ConcertsHubPageIntent"
+          }
+        }
+      }
+    },
+    {
+      "id": "link-list-shelf - 6504784849 - 按類別瀏覽",
+      "title": "按類別瀏覽",
+      "segue": {
+        "$kind": "flowAction",
+        "destination": {
+          "kind": "catalogPage",
+          "intent": {
+            "id": "6456176470",
+            "contentDescriptor": {
+              "kind": "room",
+              "identifiers": {
+                "storeAdamID": "6456176470"
+              },
+              "url": "/tw/room/6456176470",
+              "locale": {
+                "storefront": "tw",
+                "language": null
+              }
+            },
+            "storefront": "tw",
+            "language": null,
+            "$kind": "RoomPageIntent"
+          }
+        }
+      }
+    },
+    {
+      "id": "link-list-shelf - 6504784849 - 年代之聲",
+      "title": "年代之聲",
+      "segue": {
+        "$kind": "flowAction",
+        "destination": {
+          "kind": "catalogPage",
+          "intent": {
+            "id": "6456176471",
+            "contentDescriptor": {
+              "kind": "room",
+              "identifiers": {
+                "storeAdamID": "6456176471"
+              },
+              "url": "/tw/room/6456176471",
+              "locale": {
+                "storefront": "tw",
+                "language": null
+              }
+            },
+            "storefront": "tw",
+            "language": null,
+            "$kind": "RoomPageIntent"
+          }
+        }
+      }
+    },
+    {
+      "id": "link-list-shelf - 6504784849 - 心情與活動",
+      "title": "心情與活動",
+      "segue": {
+        "$kind": "flowAction",
+        "destination": {
+          "kind": "catalogPage",
+          "intent": {
+            "id": "6456176472",
+            "contentDescriptor": {
+              "kind": "room",
+              "identifiers": {
+                "storeAdamID": "6456176472"
+              },
+              "url": "/tw/room/6456176472",
+              "locale": {
+                "storefront": "tw",
+                "language": null
+              }
+            },
+            "storefront": "tw",
+            "language": null,
+            "$kind": "RoomPageIntent"
+          }
+        }
+      }
+    },
+    {
+      "id": "link-list-shelf - 6504784849 - 來自全球",
+      "title": "來自全球",
+      "segue": {
+        "$kind": "flowAction",
+        "destination": {
+          "kind": "catalogPage",
+          "intent": {
+            "id": "6456176473",
+            "contentDescriptor": {
+              "kind": "room",
+              "identifiers": {
+                "storeAdamID": "6456176473"
+              },
+              "url": "/tw/room/6456176473",
+              "locale": {
+                "storefront": "tw",
+                "language": null
+              }
+            },
+            "storefront": "tw",
+            "language": null,
+            "$kind": "RoomPageIntent"
+          }
+        }
+      }
+    },
+    {
+      "id": "link-list-shelf - 6504784849 - 排行榜",
+      "title": "排行榜",
+      "segue": {
+        "$kind": "flowAction",
+        "destination": {
+          "kind": "catalogPage",
+          "intent": {
+            "contentDescriptor": {
+              "kind": "topCharts",
+              "identifiers": {},
+              "url": "/us/new/top-charts",
+              "locale": {
+                "storefront": "us",
+                "language": null
+              }
+            },
+            "storefront": "us",
+            "language": null,
+            "$kind": "TopChartPageIntent"
+          }
+        }
+      }
+    },
+    {
+      "id": "link-list-shelf - 6504784849 - 空間音訊",
+      "title": "空間音訊",
+      "segue": {
+        "$kind": "flowAction",
+        "destination": {
+          "kind": "catalogPage",
+          "intent": {
+            "id": "188745",
+            "contentDescriptor": {
+              "kind": "grouping",
+              "identifiers": {
+                "storeAdamID": "188745"
+              },
+              "url": "/tw/grouping/188745",
+              "locale": {
+                "storefront": "tw",
+                "language": null
+              }
+            },
+            "storefront": "tw",
+            "language": null,
+            "$kind": "GroupingPageIntent"
+          }
+        }
+      }
+    }
+  ]
+}

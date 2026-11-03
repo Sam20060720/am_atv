@@ -1,6 +1,7 @@
 package dev.amatv.benchmark
 
 import android.os.SystemClock
+import android.content.res.Configuration
 import android.util.Log
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -15,13 +16,38 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import java.util.regex.Pattern
+import java.util.Locale
 
 internal const val TARGET = "dev.amatv"
 internal const val UI_TIMEOUT = 30_000L
 internal val CARD_PATTERN = Pattern.compile("shelf-(\\d+)-item-(\\d+)-[a-z]+")
 
+internal fun requirePlayerPlaybackOptIn() {
+    assumeTrue("Explicit playback requires allow_player_playback=1",
+        InstrumentationRegistry.getArguments().getString("allow_player_playback") == "1")
+}
+
 /** All user journeys use real key events. Wait for semantic destinations, not global animation idle. */
 internal class TvUi(val device: UiDevice) {
+    private val targetStrings = mutableMapOf<String, Set<String>>()
+
+    private fun stringLabels(resourceName: String): Set<String> = targetStrings.getOrPut(resourceName) {
+        val context = InstrumentationRegistry.getInstrumentation().context.createPackageContext(TARGET, 0)
+        listOf(Locale.ENGLISH, Locale.TAIWAN, Locale.SIMPLIFIED_CHINESE).mapNotNull { locale ->
+            val configuration = Configuration(context.resources.configuration).apply { setLocale(locale) }
+            val resources = context.createConfigurationContext(configuration).resources
+            val id = resources.getIdentifier(resourceName, "string", TARGET)
+            if (id == 0) null else resources.getString(id)
+        }.toSet().also { require(it.isNotEmpty()) { "Missing target string: $resourceName" } }
+    }
+
+    fun homeShelf(row: Int, titleResource: String): UiObject2? {
+        val titlePattern = Pattern.compile(stringLabels(titleResource).joinToString("|") { Pattern.quote(it) })
+        return device.findObject(
+            By.res(Pattern.compile("home-row-$row-count-\\d+")).hasDescendant(By.text(titlePattern)),
+        )
+    }
+
     init {
         // Native/Compose animation does not imply input is unsafe. Implicit idle
         // waits would stretch a 110ms DPAD burst into seconds and hide the defect.
@@ -44,6 +70,17 @@ internal class TvUi(val device: UiDevice) {
     fun right(pause: Long = 120L) = key(KeyEvent.KEYCODE_DPAD_RIGHT, pause)
     fun center(pause: Long = 340L) = key(KeyEvent.KEYCODE_DPAD_CENTER, pause)
 
+    /** Opens the floating menu through its public accessibility click action. */
+    fun openNavigation() {
+        if (!has("nav-panel")) {
+            id("nav-menu")
+            assertTrue("Navigation menu did not open",
+                performUiAction("nav-menu", AccessibilityNodeInfo.ACTION_CLICK))
+        }
+        id("nav-panel")
+    }
+
+    /** Setup ends on the selected menu item; Right enters the retained content focus. */
     fun browseTab(tab: String) {
         repeat(5) {
             if (has("player-screen") || has("collection-screen")) {
@@ -51,7 +88,7 @@ internal class TvUi(val device: UiDevice) {
                 settle()
             }
         }
-        requireObject(By.res("nav-home"))
+        openNavigation()
         // Screen setup uses a real UI click. Re-reading global By.focused()
         // selectors can return an earlier accessibility snapshot and queue
         // enough directional keys to overshoot the intended tab.
@@ -60,16 +97,20 @@ internal class TvUi(val device: UiDevice) {
             performUiAction("nav-$tab", AccessibilityNodeInfo.ACTION_CLICK))
         val destinationId = if (tab == "nowplaying") "player-screen" else "browse-$tab"
         id(destinationId)
-        val focusedId = if (tab == "nowplaying") "player-screen" else "nav-$tab"
-        performUiAction(focusedId, AccessibilityNodeInfo.ACTION_FOCUS)
-        val deadline = SystemClock.uptimeMillis() + 5_000L
-        while (SystemClock.uptimeMillis() < deadline) {
-            // UiObject2's property access refreshes the matched exact-ID node;
-            // do not rely on By.focused() having matched a fresh snapshot.
-            if (device.findObject(By.res(focusedId))?.isFocused == true) return
-            settle(60)
+        assertTrue("Selecting $tab must close the navigation menu",
+            device.wait(Until.gone(By.res("nav-panel")), 5_000L))
+        if (tab == "nowplaying") {
+            focusUi("player-screen")
+        } else {
+            // A cold catalog can expose its page before a focus target exists.
+            // Observe the completed selection before issuing a new menu intent;
+            // this also verifies that loading eventually grants content focus.
+            requireObject(By.res(destinationId).hasDescendant(By.focused(true)))
+            // Reopen only for setup so callers start their content journey with
+            // a real Right press, after the previous navigation has completed.
+            openNavigation()
+            focusUi("nav-$tab")
         }
-        throw AssertionError("Destination $destinationId is visible but focus did not reach $focusedId")
     }
 
     /** Standard accessibility focus action for setup, including clicking the already-selected tab. */
@@ -99,6 +140,9 @@ internal class TvUi(val device: UiDevice) {
     fun awaitCardPosition(row: Int, column: Int, timeout: Long = 5_000L): UiObject2 =
         requireObject(By.res(Pattern.compile("shelf-$row-item-$column-[a-z]+")).focused(true), timeout)
 
+    fun awaitFocusedRow(row: Int, timeout: Long = 5_000L): UiObject2 =
+        requireObject(By.res(Pattern.compile("shelf-$row-item-\\d+-[a-z]+")).focused(true), timeout)
+
     fun enterHomeFirstCard() {
         // Setup only: a real tab round-trip disposes the old Home lazy state.
         // This is faster and independent of how many personalized shelves exist;
@@ -108,32 +152,33 @@ internal class TvUi(val device: UiDevice) {
         requireObject(By.res(Pattern.compile("home-shelves-count-\\d+")))
         assertTrue("Home needs at least one shelf", homeRowCount() > 0)
         requireObject(By.res(Pattern.compile("shelf-0-item-0-[a-z]+")))
-        down(0)
+        right(0)
         awaitCardPosition(0, 0)
         assertEquals(0 to 0, focusedCardPosition())
     }
     /** Pin the horizontal measurement to a public chart shelf, never a changing personalized first row. */
-    fun enterHomeShelf(title: String, minimumCardCount: Int = 11) {
+    fun enterHomeShelf(titleResource: String, minimumCardCount: Int = 11) {
         enterHomeFirstCard()
         val rowCount = homeRowCount()
         repeat(rowCount) {
             val row = focusedCardPosition().first
-            val namedRow = device.findObject(
-                By.res(Pattern.compile("home-row-$row-count-\\d+")).hasDescendant(By.text(title)),
-            )
+            val namedRow = homeShelf(row, titleResource)
             if (namedRow != null) {
                 val count = homeItemCount(row)
                 assertTrue("Public chart must contain at least $minimumCardCount cards", count >= minimumCardCount)
+                // A wide showcase's center can enter the second square card.
+                // Reset this setup row using actual remote keys before measuring.
+                repeat(focusedCardPosition().second) { left(0) }
                 awaitCardPosition(row, 0)
-                Log.i("AMATV-UI", "benchmark shelf=$title items=$count bounds=${homeCard().visibleBounds}")
+                Log.i("AMATV-UI", "benchmark shelf=$titleResource items=$count bounds=${homeCard().visibleBounds}")
                 return
             }
             if (row < rowCount - 1) {
                 down(0)
-                awaitCardPosition(row + 1, 0)
+                awaitFocusedRow(row + 1)
             }
         }
-        throw AssertionError("Public Home shelf not available: $title")
+        throw AssertionError("Public Home shelf not available: $titleResource")
     }
 
     fun awaitFocused(id: String, timeout: Long = 5_000L) {
@@ -153,28 +198,44 @@ internal class TvUi(val device: UiDevice) {
         awaitFocused(id)
     }
 
-    /** Seed through the public catalog UI only if a genuine saved player cannot be opened. */
-    fun ensurePlayableSong(): Boolean {
+    /** Opens an existing player without selecting or starting a song. */
+    fun openRetainedSong(): Boolean {
         browseTab("home")
-        assumeTrue("SKIPPED: Apple Music account is not signed in", device.hasObject(By.text("帳號")))
+        assumeTrue("SKIPPED: Apple Music account is not signed in",
+            stringLabels("app_account").any { device.hasObject(By.text(it)) })
         if (has("nav-nowplaying")) {
             // Older builds may expose a ghost tab despite having no selected song.
             // Prove that it opens a real player before trusting its presence.
             performUiAction("nav-nowplaying", AccessibilityNodeInfo.ACTION_CLICK)
             if (device.wait(Until.hasObject(By.res("player-screen")), 2_000)) {
                 focusUi("player-screen")
-                return false
+                return true
             }
             browseTab("home")
         }
-        enterHomeShelf("熱門歌曲", minimumCardCount = 1)
+        return false
+    }
+
+    fun requireRetainedPausedSong() {
+        assumeTrue("SKIPPED: need a previously selected real song", openRetainedSong())
+        assumeTrue("SKIPPED: retained song must already be paused", PlayerUi(this).state() == "paused")
+    }
+
+    /** Explicit fixture creation only; never called by generic setup or rendering benchmarks. */
+    fun seedPlayableSong() {
+        requirePlayerPlaybackOptIn()
+        assumeTrue("Public-song selection requires allow_playback_seed=1",
+            InstrumentationRegistry.getArguments().getString("allow_playback_seed") == "1")
+        enterHomeShelf("app_top_songs", minimumCardCount = 1)
         assertTrue("Public songs shelf must contain an actual song", homeCard().resourceName.endsWith("-song"))
         center()
         id("player-screen")
         val player = PlayerUi(this)
-        player.awaitState("playing", 60_000)
-        player.pause()
-        return true
+        try {
+            player.awaitState("playing", 60_000)
+        } finally {
+            player.pause()
+        }
     }
 
     /** Read public accessibility state without waiting for artwork/text content to mount. */
@@ -194,17 +255,5 @@ internal class TvUi(val device: UiDevice) {
         } finally { node.recycle() }
         val root = InstrumentationRegistry.getInstrumentation().uiAutomation.rootInActiveWindow ?: return null
         return visit(root)
-    }
-
-    fun stopPlaybackIfVisible() {
-        if (!has("player-screen")) return
-        if (!has("player-controls")) { center(); settle() }
-        val pause = device.findObject(By.desc("暫停"))
-        if (pause != null) {
-            // Initial player control is Play/Pause. Return there through the shared remote root.
-            repeat(6) { left(50) }
-            right()
-            center()
-        }
     }
 }

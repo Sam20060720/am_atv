@@ -19,15 +19,10 @@
     <string name="app_top_songs">热门歌曲</string>
     <string name="app_top_albums">热门专辑</string>
     <string name="app_top_playlists">热门播放列表</string>
-    <string name="app_new_top_tracks">最新热门单曲</string>
-    <string name="app_featured_playlists">精选歌单</string>
-    <string name="app_top_music_videos">热门音乐视频</string>
     <string name="app_apple_music_radio">Apple Music 广播</string>
     <string name="app_library_playlists">资料库播放列表</string>
     <string name="app_library_songs">资料库歌曲</string>
     <string name="app_apple_signed_out">已从这台电视登出 Apple Music。</string>
-    <string name="app_search_no_results_format">找不到符合“%1$s”的结果。</string>
-    <string name="app_search_failed">搜索失败。</string>
     <string name="app_account">账号</string>
     <string name="app_sign_in">登录</string>
 </resources>

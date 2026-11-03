@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="artist_library_albums">资料库中的专辑</string>
+    <string name="artist_top_songs">热门歌曲</string>
+    <string name="artist_latest_release">最新发行</string>
+    <string name="artist_featured_albums">代表专辑</string>
+    <string name="artist_full_albums">录音室专辑</string>
+    <string name="artist_singles">单曲与 EP</string>
+    <string name="artist_live_albums">现场专辑</string>
+    <string name="artist_compilation_albums">精选辑</string>
+    <string name="artist_appears_on">参与作品</string>
+    <string name="artist_featured_playlists">艺人精选歌单</string>
+    <string name="artist_playlists">相关歌单</string>
+    <string name="artist_similar_artists">相似艺人</string>
+    <string name="artist_featured_videos">精选音乐影片</string>
+    <string name="artist_top_videos">热门音乐影片</string>
+    <string name="artist_videos">音乐影片</string>
+    <string name="artist_albums">所有专辑</string>
+    <string name="artist_station">艺人电台</string>
+    <string name="artist_play_top_songs">播放热门歌曲</string>
+    <string name="artist_read_more">更多</string>
+    <string name="artist_show_less">收起</string>
+    <string name="artist_more">显示更多</string>
+</resources>

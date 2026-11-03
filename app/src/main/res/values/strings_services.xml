@@ -10,7 +10,6 @@
     <string name="services_recommended_for_you">Recommended for You</string>
     <string name="services_top_picks_for_you">Top Picks for You</string>
     <string name="services_library_song_catalog_missing">Catalog information is unavailable for library song %1$s.</string>
-    <string name="services_uploaded_song_lyrics_unavailable">Synchronized lyrics are unavailable for this uploaded song.</string>
     <string name="services_playlist_page_repeated">Unable to continue loading this playlist. Please try again.</string>
     <string name="services_playlist_tracks_unavailable">Unable to load playlist tracks. Please try again.</string>
     <string name="services_sign_in_apple_music">Please sign in to Apple Music.</string>
@@ -42,8 +41,7 @@
     <string name="services_apple_connection_failed">Unable to connect to Apple Music. Please try again.</string>
     <string name="services_playback_failed">Unable to complete playback. Please try again.</string>
     <string name="services_sdk_unavailable">Apple Music playback is unavailable in this version.</string>
-    <string name="services_auth_failed">Apple Music sign-in failed: %1$s</string>
-    <string name="services_catalog_id_missing">This track has no Apple Music catalog ID.</string>
+    <string name="services_catalog_id_missing">This song is currently unavailable.</string>
     <string name="services_video_unsupported">Music video playback is unavailable in this version.</string>
     <string name="services_container_unsupported">This item cannot be played as a collection.</string>
     <string name="services_station_unsupported">Station playback is unavailable in this version.</string>
@@ -80,7 +78,6 @@
     <string name="services_auth_retry">Try Signing In Again</string>
     <string name="services_auth_invalid_token_format">Apple Music returned an invalid authorization format.</string>
     <string name="services_auth_incomplete">Apple Music sign-in is incomplete\n%1$s\n\nPress Back to return to the app and try again.</string>
-    <string name="services_auth_webview_incomplete">The Apple sign-in form did not finish loading.\nSystem web component: %1$s\n\nPress OK to reload it, or Back to leave.</string>
     <string name="services_auth_renderer_stopped">The system web component stopped while loading Apple sign-in (%1$s). Return to the app and try again.</string>
     <string name="services_playback_channel_name">Media Playback</string>
     <string name="services_playback_channel_desc">Background media playback notification</string>

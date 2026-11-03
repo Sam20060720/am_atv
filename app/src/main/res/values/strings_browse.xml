@@ -7,7 +7,6 @@
     <string name="browse_sign_in_tv">Sign In on This TV</string>
     <string name="browse_sign_out_tv">Sign Out of This TV</string>
     <string name="browse_retry_connection">Retry Connection</string>
-    <string name="browse_connection_error">Unable to connect. Please try again.</string>
     <string name="browse_ytm_connected">YouTube Music account connected</string>
     <string name="browse_ytm_recommendations">YouTube Music Recommendations</string>
     <string name="browse_pairing_instructions">Open %1$s on your phone and enter %2$s.</string>
@@ -28,13 +27,9 @@
     <string name="browse_ytm_name">YouTube Music</string>
     <string name="browse_apple_name">Apple Music</string>
     <string name="browse_selected_source">✓ %1$s</string>
-    <string name="browse_quick_mandopop">Mandopop Hits</string>
     <string name="browse_search_hint">Search artists, albums, songs, or playlists</string>
     <string name="browse_search_hint_remote">Search artists, albums, songs, or playlists (press Select to open the keyboard)</string>
-    <string name="browse_search_results">Search Results</string>
     <string name="browse_recently_played">Recently Played</string>
-    <string name="browse_search_empty">Search for music you love</string>
-    <string name="browse_search_error">Unable to search. Please try again.</string>
     <string name="browse_content_unavailable">Unable to Load Apple Music</string>
     <string name="browse_sign_in_personalized">Sign in to Apple Music to access your recommendations and library.</string>
     <string name="browse_check_connection">Check your network connection and try again.</string>
@@ -57,21 +52,20 @@
     <string name="browse_play">Play</string>
     <string name="browse_shuffle">Shuffle</string>
     <string name="browse_tracks_empty">No songs available</string>
-    <string name="browse_station_unavailable">This station is currently unavailable.</string>
     <string name="browse_back">Back</string>
     <string name="browse_track_index">%1$d</string>
     <string name="browse_song_duration">%1$d:%2$02d</string>
     <string name="browse_duration_hours">%1$d hr %2$d min</string>
     <string name="browse_duration_minutes">%1$d min</string>
-    <string name="browse_cache_title">Artwork and Lyrics Cache</string>
+    <string name="browse_cache_title">Content Cache</string>
     <string name="browse_cache_storage">Used %1$s · Available %2$s</string>
     <string name="browse_cache_storage_low">Low storage. New caching is paused.</string>
     <string name="browse_cache_disk_on">Disk Cache: On</string>
     <string name="browse_cache_disk_off">Disk Cache: Off</string>
-    <string name="browse_cache_prefetch_on">Preload Next Two Songs: On</string>
-    <string name="browse_cache_prefetch_off">Preload Next Two Songs: Off</string>
+    <string name="browse_cache_prefetch_on">Background Preload: On</string>
+    <string name="browse_cache_prefetch_off">Background Preload: Off</string>
     <string name="browse_cache_clearing">Clearing…</string>
-    <string name="browse_cache_clear">Clear Artwork and Lyrics Cache</string>
+    <string name="browse_cache_clear">Clear Content Cache</string>
     <string name="browse_cache_clear_error">Some cached files could not be cleared. Please try again.</string>
     <string name="browse_cache_gigabytes">%1$.1f GB</string>
     <string name="browse_cache_megabytes">%1$d MB</string>
@@ -79,4 +73,7 @@
         <item quantity="one">%1$d song</item>
         <item quantity="other">%1$d songs</item>
     </plurals>
+    <string name="browse_navigation_menu">Navigation menu</string>
+    <string name="browse_navigation_expanded">Expanded</string>
+    <string name="browse_navigation_collapsed">Collapsed</string>
 </resources>

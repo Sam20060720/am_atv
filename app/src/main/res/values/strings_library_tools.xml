@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_tools_artist">Artist</string>
+    <string name="library_tools_original">Original Order</string>
+    <string name="library_tools_name">Name</string>
+    <string name="library_tools_filter">Filter This Category</string>
+    <string name="library_tools_apply">Apply</string>
+    <string name="library_tools_clear_filter">Clear Filter</string>
+    <string name="library_tools_letters">Jump to Letter</string>
+    <string name="library_tools_other">Other</string>
+    <string name="library_tools_loaded">Preparing this category · %1$d items loaded</string>
+    <string name="library_tools_indexing">Organizing your library…</string>
+    <string name="library_tools_cancel">Cancel</string>
+    <string name="library_tools_continue">Continue</string>
+    <string name="library_tools_paused">Preparation paused · %1$d items loaded</string>
+    <string name="library_tools_failed">Preparation stopped · %1$d items loaded</string>
+    <string name="library_tools_filtered_count">%1$d matches</string>
+    <string name="library_tools_no_matches">No items match this filter.</string>
+    <string name="library_tools_search_all">Search Entire Library</string>
+</resources>

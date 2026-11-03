@@ -8,6 +8,7 @@ local.properties
 /buildSrc/build/
 *.iml
 .DS_Store
+__pycache__/
 
 # Apple-provided SDK binaries must be downloaded by each developer.
 app/libs/*.aar
@@ -36,3 +37,6 @@ decoded/
 /log/
 *.xapk
 *.apk.zip
+
+# Supplied reference package and extracted research trees.
+/tmp/

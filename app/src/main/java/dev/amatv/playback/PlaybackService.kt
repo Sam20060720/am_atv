@@ -14,6 +14,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dev.amatv.MainActivity
+import dev.amatv.AmAtvApplication
 import dev.amatv.R
 
 /**
@@ -21,12 +22,18 @@ import dev.amatv.R
  * when the Activity is backgrounded on Android TV.
  */
 class PlaybackService : Service() {
+    private var runtime: PlaybackRuntimeOwner? = null
+    private var runtimeLease: Long? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // The process runtime owns the actual player/queue. A service lease
+        // keeps that owner discoverable without binding it to an Activity.
+        runtime = (application as? AmAtvApplication)?.existingPlaybackRuntime
+        runtimeLease = runtime?.acquireService()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -55,6 +62,9 @@ class PlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        runtimeLease?.let { runtime?.releaseService(it) }
+        runtimeLease = null
+        runtime = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="playback_feedback_preparing">正在準備播放…</string>
+    <string name="playback_feedback_buffering">正在緩衝…</string>
+    <string name="playback_feedback_reconnecting">正在重新連線…</string>
+    <string name="playback_feedback_failed">暫時無法播放。</string>
+    <string name="playback_feedback_retry_hint">按播放重試。</string>
+    <string name="playback_feedback_sign_in_hint">按播放重新登入。</string>
+</resources>

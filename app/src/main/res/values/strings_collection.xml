@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="collection_preparing">Preparing playback…</string>
+    <string name="collection_preparing_shuffle_count">Preparing shuffle… %1$d songs loaded</string>
+    <string name="collection_cancel_preparation">Cancel</string>
+    <string name="collection_loaded_count">%1$d songs loaded</string>
+    <string name="collection_empty">Nothing here yet</string>
+    <string name="collection_section_number">Section %1$d</string>
+</resources>

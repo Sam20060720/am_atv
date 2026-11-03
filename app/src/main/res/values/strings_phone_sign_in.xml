@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="phone_sign_in_title">Sign in on your phone</string>
+    <string name="phone_sign_in_instructions">Connect your phone and TV to the same Wi-Fi, then scan this code to sign in to Apple Music.</string>
+    <string name="phone_sign_in_starting">Preparing sign-in…</string>
+    <string name="phone_sign_in_waiting">Scan the code with your phone.</string>
+    <string name="phone_sign_in_authorizing">Complete sign-in on your phone.</string>
+    <string name="phone_sign_in_complete">You’re signed in.</string>
+    <string name="phone_sign_in_expired">This code has expired. Get a new code to continue.</string>
+    <string name="phone_sign_in_failed">Unable to start phone sign-in.</string>
+    <string name="phone_sign_in_retry">Try Again</string>
+    <string name="phone_sign_in_cancel">Cancel</string>
+    <string name="phone_sign_in_done">Done</string>
+    <string name="phone_sign_in_qr_description">Scan to sign in to Apple Music on this TV</string>
+</resources>

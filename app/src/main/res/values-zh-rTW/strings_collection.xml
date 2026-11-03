@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="collection_preparing">準備播放中…</string>
+    <string name="collection_preparing_shuffle_count">準備隨機播放…已載入 %1$d 首歌曲</string>
+    <string name="collection_cancel_preparation">取消</string>
+    <string name="collection_loaded_count">已載入 %1$d 首歌曲</string>
+    <string name="collection_empty">目前沒有內容</string>
+    <string name="collection_section_number">第 %1$d 區</string>
+</resources>

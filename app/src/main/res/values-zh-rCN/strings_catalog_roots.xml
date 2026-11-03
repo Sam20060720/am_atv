@@ -1,0 +1,5 @@
+<resources>
+    <string name="catalog_all_genres">所有曲风</string>
+    <string name="catalog_roots_empty">目前没有可显示的曲风。</string>
+    <string name="catalog_roots_failed">无法载入曲风。</string>
+</resources>

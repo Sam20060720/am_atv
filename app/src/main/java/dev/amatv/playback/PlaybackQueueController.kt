@@ -38,6 +38,8 @@ data class QueueEntry(
     val origin: EntryOrigin,
     /** Confirmed audio progress; retained even if this recording later becomes unavailable. */
     val wasPlayed: Boolean = false,
+    /** Canonical context occurrence; a repeat cycle gets new entry IDs, never new source occurrences. */
+    val sourceEntryId: Long = entryId,
 )
 
 enum class ContextKind {
@@ -78,6 +80,10 @@ data class QueueState(
     val ytmSeedVideoId: String? = null,
     val awaitingNext: Boolean = false,
     val contextEntries: List<QueueEntry> = emptyList(),
+    /** A selected collection is still receiving its real ordered pages. */
+    val contextContinuationPending: Boolean = false,
+    /** A failed tail is retryable and must not be mistaken for a complete collection. */
+    val contextContinuationFailed: Boolean = false,
     /** User-selected anchor; only a confirmed unavailable anchor permits a healthy queued fallback. */
     val recommendationSeed: Track? = null,
     val consecutiveFailures: Int = 0,
@@ -85,7 +91,22 @@ data class QueueState(
     /** Changes only when the user starts a new context or a saved session is hydrated. */
     val sessionId: Long = 0L,
     val persistenceId: String = "",
+    /** Original album/playlist occurrences; deliberate enqueue entries remain outside this set. */
+    val containerEntryIds: Set<Long> = emptySet(),
+    /** Explicit Play Last entries wait behind the selected collection's unknown tail. */
+    val deferredLastEntryIds: Set<Long> = emptySet(),
 ) {
+    val playableUpNext: List<QueueEntry> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        if (contextContinuationPending && deferredLastEntryIds.isNotEmpty())
+            upNext.takeWhile { it.entryId !in deferredLastEntryIds } else upNext
+    }
+
+    /** The public SDK must stop at the same unknown-tail/repeat boundary as queue advancement. */
+    val playableFuture: List<QueueEntry> by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        if (contextContinuationPending || repeat != PlaybackRepeatMode.Off || autoplay.isEmpty()) playableUpNext
+        else playableUpNext + autoplay
+    }
+
     val displayQueue: List<Track> by lazy(LazyThreadSafetyMode.PUBLICATION) {
         buildList {
             current?.track?.let { add(it) }
@@ -108,7 +129,9 @@ data class QueueState(
     }
 
     val canSkipNext: Boolean
-        get() = upNext.isNotEmpty() || autoplay.isNotEmpty() || repeat != PlaybackRepeatMode.Off || (infinite && current != null)
+        get() = playableUpNext.isNotEmpty() || if (contextContinuationPending) {
+            !contextContinuationFailed
+        } else autoplay.isNotEmpty() || repeat != PlaybackRepeatMode.Off || (infinite && current != null)
 
     val canSkipPrevious: Boolean
         get() = current != null
@@ -162,6 +185,25 @@ class PlaybackQueueController(
         startIndex: Int,
         context: PlaybackContext? = null,
         shuffle: Boolean? = null,
+        pendingTail: Boolean = false,
+    ) = replaceContext(tracks, startIndex, context, shuffle, pendingTail, songStation = false)
+
+    /** A deliberate Apple Music station starts from this song, not the old queue. */
+    fun playSongStation(seed: Track): Boolean {
+        if (seed.catalogKind != CatalogKind.Song) return false
+        replaceContext(listOf(seed), 0,
+            PlaybackContext(ContextKind.Single, seed.catalogId ?: seed.resourceId ?: seed.id, seed.title),
+            shuffle = false, pendingTail = false, songStation = true)
+        return true
+    }
+
+    private fun replaceContext(
+        tracks: List<Track>,
+        startIndex: Int,
+        context: PlaybackContext?,
+        shuffle: Boolean?,
+        pendingTail: Boolean,
+        songStation: Boolean,
     ) {
         if (tracks.isEmpty()) return
         failedSongs.clear()
@@ -174,6 +216,11 @@ class PlaybackQueueController(
         val clampedIndex = startIndex.coerceIn(0, entries.lastIndex)
         val isShuffled = shuffle ?: _state.value.shuffle
         if (shuffle != null) playbackPrefs.shuffleEnabled = shuffle
+        if (songStation) {
+            playbackPrefs.autoplayEnabled = true
+            playbackPrefs.autoplaySource = AutoplaySource.AppleMusic
+            playbackPrefs.repeatMode = PlaybackRepeatMode.Off
+        }
         val historyEntries = if (isShuffled) emptyList() else entries.take(clampedIndex).map(::historyMetadata)
         val currentEntry = entries[clampedIndex]
         val remainingEntries = if (isShuffled) entries.filter { it.entryId != currentEntry.entryId }
@@ -201,7 +248,15 @@ class PlaybackQueueController(
                 ytmSeedVideoId = null,
                 awaitingNext = false,
                 contextEntries = entries,
+                containerEntryIds = if (context?.kind in setOf(ContextKind.Album, ContextKind.Playlist, ContextKind.LibraryPlaylist))
+                    entries.mapTo(mutableSetOf()) { it.entryId } else emptySet(),
+                deferredLastEntryIds = emptySet(),
+                contextContinuationPending = pendingTail,
+                contextContinuationFailed = false,
                 shuffle = isShuffled,
+                infinite = if (songStation) true else curr.infinite,
+                source = if (songStation) AutoplaySource.AppleMusic else curr.source,
+                repeat = if (songStation) PlaybackRepeatMode.Off else curr.repeat,
                 recommendationSeed = currentEntry.track.takeIf { it.catalogKind == CatalogKind.Song },
                 consecutiveFailures = 0,
                 failureLimitReached = false,
@@ -212,6 +267,195 @@ class PlaybackQueueController(
 
         onPlayTrack(currentEntry.track)
         triggerRefillIfNeeded()
+    }
+
+    /** Insert an ordered, deliberate block immediately after the current entry. */
+    fun enqueueNext(tracks: List<Track>): Boolean = enqueue(tracks, playNext = true)
+
+    /** Append to the explicit queue, ahead of the generated autoplay reserve. */
+    fun enqueueLast(tracks: List<Track>): Boolean = enqueue(tracks, playNext = false)
+
+    private fun enqueue(tracks: List<Track>, playNext: Boolean): Boolean {
+        if (_state.value.current == null || tracks.isEmpty() || tracks.any { it.catalogKind != CatalogKind.Song }) return false
+        // An explicit duplicate is another occurrence, never a recommendation
+        // candidate to deduplicate. Allocation and insertion do not move the player.
+        val entries = tracks.map { QueueEntry(nextEntryId++, it, EntryOrigin.Context) }
+        failedSongs.entries.removeAll { failed -> tracks.any { SongIdentity.isSameSong(failed.value, it) } }
+        _state.update { curr ->
+            val original = curr.unshuffledUpNext ?: curr.upNext
+            val contextIndex = if (playNext) curr.contextEntries.indexOfFirst { it.entryId == curr.current?.sourceEntryId } else -1
+            val contextEntries = if (contextIndex >= 0) {
+                curr.contextEntries.take(contextIndex + 1) + entries + curr.contextEntries.drop(contextIndex + 1)
+            } else curr.contextEntries + entries
+            curr.copy(
+                upNext = if (playNext) entries + curr.upNext else curr.upNext + entries,
+                unshuffledUpNext = if (curr.shuffle) {
+                    if (playNext) entries + original else original + entries
+                } else null,
+                contextEntries = contextEntries,
+                deferredLastEntryIds = if (!playNext && curr.contextContinuationPending)
+                    curr.deferredLastEntryIds + entries.map { it.entryId } else curr.deferredLastEntryIds,
+                // Enqueue never starts playback, including an exhausted queue.
+                // An old in-flight radio result must not advance the playhead.
+                awaitingNext = false,
+            )
+        }
+        return true
+    }
+
+    /** Remove one occurrence from the future, never the playing or past entry. */
+    fun removeUpcoming(entryId: Long): Boolean {
+        val current = _state.value
+        val removed = (current.upNext + current.autoplay).firstOrNull { it.entryId == entryId } ?: return false
+        _state.update { curr -> curr.copy(
+            upNext = curr.upNext.filterNot { it.entryId == entryId },
+            unshuffledUpNext = curr.unshuffledUpNext?.filterNot { it.entryId == entryId },
+            autoplay = curr.autoplay.filterNot { it.entryId == entryId },
+            contextEntries = curr.contextEntries.filterNot { it.entryId == removed.sourceEntryId },
+            containerEntryIds = curr.containerEntryIds - entryId,
+            deferredLastEntryIds = curr.deferredLastEntryIds - entryId,
+        ) }
+        return true
+    }
+
+    /**
+     * Reorder the combined future by occurrence. Moving a recommendation makes
+     * it an explicit choice; any preceding recommendations join the explicit
+     * prefix so their visible order cannot disagree with playback order.
+     */
+    fun moveUpcoming(entryId: Long, targetIndex: Int): Boolean {
+        val current = _state.value
+        val future = current.upNext + current.autoplay
+        val from = future.indexOfFirst { it.entryId == entryId }
+        if (from < 0 || targetIndex !in future.indices || from == targetIndex) return false
+        val reordered = future.toMutableList()
+        val entry = reordered.removeAt(from).copy(origin = EntryOrigin.Context)
+        reordered.add(targetIndex, entry)
+        val explicitCount = reordered.indexOfLast { it.origin == EntryOrigin.Context } + 1
+        val explicit = reordered.take(explicitCount).map { it.copy(origin = EntryOrigin.Context) }
+        val oldFutureSourceIds = current.upNext.mapTo(mutableSetOf()) { it.sourceEntryId }
+        val promotedSourceIds = explicit.mapTo(mutableSetOf()) { it.sourceEntryId }
+        // Previous can expose multiple cycles of one source occurrence. Keep one
+        // canonical occurrence, while every visible playback entry keeps its own ID.
+        val canonical = canonicalOccurrences(explicit)
+        val context = current.contextEntries.filterNot { it.entryId in oldFutureSourceIds || it.entryId in promotedSourceIds } + canonical
+        _state.update { curr -> curr.copy(
+            upNext = explicit,
+            unshuffledUpNext = explicit.takeIf { curr.shuffle },
+            autoplay = reordered.drop(explicitCount),
+            contextEntries = context,
+            deferredLastEntryIds = curr.deferredLastEntryIds - entryId,
+        ) }
+        return true
+    }
+
+    /** Relative actions resolve their destination after the menu's closing animation. */
+    fun moveUpcomingBy(entryId: Long, offset: Int): Boolean {
+        if (offset == 0) return false
+        val future = _state.value.upNext + _state.value.autoplay
+        val from = future.indexOfFirst { it.entryId == entryId }
+        if (from < 0) return false
+        val destination = from.toLong() + offset
+        if (destination !in 0L until future.size.toLong()) return false
+        return moveUpcoming(entryId, destination.toInt())
+    }
+
+    /** Append a real continuation page to its original session without preparing audio again. */
+    fun appendContextTail(sessionId: Long, tracks: List<Track>, complete: Boolean, allowPlaybackAdvance: Boolean = true): Boolean {
+        val current = _state.value
+        if (current.sessionId != sessionId || !current.contextContinuationPending ||
+            tracks.any { it.catalogKind != CatalogKind.Song }) return false
+        val entries = tracks.map { QueueEntry(nextEntryId++, it, EntryOrigin.Context) }
+        fun List<QueueEntry>.appendBeforeDeferredLast(): List<QueueEntry> {
+            val index = indexOfFirst { it.entryId in current.deferredLastEntryIds }.takeIf { it >= 0 } ?: size
+            return take(index) + entries + drop(index)
+        }
+        _state.update { curr -> curr.copy(
+            upNext = curr.upNext.appendBeforeDeferredLast(),
+            unshuffledUpNext = if (curr.shuffle) (curr.unshuffledUpNext ?: curr.upNext).appendBeforeDeferredLast() else null,
+            contextEntries = curr.contextEntries.appendBeforeDeferredLast(),
+            // A legacy queue with no source provenance stays unknown. Receiving
+            // a later page cannot retroactively classify its existing edits.
+            containerEntryIds = if (curr.containerEntryIds.isNotEmpty() &&
+                curr.context?.kind in setOf(ContextKind.Album, ContextKind.Playlist, ContextKind.LibraryPlaylist))
+                curr.containerEntryIds + entries.map { it.entryId } else curr.containerEntryIds,
+            contextContinuationPending = !complete,
+            contextContinuationFailed = false,
+            deferredLastEntryIds = if (complete) emptySet() else curr.deferredLastEntryIds,
+        ) }
+        // A remote Next/end which reached the downloaded edge remains one
+        // intent. A matching new page may satisfy it exactly once.
+        // The retained owner may first need to stop at a newly proven container
+        // boundary. Do not jump into autoplay before it can apply that policy.
+        if (allowPlaybackAdvance) {
+            if (current.awaitingNext && (entries.isNotEmpty() || complete)) advanceNextInternal(manual = true)
+            else if (complete) triggerRefillIfNeeded()
+        }
+        return true
+    }
+
+    /** Commit the complete sampled-shuffle population once, preserving its original occurrence. */
+    fun appendBufferedShuffleTail(
+        sessionId: Long,
+        tracks: List<Track>,
+        selectedSourceIndex: Int,
+        anchorEntryId: Long,
+        allowPlaybackAdvance: Boolean = true,
+    ): Boolean {
+        val current = _state.value
+        val anchor = current.contextEntries.singleOrNull { it.entryId == anchorEntryId } ?: return false
+        if (current.sessionId != sessionId || !current.contextContinuationPending ||
+            current.containerEntryIds != setOf(anchorEntryId) || selectedSourceIndex !in 0..tracks.size ||
+            tracks.any { it.catalogKind != CatalogKind.Song }) return false
+        val entries = tracks.map { QueueEntry(nextEntryId++, it, EntryOrigin.Context) }
+        val source = entries.toMutableList().apply { add(selectedSourceIndex, anchor) }
+        val manual = current.contextEntries.filterNot { it.entryId == anchorEntryId }
+        val next = current.upNext.filterNot { it.entryId in current.deferredLastEntryIds || it.entryId == anchorEntryId }
+        val last = current.upNext.filter { it.entryId in current.deferredLastEntryIds }
+        val ordered = next + entries + last
+        _state.update { curr -> curr.copy(
+            upNext = next + (if (curr.shuffle) entries.shuffled() else entries) + last,
+            unshuffledUpNext = ordered.takeIf { curr.shuffle },
+            contextEntries = source.take(selectedSourceIndex + 1) + manual.filterNot { entry -> entry.entryId in curr.deferredLastEntryIds } +
+                source.drop(selectedSourceIndex + 1) + manual.filter { entry -> entry.entryId in curr.deferredLastEntryIds },
+            containerEntryIds = curr.containerEntryIds + entries.map { entry -> entry.entryId },
+            contextContinuationPending = false,
+            contextContinuationFailed = false,
+            deferredLastEntryIds = emptySet(),
+        ) }
+        if (allowPlaybackAdvance) {
+            if (current.awaitingNext) advanceNextInternal(manual = true) else triggerRefillIfNeeded()
+        }
+        return true
+    }
+
+    fun failContextTail(sessionId: Long): Boolean {
+        if (_state.value.sessionId != sessionId || !_state.value.contextContinuationPending) return false
+        _state.update { it.copy(contextContinuationFailed = true, awaitingNext = false) }
+        return true
+    }
+
+    fun retryContextTail(sessionId: Long): Boolean {
+        if (_state.value.sessionId != sessionId || !_state.value.contextContinuationPending ||
+            !_state.value.contextContinuationFailed) return false
+        _state.update { it.copy(contextContinuationFailed = false) }
+        return true
+    }
+
+    /** Restore an authenticated continuation before reopening its background loader. */
+    fun markContextTailPending(sessionId: Long, context: PlaybackContext? = null): Boolean {
+        if (_state.value.sessionId != sessionId || _state.value.current == null) return false
+        cancelRefill()
+        _state.update { it.copy(
+            context = context ?: it.context,
+            contextContinuationPending = true,
+            contextContinuationFailed = false,
+            awaitingNext = false,
+            autoplay = emptyList(),
+            amStationId = null, ytmContinuation = null, ytmSeedVideoId = null,
+            autoplayStatus = AutoplayStatus.Idle,
+        ) }
+        return true
     }
 
     /** Queue selection is a playhead move inside this session, never a new context. */
@@ -265,6 +509,36 @@ class PlaybackQueueController(
         triggerRefillIfNeeded()
     }
 
+    /**
+     * Adopt an already playing public-SDK occurrence without preparing audio a
+     * second time. Unknown/past IDs are never accepted as a natural handoff.
+     */
+    fun adoptNativeCurrent(entryId: Long): Boolean {
+        val curr = _state.value
+        if (curr.current?.entryId == entryId) return true
+        if (curr.playableFuture.none { it.entryId == entryId }) return false
+        val nextIndex = curr.upNext.indexOfFirst { it.entryId == entryId }
+        val autoplayIndex = if (nextIndex < 0) curr.autoplay.indexOfFirst { it.entryId == entryId } else -1
+        if (nextIndex < 0 && autoplayIndex < 0) return false
+        val prior = listOfNotNull(curr.current?.copy(wasPlayed = true)?.let(::historyMetadata))
+        val chosen = if (nextIndex >= 0) curr.upNext[nextIndex] else curr.autoplay[autoplayIndex]
+        val passed = if (nextIndex >= 0) curr.upNext.take(nextIndex)
+            else curr.upNext + curr.autoplay.take(autoplayIndex)
+        val consumed = passed.mapTo(mutableSetOf()) { it.entryId }.apply { add(entryId) }
+        _state.update { it.copy(
+            history = curr.history + prior + passed.filter { it.wasPlayed }.map(::historyMetadata),
+            current = chosen,
+            upNext = if (nextIndex >= 0) curr.upNext.drop(nextIndex + 1) else emptyList(),
+            unshuffledUpNext = if (nextIndex >= 0) curr.unshuffledUpNext?.filterNot { it.entryId in consumed } else null,
+            autoplay = if (autoplayIndex >= 0) curr.autoplay.drop(autoplayIndex + 1) else curr.autoplay,
+            awaitingNext = false,
+            consecutiveFailures = 0, failureLimitReached = false,
+        ) }
+        playbackSessionActive = true
+        triggerRefillIfNeeded()
+        return true
+    }
+
     fun advanceNext(manual: Boolean = true): QueueEntry? {
         playbackSessionActive = true
         if (manual) resetFailureStreak()
@@ -278,7 +552,7 @@ class PlaybackQueueController(
         }
         val currentPast = listOfNotNull(curr.current?.takeIf { !isFailed(it.track) || it.wasPlayed })
             .map(::historyMetadata)
-        val nextIndex = curr.upNext.indexOfFirst { !isFailed(it.track) }
+        val nextIndex = curr.playableUpNext.indexOfFirst { !isFailed(it.track) }
         if (nextIndex >= 0) {
             val next = curr.upNext[nextIndex]
             val traversed = curr.upNext.take(nextIndex)
@@ -294,15 +568,22 @@ class PlaybackQueueController(
             return next
         }
         val traversedPast = curr.upNext.filter { it.wasPlayed }.map(::historyMetadata)
+        if (curr.contextContinuationPending) {
+            _state.update { it.copy(awaitingNext = !it.contextContinuationFailed) }
+            return null
+        }
         if (curr.repeat == PlaybackRepeatMode.All && curr.contextEntries.any { !isFailed(it.track) }) {
-            val cycle = curr.contextEntries.filterNot { isFailed(it.track) }
-                .map { it.copy(entryId = nextEntryId++, wasPlayed = false) }
+            val sourceCycle = curr.contextEntries.filterNot { isFailed(it.track) }
+            val cycle = sourceCycle.map { it.copy(entryId = nextEntryId++, wasPlayed = false) }
+            val containerCycle = cycle.filterIndexed { index, _ -> sourceCycle[index].entryId in curr.containerEntryIds }
+                .mapTo(mutableSetOf()) { it.entryId }
             val ordered = if (curr.shuffle) cycle.shuffled() else cycle
             val next = ordered.first()
             _state.update { it.copy(
                 history = curr.history + currentPast + traversedPast,
                 current = next, upNext = ordered.drop(1),
                 unshuffledUpNext = if (curr.shuffle) cycle.filter { it.entryId != next.entryId } else null,
+                containerEntryIds = curr.containerEntryIds.intersect(curr.contextEntries.map { it.entryId }.toSet()) + containerCycle,
                 awaitingNext = false,
             ) }
             onPlayTrack(next.track)
@@ -326,6 +607,7 @@ class PlaybackQueueController(
             triggerRefillIfNeeded()
             return _state.value.current.takeIf { it?.entryId != curr.current.entryId }
         }
+        _state.update { it.copy(awaitingNext = false) }
         return null
     }
 
@@ -355,11 +637,21 @@ class PlaybackQueueController(
 
     fun clearUpcoming() {
         cancelRefill()
+        playbackPrefs.autoplayEnabled = false
         _state.update { curr ->
+            val retained = curr.history + listOfNotNull(curr.current)
+            val retainedSources = retained.mapTo(mutableSetOf()) { it.sourceEntryId }
+            val retainedIds = retained.mapTo(mutableSetOf()) { it.entryId } + retainedSources
             curr.copy(
                 upNext = emptyList(),
                 unshuffledUpNext = null,
                 autoplay = emptyList(),
+                contextEntries = curr.contextEntries.filter { it.entryId in retainedSources },
+                containerEntryIds = curr.containerEntryIds.intersect(retainedIds),
+                deferredLastEntryIds = emptySet(),
+                contextContinuationPending = false,
+                contextContinuationFailed = false,
+                infinite = false,
                 amStationId = null,
                 ytmContinuation = null,
                 ytmSeedVideoId = null,
@@ -367,7 +659,6 @@ class PlaybackQueueController(
                 awaitingNext = false,
             )
         }
-        triggerRefillIfNeeded()
     }
 
     fun setInfinite(enabled: Boolean) {
@@ -452,7 +743,7 @@ class PlaybackQueueController(
         playbackSessionActive = false
         failedSongs.clear()
         val usedIds = HashSet<Long>()
-        fun restoredEntry(id: Long?, track: Track, origin: EntryOrigin): QueueEntry {
+        fun restoredEntry(id: Long?, track: Track, origin: EntryOrigin, sourceId: Long? = null): QueueEntry {
             val stableId = id?.takeIf { it > 0 && usedIds.add(it) } ?: run {
                 while (nextEntryId in usedIds) nextEntryId++
                 val generated = nextEntryId++
@@ -460,11 +751,13 @@ class PlaybackQueueController(
                 generated
             }
             nextEntryId = maxOf(nextEntryId, stableId + 1)
-            return QueueEntry(stableId, track, origin, stableId in restored.playedEntryIds)
+            return QueueEntry(stableId, track, origin, stableId in restored.playedEntryIds,
+                sourceId?.takeIf { it > 0 && it < Long.MAX_VALUE } ?: stableId)
         }
         val entries = restored.queue.mapIndexed { index, track ->
             restoredEntry(restored.queueEntryIds.getOrNull(index), track,
-                if (index in restored.autoplayEntryIndices) EntryOrigin.Autoplay else EntryOrigin.Context)
+                if (index in restored.autoplayEntryIndices) EntryOrigin.Autoplay else EntryOrigin.Context,
+                restored.queueSourceEntryIds.getOrNull(index))
         }
         val clampedIndex = restored.currentIndex.coerceIn(entries.indices)
         val currentEntry = entries[clampedIndex]
@@ -472,6 +765,10 @@ class PlaybackQueueController(
             sameSource || it.origin == EntryOrigin.Context || it.wasPlayed
         }
         val autoplayStart = future.indexOfLast { it.origin == EntryOrigin.Context } + 1
+        val explicitFuture = future.take(autoplayStart)
+        val explicitById = explicitFuture.associateBy { it.entryId }
+        val restoredOrder = restored.unshuffledEntryIds.mapNotNull(explicitById::get)
+            .takeIf { restored.unshuffledEntryIds.isNotEmpty() && it.map { entry -> entry.entryId }.toSet() == explicitFuture.map { entry -> entry.entryId }.toSet() }
         val contextEntries = if (restored.contextQueue.isNotEmpty()) {
             // Context IDs may also be on the visible timeline; reuse that identity.
             restored.contextQueue.mapIndexed { index, track ->
@@ -479,17 +776,21 @@ class PlaybackQueueController(
                 entries.firstOrNull { it.entryId == id && it.origin == EntryOrigin.Context }
                     ?: restoredEntry(id, track, EntryOrigin.Context)
             }
-        } else entries.filter { it.origin == EntryOrigin.Context }
+        } else canonicalOccurrences(entries.filter { it.origin == EntryOrigin.Context })
         _state.update { curr -> curr.copy(
             history = entries.take(clampedIndex).map(::historyMetadata),
             current = currentEntry, upNext = future.take(autoplayStart),
-            unshuffledUpNext = null, autoplay = future.drop(autoplayStart),
+            unshuffledUpNext = restoredOrder.takeIf { curr.shuffle }, autoplay = future.drop(autoplayStart),
             source = source, infinite = restored.radioActive, amStationId = null,
             ytmContinuation = restored.radioContinuation.takeIf { restoreYtmCursor },
             ytmSeedVideoId = (restored.radioSeedVideoId ?: restored.radioSeed?.ytmVideoId)
                 .takeIf { restoreYtmCursor },
             autoplayStatus = AutoplayStatus.Idle, awaitingNext = false,
+            contextContinuationPending = false, contextContinuationFailed = false,
             contextEntries = contextEntries,
+            containerEntryIds = restored.containerEntryIds,
+            deferredLastEntryIds = restored.deferredLastEntryIds.intersect(explicitFuture.map { it.entryId }.toSet()),
+            context = restored.playbackContext,
             recommendationSeed = restored.radioSeed?.takeIf { it.catalogKind == CatalogKind.Song }
                 ?: currentEntry.track.takeIf { currentEntry.origin == EntryOrigin.Context && it.catalogKind == CatalogKind.Song }
                 ?: contextEntries.firstOrNull { it.track.catalogKind == CatalogKind.Song }?.track,
@@ -498,6 +799,9 @@ class PlaybackQueueController(
         ) }
         // Restoration hydrates metadata only. User Play opens the recommendation gate.
     }
+
+    private fun canonicalOccurrences(entries: List<QueueEntry>): List<QueueEntry> =
+        entries.distinctBy { it.sourceEntryId }.map { it.copy(entryId = it.sourceEntryId) }
 
     private fun historyMetadata(entry: QueueEntry): QueueEntry = if (entry.track.lyrics.isEmpty()) entry
         else entry.copy(track = entry.track.copy(lyrics = emptyList()))
@@ -641,7 +945,8 @@ class PlaybackQueueController(
 
     private fun refillIfNeeded(pagesRemaining: Int) {
         val s = _state.value
-        if (!playbackSessionActive || !s.infinite || s.repeat != PlaybackRepeatMode.Off || s.failureLimitReached) return
+        if (!playbackSessionActive || !s.infinite || s.repeat != PlaybackRepeatMode.Off ||
+            s.failureLimitReached || s.contextContinuationPending) return
         if (s.upNext.count { !isFailed(it.track) } >= REFILL_THRESHOLD ||
             s.autoplay.count { !isFailed(it.track) } >= AUTOPLAY_RESERVE) return
         if (s.autoplayStatus is AutoplayStatus.Loading) return

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="library_albums">專輯</string>
+    <string name="library_artists">藝人</string>
+    <string name="library_item_count">%1$d 項</string>
+    <string name="library_empty">目前沒有內容</string>
+    <string name="library_load_failed">無法載入資料庫，請重試。</string>
+    <string name="library_addition_title">資料庫</string>
+    <string name="library_addition_playlists">加入播放列表時也加入資料庫</string>
+    <string name="library_addition_favorites">加入喜好時也加入資料庫</string>
+    <string name="library_addition_on">開啟</string>
+    <string name="library_addition_off">關閉</string>
+    <string name="actions_library_addition_pending">主要操作已完成，加入資料庫的結果仍待確認。</string>
+    <string name="actions_retry_library_addition">重試加入資料庫</string>
+</resources>

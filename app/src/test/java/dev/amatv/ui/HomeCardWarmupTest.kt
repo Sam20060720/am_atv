@@ -7,6 +7,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HomeCardWarmupTest {
+    @Test fun returningContentKeepsOnlyABoundedIdentityPermitNotItsLazyCallback() {
+        val queue = HomeCardWarmup()
+        val key = listOf("album", "cover-v1")
+        val ticket = queue.request({ 0 }) { queue.rememberMounted(key) }
+        assertFalse(queue.wasMounted(key))
+        assertTrue(queue.mountNext(1))
+        queue.cancel(ticket)
+        assertTrue(queue.wasMounted(key))
+        assertFalse(queue.wasMounted(listOf("album", "cover-v2")))
+        assertEquals(0, queue.pendingCount)
+        repeat(256) { queue.rememberMounted("other-$it") }
+        assertFalse(queue.wasMounted(key))
+        assertTrue(queue.wasMounted("other-255"))
+        queue.close()
+        assertFalse(queue.wasMounted("other-255"))
+    }
+
     @Test fun allRowsShareOneMountPermitPerDisplayFrame() {
         val queue = HomeCardWarmup()
         val mounted = mutableListOf<String>()
@@ -101,6 +118,45 @@ class HomeCardWarmupTest {
         assertFalse(queue.mountNext(2))
         assertEquals(1, mounts)
         queue.close()
+    }
+
+    @Test fun oneViewportUpdatePromotesOnlyRealVisibleCardsAndStillFollowsRapidFocus() {
+        val queue = HomeCardWarmup()
+        var focusedCard = "recent:songs:10"
+        val mounted = mutableListOf<String>()
+        fun add(cardKey: String) = queue.request({
+            queue.priority(cardKey, cardKey == focusedCard)
+        }) { mounted += cardKey }
+        add("recommendations:songs:00"); add("recent:songs:10"); add("recent:songs:11"); add("heavy-rotation:songs:20")
+        queue.updateVisibleCards(setOf("recent:songs:10", "recent:songs:11"))
+        assertTrue(queue.mountNext(1))
+        assertEquals(listOf("recent:songs:10"), mounted)
+        focusedCard = "heavy-rotation:songs:20"
+        queue.updateVisibleCards(setOf("recent:songs:11", "heavy-rotation:songs:20"))
+        assertTrue(queue.mountNext(2))
+        assertEquals(listOf("recent:songs:10", "heavy-rotation:songs:20"), mounted)
+        assertTrue(queue.mountNext(3))
+        assertEquals(listOf("recent:songs:10", "heavy-rotation:songs:20", "recent:songs:11"), mounted)
+        assertFalse(queue.mountNext(4))
+        assertEquals(1, queue.pendingCount)
+    }
+
+    @Test fun progressiveShelfInsertionDoesNotGrantAnOldIndexToANewCard() {
+        val queue = HomeCardWarmup()
+        val mounted = mutableListOf<String>()
+        val oldCard = "existing:songs:123"
+        val insertedCard = "new-source:songs:456"
+        // The previous layout's index 0 still belongs to existing, while the
+        // new source has been inserted at index 0 in the data model.
+        queue.updateVisibleCards(setOf(oldCard))
+        queue.request({ queue.priority(insertedCard, true) }) { mounted += insertedCard }
+        queue.request({ queue.priority(oldCard, false) }) { mounted += oldCard }
+        assertTrue(queue.mountNext(1))
+        assertEquals(listOf(oldCard), mounted)
+        assertFalse(queue.mountNext(2))
+        queue.updateVisibleCards(setOf(insertedCard))
+        assertTrue(queue.mountNext(3))
+        assertEquals(listOf(oldCard, insertedCard), mounted)
     }
 
 }

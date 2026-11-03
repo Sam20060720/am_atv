@@ -30,8 +30,8 @@ class AppleTtmlParserTest {
         )
 
         assertEquals(listOf("Lead", "Harmony", "Next"), lines.map { it.text })
-        assertEquals(listOf(0, 1), LyricTimeline.activeLineIndicesAt(lines, 13_000))
-        assertEquals(listOf(1), LyricTimeline.activeLineIndicesAt(lines, 16_500))
+        assertEquals(listOf(0, 1), LyricTimeline.Schedule(lines).snapshotAt(13_000).activeLineIndices)
+        assertEquals(listOf(1), LyricTimeline.Schedule(lines).snapshotAt(16_500).activeLineIndices)
         assertEquals(0, LyricTimeline.activeLineAt(lines, 17_000, true))
         assertEquals(2, LyricTimeline.activeLineAt(lines, 18_320, true))
     }
