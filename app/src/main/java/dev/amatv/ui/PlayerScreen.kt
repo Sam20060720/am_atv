@@ -1,6 +1,7 @@
 package dev.amatv.ui
 
 import android.os.SystemClock
+import android.os.Build
 import android.view.KeyEvent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Easing
@@ -88,6 +89,8 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -230,6 +233,11 @@ fun PlayerScreen(
     val openCatalogActions = LocalCatalogActionMenu.current
     val reportMenuAnchor = LocalCatalogMenuAnchorReporter.current
     val moreButtonBounds = remember { arrayOfNulls<Rect>(1) }
+    val lyricsButtonBounds = remember { arrayOfNulls<Rect>(1) }
+    var lyricsMenuAnchor by remember { mutableStateOf<Rect?>(null) }
+    val lyricsMenuBackdrop = rememberGraphicsLayer()
+    val lyricsMenuBack = remember { arrayOfNulls<() -> Unit>(1) }
+    var lyricsMenuBackPending by remember { mutableStateOf(false) }
     val playbackStateDescription = stringResource(when {
         isPlaying -> R.string.player_state_playing
         playWhenReady -> R.string.player_state_preparing
@@ -472,6 +480,8 @@ fun PlayerScreen(
                 }
             }
             PlayerControl.LyricsDisplay -> {
+                lyricsMenuAnchor = lyricsButtonBounds[0]
+                lyricsMenuBackPending = false
                 showLyricsSettings = true
             }
             PlayerControl.Queue -> {
@@ -514,6 +524,12 @@ fun PlayerScreen(
     Box(
         modifier
             .automationId(if (isActiveScreen) "player-screen" else "player-retained")
+            .drawWithContent {
+                if (showLyricsSettings && !classic && Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode) {
+                    lyricsMenuBackdrop.record { this@drawWithContent.drawContent() }
+                    drawLayer(lyricsMenuBackdrop)
+                } else drawContent()
+            }
             .semantics { stateDescription = playbackStateDescription }
             .fillMaxSize()
             .onPreviewKeyEvent { event ->
@@ -569,7 +585,8 @@ fun PlayerScreen(
                     native.repeatCount > 0) return@onPreviewKeyEvent true
                 if (showLyricsSettings) {
                     return@onPreviewKeyEvent if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
-                        dismissLyricsMenu()
+                        val back = lyricsMenuBack[0]
+                        if (back != null) back() else lyricsMenuBackPending = true
                         consumeBackRelease = true
                         true
                     } else {
@@ -965,6 +982,7 @@ fun PlayerScreen(
                                 pressed = controlKeyHeld && pressedControl == PlayerControl.LyricsDisplay,
                                 pressEpoch = if (pressedControl == PlayerControl.LyricsDisplay) controlPressEpoch else 0L,
                                 onClick = { activateControl(PlayerControl.LyricsDisplay) },
+                                onBounds = { lyricsButtonBounds[0] = it },
                                 )
                                 TvPlaybackButton(
                                     controlId = "player-lyrics", icon = Icons.Rounded.Lyrics,
@@ -1009,6 +1027,16 @@ fun PlayerScreen(
 
         if (showLyricsSettings) {
             LyricsDisplaySettingsDialog(
+                anchorBounds = lyricsMenuAnchor,
+                backdropLayer = lyricsMenuBackdrop.takeIf { !classic && Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode },
+                lowPerformanceMode = lowPerformanceMode,
+                onBackHandlerChanged = { handler ->
+                    lyricsMenuBack[0] = handler
+                    if (handler != null && lyricsMenuBackPending) {
+                        lyricsMenuBackPending = false
+                        handler()
+                    }
+                },
                 translationEnabled = lyricTranslationEnabled,
                 pronunciationEnabled = lyricPronunciationEnabled,
                 pronunciationLarger = lyricPronunciationLarger,

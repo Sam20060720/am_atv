@@ -32,6 +32,7 @@ HPLdev/amatv/ui/BrowseMotionKt*;->**(**)**
 HPLdev/amatv/ui/HomeArtworkPrefetch*;->**(**)**
 HPLdev/amatv/ui/TvPlaybackControlsKt*;->**(**)**
 HPLdev/amatv/ui/TvMenuComponentsKt*;->**(**)**
+HPLdev/amatv/ui/TvMenuMotion*;->**(**)**
 HPLdev/amatv/ui/LyricsDisplayMenuKt*;->**(**)**
 HPLdev/amatv/ui/PlaybackTimePlacement*;->**(**)**
 HPLdev/amatv/ui/ArtworkPrefetchKt;->**(**)**

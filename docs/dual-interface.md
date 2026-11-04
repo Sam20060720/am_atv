@@ -34,6 +34,13 @@ Catalog actions and lyric translation/pronunciation settings use the same
 own window overlay outside panel/list clipping, larger rows and focus-safe
 padding; Apple retains its existing action-menu metrics. Lyrics submenus restore
 their source row, and closing restores the player's actual settings control.
+Both menus use the same anchored placement and `TvMenuMotion` for scale/fade,
+scrim, pane transitions and delayed dismissal. The player snapshots the lyrics
+settings button's bounds just as it does for More; lyrics settings no longer
+appear as an instant centered dialog. Native window animations/dimming are
+disabled by the same setup, and Apple backdrop rendering uses the same animated
+material bounds. Low-performance mode and system animation settings apply to
+both menus through the shared motion owner.
 
 Content-to-navigation handoff is one `BrowseShell` intent: cancel pending content
 focus/scroll work before giving navigation ownership. Each style only places its

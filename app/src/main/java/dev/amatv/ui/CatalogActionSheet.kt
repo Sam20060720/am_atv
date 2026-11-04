@@ -2,14 +2,8 @@ package dev.amatv.ui
 
 import android.view.KeyEvent
 import android.content.ActivityNotFoundException
-import android.view.WindowManager
-import android.animation.ValueAnimator
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.*
@@ -47,10 +41,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
@@ -178,11 +170,8 @@ private fun CatalogActionSheetContent(
     val isFolder = folderRef != null
     val artistRelationship = item.catalogKind in setOf(CatalogKind.Song, CatalogKind.Album, CatalogKind.MusicVideo)
     val scope = rememberCoroutineScope()
-    // No continuous effects: one opening, one closing, and short pane changes.
-    val systemMotionEnabled = remember { ValueAnimator.areAnimatorsEnabled() }
-    val motionEnabled = !lowPerformanceMode && systemMotionEnabled
-    val entrance = remember { Animatable(if (motionEnabled) 0f else 1f) }
-    var entranceComplete by remember { mutableStateOf(!motionEnabled) }
+    val motion = rememberTvMenuMotion(lowPerformanceMode)
+    val motionEnabled = motion.motionEnabled
     var menuLaidOut by remember { mutableStateOf(false) }
     var menuWindowFocused by remember { mutableStateOf(false) }
     var menuHasFocus by remember { mutableStateOf(false) }
@@ -190,23 +179,6 @@ private fun CatalogActionSheetContent(
     var initialFolderResolved by remember { mutableStateOf(false) }
     val fallbackInputGate = remember { CatalogModalInputGate() }
     val inputGate = modalInputGate ?: fallbackInputGate
-    val paneOpacity = remember { Animatable(1f) }
-    var closing by remember { mutableStateOf(false) }
-    var transitioning by remember { mutableStateOf(false) }
-    var incomingPane by remember { mutableStateOf(false) }
-    var paneDirection by remember { mutableFloatStateOf(1f) }
-    val paneAnimation = remember { arrayOfNulls<Job>(1) }
-    val openingAnimation = remember { arrayOfNulls<Job>(1) }
-    val paneAnimationGeneration = remember { longArrayOf(0L) }
-    LaunchedEffect(Unit) {
-        // A Back may arrive before this effect is first dispatched. Never let
-        // a late opening animation cancel an already-started exit.
-        if (closing) return@LaunchedEffect
-        openingAnimation[0] = currentCoroutineContext()[Job]
-        if (motionEnabled) entrance.animateTo(1f, tween(CatalogMenuStyle.ShowMillis, easing = CatalogMenuStyle.EaseOut))
-        entranceComplete = true
-        openingAnimation[0] = null
-    }
     var pane by remember { mutableStateOf(CatalogSheetPane.Actions) }
     var paneStack by remember { mutableStateOf(listOf(CatalogSheetPane.Actions)) }
     var state by remember { mutableStateOf<CatalogActionState?>(null) }
@@ -297,8 +269,8 @@ private fun CatalogActionSheetContent(
     val nameFocus = remember { FocusRequester() }
     val descriptionFocus = remember { FocusRequester() }
     val createFocus = remember { FocusRequester() }
-    fun canActivateMenu() = menuLaidOut && menuWindowFocused && menuHasFocus && entranceComplete &&
-        !busy && !closing && !transitioning && !managementVisible && !shareVisible
+    fun canActivateMenu() = menuLaidOut && menuWindowFocused && menuHasFocus && motion.entranceComplete &&
+        !busy && !motion.closing && !motion.transitioning && !managementVisible && !shareVisible
     val authorized = signedIn && !authNeeded
     // Editing the folder itself and creating its children are different rights.
     // Only an unavailable folder or a rejected create POST rules out creation.
@@ -345,28 +317,21 @@ private fun CatalogActionSheetContent(
 
     fun dismiss(afterDismiss: (() -> Unit)? = null) {
         // Preserve an in-flight write, but freeze reads at the Back intent.
-        // Cold results must not resize/recompose the menu during its exit.
-        if (busy || closing) return
-        closing = true
-        stateGeneration[0]++
-        folderGeneration[0]++
-        relatedGeneration[0]++
-        pageGeneration[0]++
-        stateJob[0]?.cancel()
-        folderJob[0]?.cancel()
-        relatedJob[0]?.cancel()
-        pageJob[0]?.cancel()
-        openingAnimation[0]?.cancel()
-        paneAnimationGeneration[0]++
-        paneAnimation[0]?.cancel()
-        transitioning = false
-        // Start the exit in this input dispatch, before queued cold-load work.
-        // cancel() above never joins network work or waits for a response.
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            if (motionEnabled) entrance.animateTo(0f, tween(CatalogMenuStyle.HideMillis, easing = CatalogMenuStyle.EaseOut))
+        // The shared visual owner marks motion.closing before this domain cleanup.
+        if (busy || motion.closing) return
+        motion.dismiss(beforeExit = {
+            stateGeneration[0]++
+            folderGeneration[0]++
+            relatedGeneration[0]++
+            pageGeneration[0]++
+            stateJob[0]?.cancel()
+            folderJob[0]?.cancel()
+            relatedJob[0]?.cancel()
+            pageJob[0]?.cancel()
+        }, onClosed = {
             onDismiss()
             afterDismiss?.invoke()
-        }
+        })
     }
     fun cancelRelatedRead() {
         relatedGeneration[0]++
@@ -375,34 +340,20 @@ private fun CatalogActionSheetContent(
         relatedLoading = false
     }
     fun navigate(target: CatalogSheetPane, replaceTransition: Boolean = false) {
-        if (closing || (transitioning && !replaceTransition) || (target == pane && !transitioning)) return
-        val generation = ++paneAnimationGeneration[0]
-        paneAnimation[0]?.cancel()
+        if (motion.closing || (motion.transitioning && !replaceTransition) ||
+            (target == pane && !motion.transitioning)) return
         val goingBack = target == CatalogSheetPane.Actions || paneStack.getOrNull(paneStack.lastIndex - 1) == target
-        // The Artists pane owns its first page and append cursor from this
-        // synchronous navigation intent, including the transition frames.
-        if (target == CatalogSheetPane.Artists) cancelRelatedRead()
-        error = null
-        paneStack = when {
-            target == CatalogSheetPane.Actions -> listOf(target)
-            paneStack.getOrNull(paneStack.lastIndex - 1) == target -> paneStack.dropLast(1)
-            else -> paneStack + target
-        }
-        if (!motionEnabled) { pane = target; transitioning = false; return }
-        transitioning = true
-        paneDirection = if (goingBack) -1f else 1f
-        incomingPane = false
-        paneAnimation[0] = scope.launch {
-            try {
-                if (pane != target) {
-                    paneOpacity.animateTo(0f, tween(CatalogMenuStyle.SubmenuMillis, easing = LinearEasing))
-                    pane = target
+        motion.navigate(goingBack, replaceTransition, changeRequired = pane != target,
+            beforeTransition = {
+                // The target owns its reads/history from this synchronous intent.
+                if (target == CatalogSheetPane.Artists) cancelRelatedRead()
+                error = null
+                paneStack = when {
+                    target == CatalogSheetPane.Actions -> listOf(target)
+                    paneStack.getOrNull(paneStack.lastIndex - 1) == target -> paneStack.dropLast(1)
+                    else -> paneStack + target
                 }
-                incomingPane = true
-                withFrameNanos { }
-                paneOpacity.animateTo(1f, tween(CatalogMenuStyle.SubmenuMillis, easing = LinearEasing))
-            } finally { if (generation == paneAnimationGeneration[0]) transitioning = false }
-        }
+            }, onSwap = { pane = target })
     }
     fun back() {
         // Queue preparation and album lookup are cancellable reads. Account
@@ -412,7 +363,7 @@ private fun CatalogActionSheetContent(
             it.cancel()
             busy = false
         }
-        if (busy || closing) return
+        if (busy || motion.closing) return
         if (pane == CatalogSheetPane.LibraryManagement && libraryManagementBack[0]?.invoke() == true) return
         if (paneStack.size == 1) dismiss()
         else navigate(paneStack[paneStack.lastIndex - 1], replaceTransition = true)
@@ -423,7 +374,7 @@ private fun CatalogActionSheetContent(
         navigate(CatalogSheetPane.Create)
     }
     fun loadPage(append: Boolean) {
-        if (closing || pageLoading || (append && nextPage == null)) return
+        if (motion.closing || pageLoading || (append && nextPage == null)) return
         val target = pane
         if (target != CatalogSheetPane.Playlists && target != CatalogSheetPane.Artists) return
         val cursor = if (append) nextPage else null
@@ -500,7 +451,7 @@ private fun CatalogActionSheetContent(
     }
     fun enqueue(playNext: Boolean) {
         val operation = onQueue ?: return
-        if (!canActivateMenu() || busy || closing || transitioning) return
+        if (!canActivateMenu() || busy || motion.closing || motion.transitioning) return
         busy = true
         error = null
         notice = null
@@ -529,13 +480,13 @@ private fun CatalogActionSheetContent(
         val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 val album = services.catalogPages.albumForSong(item)
-                if (readActionJob[0] !== currentCoroutineContext()[Job] || closing) return@launch
+                if (readActionJob[0] !== currentCoroutineContext()[Job] || motion.closing) return@launch
                 busy = false
                 if (album != null) dismiss { onOpenResource(album) }
                 else error = R.string.actions_album_unavailable
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
-                if (readActionJob[0] === currentCoroutineContext()[Job] && !closing) {
+                if (readActionJob[0] === currentCoroutineContext()[Job] && !motion.closing) {
                     error = R.string.actions_album_unavailable
                     if ((failure as? CatalogRequestException)?.reason == CatalogFailureReason.Authorization) authNeeded = true
                 }
@@ -563,7 +514,7 @@ private fun CatalogActionSheetContent(
         stateVersion++
     }
     LaunchedEffect(signedIn, stateVersion) {
-        if (closing) return@LaunchedEffect
+        if (motion.closing) return@LaunchedEffect
         val generation = ++stateGeneration[0]
         stateJob[0] = currentCoroutineContext()[Job]
         // One read owner loads the general snapshot first, then applies the
@@ -583,7 +534,7 @@ private fun CatalogActionSheetContent(
                 stateFailed = false
                 try {
                     refreshedState = actions.readState(item)
-                    if (generation != stateGeneration[0] || closing) return@LaunchedEffect
+                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
                     authNeeded = false
                     resourceUnavailable = false
                     if (libraryRequested && refreshedState?.inLibrary == true) confirmedNotice = R.string.actions_library_added
@@ -591,7 +542,7 @@ private fun CatalogActionSheetContent(
                         confirmedNotice = if (refreshedState?.inFavorites == true) R.string.actions_favorite_saved else R.string.library_management_favorite_removed
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (failure: Exception) {
-                    if (generation != stateGeneration[0] || closing) return@LaunchedEffect
+                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
                     stateFailed = true
                     if ((failure as? CatalogRequestException)?.reason == CatalogFailureReason.Unavailable) resourceUnavailable = true
                     if ((failure as? CatalogRequestException)?.reason == CatalogFailureReason.Authorization) authNeeded = true
@@ -603,7 +554,7 @@ private fun CatalogActionSheetContent(
                     val confirmed = try { actions.confirmPlaylistCreation(pending) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { readFailed = true; null }
-                    if (generation != stateGeneration[0] || closing) return@LaunchedEffect
+                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
                     confirmed?.let { resource ->
                         if (pendingCreation === pending) {
                             createdResource = resource
@@ -620,7 +571,7 @@ private fun CatalogActionSheetContent(
                     val confirmed = try { actions.confirmPlaylistAppend(pending) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { readFailed = true; false }
-                    if (generation != stateGeneration[0] || closing) return@LaunchedEffect
+                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
                     if (confirmed && pendingAppends[key] === pending) {
                         pendingAppends = pendingAppends - key
                         confirmedNotice = R.string.actions_playlist_added
@@ -634,7 +585,7 @@ private fun CatalogActionSheetContent(
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { readFailed = true; null }
                     else null
-                if (generation != stateGeneration[0] || closing) return@LaunchedEffect
+                if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
                 inLibrary?.let { confirmed ->
                     refreshedState = (refreshedState ?: CatalogActionState(null, null, null)).copy(inLibrary = confirmed)
                     if (confirmed) confirmedNotice = R.string.actions_library_added
@@ -646,7 +597,7 @@ private fun CatalogActionSheetContent(
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { readFailed = true; null }
                     else null
-                if (generation != stateGeneration[0] || closing) return@LaunchedEffect
+                if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
                 inFavorites?.let { confirmed ->
                     refreshedState = (refreshedState ?: CatalogActionState(null, null, null)).copy(inFavorites = confirmed)
                     if (confirmed == favoriteTarget) {
@@ -661,7 +612,7 @@ private fun CatalogActionSheetContent(
                 if (additionalAtStart.isNotEmpty()) {
                     val pending = actions.libraryItemsAwaitingConfirmation(additionalAtStart.values.map { it.item })
                         .mapTo(HashSet(), ::libraryResourceKey)
-                    if (generation != stateGeneration[0] || closing) return@LaunchedEffect
+                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
                     val confirmedKeys = additionalAtStart.keys - pending
                     pendingAdditionalLibrary = pendingAdditionalLibrary - confirmedKeys
                     if (libraryResourceKey(item) in confirmedKeys)
@@ -669,7 +620,7 @@ private fun CatalogActionSheetContent(
                     if (confirmedKeys.isNotEmpty()) confirmedNotice = R.string.actions_library_added
                 }
             }
-            if (generation != stateGeneration[0] || closing) return@LaunchedEffect
+            if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
             state = refreshedState
             confirmedNotice?.let {
                 notice = it
@@ -686,7 +637,7 @@ private fun CatalogActionSheetContent(
         }
     }
     LaunchedEffect(signedIn, stateVersion, folderRef) {
-        if (closing) return@LaunchedEffect
+        if (motion.closing) return@LaunchedEffect
         if (!signedIn || folderRef == null) { initialFolderResolved = true; return@LaunchedEffect }
         val generation = ++folderGeneration[0]
         folderJob[0] = currentCoroutineContext()[Job]
@@ -716,8 +667,8 @@ private fun CatalogActionSheetContent(
             }
         }
     }
-    LaunchedEffect(pane, creationKind, canCreateCurrent, authorized, busy, transitioning) {
-        if (pane == CatalogSheetPane.Create && (!canCreateCurrent || !authorized) && !busy && !transitioning) navigate(CatalogSheetPane.Actions)
+    LaunchedEffect(pane, creationKind, canCreateCurrent, authorized, busy, motion.transitioning) {
+        if (pane == CatalogSheetPane.Create && (!canCreateCurrent || !authorized) && !busy && !motion.transitioning) navigate(CatalogSheetPane.Actions)
     }
     LaunchedEffect(pane, onSleepTimer) {
         if (pane == CatalogSheetPane.SleepTimer && onSleepTimer == null) navigate(CatalogSheetPane.Actions, replaceTransition = true)
@@ -727,7 +678,7 @@ private fun CatalogActionSheetContent(
             navigate(CatalogSheetPane.Actions, replaceTransition = true)
     }
     LaunchedEffect(signedIn, stateVersion) {
-        if (closing) return@LaunchedEffect
+        if (motion.closing) return@LaunchedEffect
         if (!artistRelationship || (!signedIn && item.resourceType?.startsWith("library-") == true) ||
             paneStack.lastOrNull() == CatalogSheetPane.Artists) {
             return@LaunchedEffect
@@ -755,8 +706,8 @@ private fun CatalogActionSheetContent(
     DisposableEffect(pane) {
         onDispose { pageGeneration[0]++; pageJob[0]?.cancel(); pageLoading = false }
     }
-    LaunchedEffect(pane, closing) {
-        if (closing) return@LaunchedEffect
+    LaunchedEffect(pane, motion.closing) {
+        if (motion.closing) return@LaunchedEffect
         listState.scrollToItem(0)
         if (pane == CatalogSheetPane.Playlists) loadPage(false)
         else if (pane == CatalogSheetPane.Artists && relatedReady) { nextPage = relatedNext; pageFailed = false }
@@ -939,8 +890,8 @@ private fun CatalogActionSheetContent(
     fun canActivateFocusedAction(): Boolean = canActivateMenu() &&
         (pane != CatalogSheetPane.Actions || mainRows.firstOrNull { it.id == focusedMainRow }?.enabled == true || mainRows.isEmpty())
 
-    LaunchedEffect(mainRowIds, pane, busy, closing, transitioning, entranceComplete) {
-        if (pane != CatalogSheetPane.Actions || busy || closing || transitioning || !entranceComplete) return@LaunchedEffect
+    LaunchedEffect(mainRowIds, pane, busy, motion.closing, motion.transitioning, motion.entranceComplete) {
+        if (pane != CatalogSheetPane.Actions || busy || motion.closing || motion.transitioning || !motion.entranceComplete) return@LaunchedEffect
         val replacement = focusVisit.replacementIndex(mainRowIds, focusedMainRow, focusedMainIndex)
         if (replacement != null) {
             listState.scrollToItem(replacement)
@@ -950,8 +901,8 @@ private fun CatalogActionSheetContent(
         } else if (focusedMainRow != null && mainRows.isEmpty()) runCatching { headerFocus.requestFocus() }
     }
 
-    LaunchedEffect(targets.size, pageLoading, pageFailed, nextPage, pendingPageEntry, closing) {
-        if (closing) return@LaunchedEffect
+    LaunchedEffect(targets.size, pageLoading, pageFailed, nextPage, pendingPageEntry, motion.closing) {
+        if (motion.closing) return@LaunchedEffect
         if (pageFailed) { pendingPageEntry = -1; return@LaunchedEffect }
         if (pendingPageEntry < 0 || pageLoading) return@LaunchedEffect
         if (targets.size <= pendingPageEntry && nextPage != null) return@LaunchedEffect
@@ -969,23 +920,10 @@ private fun CatalogActionSheetContent(
     Dialog(onDismissRequest = { inputGate.dialogBackDismissed(); back() },
         properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false,
             windowTitle = "AMATV.ContextMenu")) {
-        // The Dialog supplies the focus trap / IME window. Its content owns
-        // the scale, fade and scrim; a themed window animation would run too.
-        val dialogView = LocalView.current
-        DisposableEffect(dialogView) {
-            val window = (dialogView.parent as? DialogWindowProvider)?.window
-            window?.setWindowAnimations(0)
-            window?.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            window?.setDimAmount(0f)
-            // This window is destroyed on dismissal. Restoring its old dim
-            // here could reintroduce the platform scrim during the exit.
-            onDispose { }
-        }
+        TvMenuWindowSetup()
         TvBrowseViewport {
             val density = LocalDensity.current
             val metrics = tvMenuMetrics()
-            val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
-            val focusVisibility = remember(entrance) { derivedStateOf { entrance.value } }
             var viewportSize by remember { mutableStateOf(IntSize.Zero) }
             var menuSize by remember { mutableStateOf(IntSize.Zero) }
             val placement = remember(anchorBounds, menuSize, viewportSize, density) {
@@ -993,11 +931,11 @@ private fun CatalogActionSheetContent(
                     catalogMenuPlacement(anchorBounds, menuSize, viewportSize, BrowseTokens.SafeHorizontal.toPx(), BrowseTokens.SafeTop.toPx(), CatalogMenuStyle.Gap.toPx())
                 }
             }
-            val material = !classic && backdropLayer != null && Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode
+            val material = tvMenuMaterialAvailable(backdropLayer, lowPerformanceMode)
             val windowFocused = LocalWindowInfo.current.isWindowFocused
             SideEffect { menuWindowFocused = windowFocused }
-            val active = menuLaidOut && windowFocused && entranceComplete &&
-                !closing && !transitioning && !managementVisible && !shareVisible
+            val active = menuLaidOut && windowFocused && motion.entranceComplete &&
+                !motion.closing && !motion.transitioning && !managementVisible && !shareVisible
             val artistEntryIds = targets.map { "${it.resourceType}:${it.resourceId ?: it.id}" }
             val sleepOptions = SleepTimerOption.entries
             val lastEnabledSleepOption = sleepOptions.last { option ->
@@ -1047,7 +985,7 @@ private fun CatalogActionSheetContent(
                 LocalCatalogMenuAnchorReporter provides null,
                 LocalTelevisionFocusTimings provides TelevisionFocusTimings(100, 200),
                 LocalFocusMotionStyle provides if (motionEnabled) FocusMotionStyle.Television else FocusMotionStyle.Immediate) {
-                TvMenuFocusScope(visibility = focusVisibility, active = active) {
+                TvMenuFocusScope(visibility = motion.visibility, active = active) {
                 Box(Modifier.fillMaxSize().onSizeChanged { viewportSize = it }
                     .onPreviewKeyEvent { event ->
                         val native = event.nativeKeyEvent
@@ -1062,37 +1000,17 @@ private fun CatalogActionSheetContent(
                             native.action == KeyEvent.ACTION_DOWN, native.action == KeyEvent.ACTION_UP,
                             repeat = native.repeatCount, activationReady = canActivateFocusedAction())
                     }) {
-                    Box(Modifier.fillMaxSize().drawWithCache {
-                        onDrawBehind { drawRect(Color.Black.copy(alpha = 0.30f * entrance.value)) }
-                    }.pointerInput(busy, closing, transitioning, pane) { detectTapGestures { back() } })
-                    if (material) {
-                        FrostedPanel(
-                            source = checkNotNull(backdropLayer), expandedBounds = placement.bounds,
-                            animatedBounds = {
-                                if (entrance.value <= 0f) Rect.Zero
-                                else scaledMenuBounds(placement, if (motionEnabled) CatalogMenuStyle.StartingScale + (1f - CatalogMenuStyle.StartingScale) * entrance.value else 1f)
-                            },
-                            animatedRadius = { with(density) { CatalogMenuStyle.Radius.toPx() } *
-                                if (motionEnabled) CatalogMenuStyle.StartingScale + (1f - CatalogMenuStyle.StartingScale) * entrance.value else 1f },
-                            opacity = { entrance.value },
-                        )
-                    }
+                    Box(Modifier.fillMaxSize().tvMenuScrim(motion).pointerInput(busy, motion.closing, motion.transitioning, pane) { detectTapGestures { back() } })
+                    if (material) TvMenuBackdrop(checkNotNull(backdropLayer), placement, motion)
                     TvMenuSurface(modifier = Modifier
                         .offset { IntOffset(placement.bounds.left.roundToInt(), placement.bounds.top.roundToInt()) }
                         .width(if (pane == CatalogSheetPane.Create) 340.dp else metrics.width)
                         .heightIn(max = if (pane == CatalogSheetPane.Create) 440.dp else metrics.maxHeight)
                         .onSizeChanged { menuSize = it; menuLaidOut = it.width > 0 && it.height > 0 }
                         .onFocusChanged { menuHasFocus = it.hasFocus }.focusGroup()
-                        .graphicsLayer {
-                            alpha = entrance.value
-                            val scale = if (motionEnabled) CatalogMenuStyle.StartingScale + (1f - CatalogMenuStyle.StartingScale) * entrance.value else 1f
-                            scaleX = scale; scaleY = scale; transformOrigin = placement.origin
-                        }, material = material, motionEnabled = motionEnabled) {
-                        Column(Modifier.graphicsLayer {
-                            alpha = paneOpacity.value
-                            translationX = with(density) { 25.dp.toPx() } * paneDirection *
-                                (if (incomingPane) 1f else -1f) * (1f - paneOpacity.value)
-                        }) {
+                        .tvMenuEntrance(motion, placement)
+                        , material = material, motionEnabled = motionEnabled) {
+                        Column(Modifier.tvMenuPane(motion)) {
                             if (pane != CatalogSheetPane.Actions) {
                                 val paneTitle = stringResource(when (pane) {
                                     CatalogSheetPane.Playlists -> R.string.actions_add_playlist
@@ -1129,7 +1047,7 @@ private fun CatalogActionSheetContent(
                                         busy = false
                                         dismiss()
                                     },
-                                    onBusyChanged = { if (!closing) busy = it },
+                                    onBusyChanged = { if (!motion.closing) busy = it },
                                     onBackHandlerChanged = { libraryManagementBack[0] = it },
                                     onCancel = ::back)
                             } else if (pane == CatalogSheetPane.Create) {
@@ -1397,14 +1315,6 @@ private fun catalogActionIcon(id: String): ImageVector = when (id) {
     "sleep-timer" -> Icons.Rounded.Bedtime
     "refresh" -> Icons.Rounded.Refresh
     else -> if (id.startsWith("check-playlist-")) Icons.Rounded.PlaylistPlay else Icons.Rounded.QueueMusic
-}
-
-private fun scaledMenuBounds(placement: CatalogMenuPlacement, scale: Float): Rect {
-    val b = placement.bounds
-    val x = b.left + b.width * placement.origin.pivotFractionX
-    val y = b.top + b.height * placement.origin.pivotFractionY
-    return Rect(x + (b.left - x) * scale, y + (b.top - y) * scale,
-        x + (b.right - x) * scale, y + (b.bottom - y) * scale)
 }
 
 /** Compact offscreen texture only; keep the page's captions/shadows unaffected. */
