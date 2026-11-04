@@ -13,8 +13,9 @@ new vm.Script(inline);
 const handlers = {}, reports = [], requests = [];
 const station = {attributes:{name:'Station', artistName:'Curator'}, isLiveRadioStation:true};
 const music = {nowPlayingItem:station, playbackState:2, currentPlaybackDuration:12,
-  currentPlaybackTime:4, storefrontCountryCode:'us', queue:{length:1,nextPlayableItemIndex:-1,previousPlayableItemIndex:-1},
+  currentPlaybackTime:4, storefrontCountryCode:'us', accountStorefront:'tw', queue:{length:1,nextPlayableItemIndex:-1,previousPlayableItemIndex:-1},
   addEventListener:(name, callback)=>{handlers[name]=callback;}, setQueue:()=>Promise.resolve(),
+  me:function(){assert.equal(this.musicUserToken,'fixture');this.storefrontCountryCode=this.accountStorefront;return Promise.resolve();},
   stop:()=>Promise.resolve(), play:()=>Promise.resolve(), pause:()=>Promise.resolve()};
 const context = {console, AbortController, document:{addEventListener:(name, callback)=>{handlers[name]=callback;}},
   bridge:{report:raw=>reports.push(JSON.parse(raw))},
@@ -27,6 +28,62 @@ vm.runInNewContext(inline, context);
 const flush = async()=>{for(let i=0;i<10;i++)await Promise.resolve();};
 const latest = ()=>reports.at(-1);
 (async()=>{
+  // Configuring an API storefront and assigning a token do not make MusicKit's
+  // account country ready. Only its public me() request owns that transition.
+  for(const initialCountry of ['us','tw'])for(const settlement of ['account_ready','account_rejected','account_mismatch']){
+    const events={},observations=[],calls=[];
+    let country=initialCountry,resolveAccount,rejectAccount;
+    const backing={...music,nowPlayingItem:station,
+      addEventListener:(name,callback)=>{events[name]=callback;},
+      me:function(){
+        assert.equal(this.musicUserToken,'fixture','Token must be injected before resolving the account');
+        calls.push('me');
+        return new Promise((resolve,reject)=>{resolveAccount=resolve;rejectAccount=reject;});
+      },
+      setQueue:()=>{
+        calls.push('setQueue');
+        if(country!=='cn')return Promise.reject({name:'SDKStorefrontGuard',reason:'CONTENT_EQUIVALENT'});
+        return Promise.resolve();
+      }};
+    for(const property of ['storefrontCountryCode','storefrontId'])Object.defineProperty(backing,property,{
+      get:()=>country,
+      set:()=>{throw new Error('Application must not forge the SDK account storefront');},
+    });
+    const configured=inline.replace('"storefront":"tw"','"storefront":"cn"')
+      .replace('"storefrontNumericId":"'+storefrontIds.tw+'"','"storefrontNumericId":""');
+    vm.runInNewContext(configured,{...context,window:{...context.window},
+      document:{addEventListener:(name,callback)=>{events[name]=callback;}},
+      bridge:{report:raw=>observations.push(JSON.parse(raw))},
+      MusicKit:{...context.MusicKit,configure:configuration=>{
+        assert.equal(configuration.storefrontId,'cn');return Promise.resolve(backing);
+      }}});
+    events.musickitloaded();await flush();
+    assert.deepEqual(calls,['me'],'A pending account request must block setQueue');
+    assert.equal(country,initialCountry,'configure() must not mask a cold or previous-account country');
+    if(settlement==='account_rejected')rejectAccount({status:401});
+    else{
+      // Simulate the SDK adopting the authenticated response internally, never
+      // an application write to storefrontCountryCode/storefrontId.
+      if(settlement==='account_ready')country='cn';
+      resolveAccount();
+    }
+    await flush();
+    if(settlement==='account_ready'){
+      assert.deepEqual(calls,['me','setQueue']);
+      assert.ok(observations.some(report=>report.event==='prepared'));
+      assert.ok(!observations.some(report=>report.event==='error'));
+    }else{
+      assert.deepEqual(calls,['me'],'An unresolved or rejected account must never reach setQueue');
+      const failure=observations.at(-1);
+      assert.equal(failure.event,'error');
+      if(settlement==='account_rejected')assert.equal(failure.reason,'authorization');
+      else{
+        assert.equal(failure.name,'StationStorefrontMismatch');
+        assert.equal(failure.sdkReason,'CONTENT_EQUIVALENT');
+      }
+      assert.ok(!observations.some(report=>report.event==='prepared'));
+    }
+  }
   handlers.musickitloaded();await flush();
   assert.equal(latest().title,'Station');assert.equal(latest().live,true);
   handlers.timedMetadataDidChange({title:'One',performer:'Artist',album:'Album',storefrontAdamIds:{TW:'12345'}});
@@ -112,7 +169,7 @@ const latest = ()=>reports.at(-1);
     {country:'jp',ids:{'143441':'99999','143462':'88888'},expected:'https://api.music.apple.com/v1/catalog/jp/songs/88888'},
   ]) {
     const events={},calls=[];
-    const wrongDefaultMusic={...music,storefrontCountryCode:'us',storefrontId:'us',nowPlayingItem:station,
+    const wrongDefaultMusic={...music,storefrontCountryCode:'us',storefrontId:'us',accountStorefront:fixture.country,nowPlayingItem:station,
       addEventListener:(name,callback)=>{events[name]=callback;}};
     const environment={...context,document:{addEventListener:(name,callback)=>{events[name]=callback;}},
       bridge:{report:()=>{}},MusicKit:{...context.MusicKit,configure:configuration=>{
@@ -122,6 +179,9 @@ const latest = ()=>reports.at(-1);
     const configured=inline.replace('"storefront":"tw"','"storefront":"'+fixture.country+'"')
       .replace('"storefrontNumericId":"'+storefrontIds.tw+'"','"storefrontNumericId":"'+storefrontIds[fixture.country]+'"');
     vm.runInNewContext(configured,environment);events.musickitloaded();await flush();
+    // Metadata lookup must still use the configured account region even if a
+    // later SDK metadata wrapper exposes a stale default country.
+    wrongDefaultMusic.storefrontCountryCode='us';
     events.timedMetadataDidChange({title:'Stream title',performer:'Stream artist',storefrontAdamIds:fixture.ids});
     assert.deepEqual(calls,fixture.expected ? [fixture.expected] : [], JSON.stringify(fixture));
   }
@@ -222,5 +282,5 @@ const latest = ()=>reports.at(-1);
     assert.equal(observations.at(-1).event,'error');assert.equal(observations.at(-1).reason,'network');
     assert.equal(backing.playbackState,4);
   }
-  console.log('PASS station metadata: exact ID/art, cancellation, finite resume, preview rejection, stale reconnect resolve/reject and current failure');
+  console.log('PASS station bootstrap/account-country readiness, metadata exact ID/art, cancellation, finite resume, preview rejection and reconnect ownership');
 })().catch(error=>{console.error(error);process.exitCode=1;});

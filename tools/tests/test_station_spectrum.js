@@ -2,7 +2,7 @@
 const fs=require('node:fs'), vm=require('node:vm'), assert=require('node:assert/strict');
 const kotlin=fs.readFileSync('app/src/main/java/dev/amatv/integration/MusicKitStationPlayer.kt','utf8');
 const script=kotlin.split('</head><body><script>')[1].split('</script><script')[0]
-  .replace('$configuration',JSON.stringify({epoch:7,station:'fixture',developer:'fixture',user:'fixture',build:'test',position:0,spectrumActive:false}))
+  .replace('$configuration',JSON.stringify({epoch:7,station:'fixture',developer:'fixture',user:'fixture',build:'test',position:0,spectrumActive:false,storefront:'tw'}))
   .replaceAll('$BRIDGE','bridge');
 const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 function fixture(diagnostics=false, elementProbe=false){
@@ -46,6 +46,7 @@ function fixture(diagnostics=false, elementProbe=false){
     contexts.push(this);
   }
   const music={nowPlayingItem:{attributes:{name:'Station'},isLiveRadioStation:true},playbackState:2,
+    storefrontCountryCode:'tw',me:()=>Promise.resolve(),
     currentPlaybackDuration:0,currentPlaybackTime:10,queue:{length:1,nextPlayableItemIndex:-1,previousPlayableItemIndex:-1},
     addEventListener:(name,callback)=>{events[name]=callback;},setQueue:()=>Promise.resolve(),
     play:()=>Promise.resolve(),pause:()=>Promise.resolve(),stop:()=>Promise.resolve()};

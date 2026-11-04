@@ -296,7 +296,8 @@ internal class MusicKitStationPlayer(private val context: Context) {
                             }
                             "error" -> {
                                 val name = message.optString("name").takeIf { it.matches(Regex("[A-Za-z_]{1,48}")) }.orEmpty()
-                                Log.w(TAG, "Station JS rejected generation=$epoch code=${message.optInt("code", 0)} name=$name")
+                                val reason = message.optString("sdkReason").takeIf { it.matches(Regex("[A-Z_]{1,48}")) }.orEmpty()
+                                Log.w(TAG, "Station JS rejected generation=$epoch code=${message.optInt("code", 0)} name=$name sdkReason=$reason")
                                 fail(epoch, when (message.optString("reason")) {
                                     "authorization" -> PlaybackFailureKind.Authorization
                                     "network" -> PlaybackFailureKind.Network
@@ -403,8 +404,10 @@ internal class MusicKitStationPlayer(private val context: Context) {
 
     private fun diagnosticFields(data: JSONObject): String {
         val drm = if (data.opt("drmSupported") is Boolean) data.optBoolean("drmSupported").toString() else "unknown"
+        fun country(key: String): String = data.optString(key).takeIf { it.matches(Regex("[a-z]{2}")) }.orEmpty()
         val basic = "state=${data.optInt("state", -1)} queueCount=${data.optInt("queueCount", -1)} " +
-            "hasNowPlaying=${data.optBoolean("hasItem", false)} drmSupported=$drm desired=${data.optBoolean("desired", false)}"
+            "hasNowPlaying=${data.optBoolean("hasItem", false)} drmSupported=$drm desired=${data.optBoolean("desired", false)} " +
+            "storefront=${country("storefront")} userStorefront=${country("userStorefront")}"
         if (BuildConfig.BUILD_TYPE != "benchmark" || !data.has("metadataFields")) return basic
         fun safe(key: String, limit: Int = 512): String = data.optString(key).take(limit)
             .takeIf { it.matches(Regex("[A-Za-z0-9_,.-]*")) }.orEmpty()
@@ -482,7 +485,8 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 var drm=null;try{drm=music && typeof music.browserSupportsVideoDrm==='boolean' ? music.browserSupportsVideoDrm : null;}catch(ignored){}
                 send({event:'diagnostic',stage:stage,state:music ? music.playbackState : -1,
                   queueCount:music && music.queue ? music.queue.length : 0,hasItem:!!(music && music.nowPlayingItem),
-                  drmSupported:drm,desired:desired});
+                  drmSupported:drm,desired:desired,storefront:config.storefront,
+                  userStorefront:music ? String(music.storefrontCountryCode || '').toLowerCase() : ''});
               }
               function metadataDiagnostic(stage,metadata,country,ids,matching,status,error){
                 if(!config.metadataDiagnostics) return;
@@ -860,7 +864,8 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 var network=code===408 || code===429 || code>=500 && code<=599 || name==='NetworkError' ||
                   name==='MediaError' && code===2 || typeof navigator!=='undefined' && navigator.onLine===false;
                 send({event:'error',reason:code===401 || code===403 ? 'authorization' : code===404 ? 'unavailable' : network ? 'network' : 'playback',
-                  code:typeof code==='number' && isFinite(code) ? code : 0,name:error && error.name || ''});
+                  code:typeof code==='number' && isFinite(code) ? code : 0,name:error && error.name || '',
+                  sdkReason:error && error.reason || ''});
               }
               function stopLive(){
                 stoppedLive=true;
@@ -953,6 +958,14 @@ internal class MusicKitStationPlayer(private val context: Context) {
                     // The global DRM capability is not required by unencrypted
                     // live radio. A real preview item is rejected by report().
                     music.addEventListener('drmUnsupported',function(){diagnostic('drm_unsupported');});
+                    // Assigning a token does not resolve the SDK's account country.
+                    // me() lets MusicKit refresh that state before setQueue's
+                    // storefront check; storefrontId alone only configures the API.
+                    return music.me();
+                  }).then(function(){
+                    diagnostic('account_ready');
+                    if(String(music.storefrontCountryCode || '').toLowerCase()!==config.storefront)
+                      throw {name:'StationStorefrontMismatch',reason:'CONTENT_EQUIVALENT'};
                     return music.setQueue({station:config.station,startPlaying:false});
                   }).then(function(){
                     diagnostic('queue_resolved');
