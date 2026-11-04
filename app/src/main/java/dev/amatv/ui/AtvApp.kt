@@ -2135,7 +2135,8 @@ fun AmAtvApp() {
             ) {
             Box(Modifier.fillMaxSize()) {
                 Box(Modifier.fillMaxSize().drawWithContent {
-                    if (catalogActionItem != null && Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode) {
+                    if (catalogActionItem != null && interfaceStyle == InterfaceStyle.Apple &&
+                        Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode) {
                         catalogBackdropLayer.record { this@drawWithContent.drawContent() }
                         drawLayer(catalogBackdropLayer)
                     } else drawContent()
@@ -2450,7 +2451,8 @@ fun AmAtvApp() {
                         } else null,
                         onRemove = { queueController.removeUpcoming(it) },
                         onMoveBy = { id, offset -> queueController.moveUpcomingBy(id, offset) },
-                        backdropLayer = catalogBackdropLayer.takeIf { Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode },
+                        backdropLayer = catalogBackdropLayer.takeIf { interfaceStyle == InterfaceStyle.Apple &&
+                            Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode },
                         lowPerformanceMode = lowPerformanceMode,
                         onMediaKey = ::dispatchMediaKey, modalInputGate = catalogModalInput,
                     ) else
@@ -2500,7 +2502,8 @@ fun AmAtvApp() {
                             check(if (playNext) queueController.enqueueNext(entries) else queueController.enqueueLast(entries))
                         } else null,
                         anchorBounds = catalogActionAnchor,
-                        backdropLayer = catalogBackdropLayer.takeIf { Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode },
+                        backdropLayer = catalogBackdropLayer.takeIf { interfaceStyle == InterfaceStyle.Apple &&
+                            Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode },
                         lowPerformanceMode = lowPerformanceMode)
                 }
                 if (phoneSignInVisible) PhoneMusicSignInDialog(

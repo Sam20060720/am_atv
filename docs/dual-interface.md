@@ -1,6 +1,6 @@
 # Interface styles
 
-Settings offers **Apple style** (the default) and **Classic**. Classic uses the
+Settings offers **Classic** (the default) and **Apple style**. Classic uses the
 presentation before `aa63879`, with `6754603` as its visual reference. Both styles
 use the current account, catalog, playback, queue, lyrics, cache and management
 implementations.
@@ -21,20 +21,29 @@ implementations.
 
 Changing the setting keeps the user in Settings and restores focus to the chosen
 option. The handoff has a bounded lifetime and ownership token so a cancelled
-request cannot overwrite a later choice. Unknown stored values select Apple.
+request cannot overwrite a later choice. Missing or unknown stored values select
+Classic; a valid saved choice, including Apple, is retained.
 
 Classic navigation and virtual player controls register with the shared focus
 overlay. Controls in native Dialog windows use the same painter locally because
 the Activity overlay cannot draw above another window. A local fallback is not
 drawn over an enabled global frame. Selection fills remain separate from remote
 focus, and inactive controls release their frame when a menu takes input.
+Catalog actions and lyric translation/pronunciation settings use the same
+`TvMenuSurface`, `CatalogSheetRow` and `TvMenuFocusScope`. Classic menus have their
+own window overlay outside panel/list clipping, larger rows and focus-safe
+padding; Apple retains its existing action-menu metrics. Lyrics submenus restore
+their source row, and closing restores the player's actual settings control.
 
 Content-to-navigation handoff is one `BrowseShell` intent: cancel pending content
 focus/scroll work before giving navigation ownership. Each style only places its
 navigation targets. A later layout frame cannot reset a target already chosen by
 the remote. Home initially enters the first available card, and explicit returns
 retain their actual source. The Replay heading action is temporarily hidden in
-both styles; its data and browser remain available in code.
+both styles; its data and browser remain available in code. Classic card rows
+stop at their left edge and use Up to reach the top navigation. Apple retains
+Left-to-sidebar handoff. Both use the shared ownership/return machinery when a
+navigation handoff is requested.
 
 Input roots let text editing/IME handle Back first. Only an unconsumed fresh Down
 grants the root ownership of its matching Up; an orphan release never pops the
@@ -66,9 +75,12 @@ focus check (`allow_interface_focus=1`). Its screenshots require visual review;
 semantics alone do not prove a frame was rendered. It covers existing player UI
 without starting playback, and records unavailable surfaces as skipped.
 
-`homeLeftBoundaryReturnsToNavigation` (`allow_interface_navigation=1`) checks
-natural Home entry, repeated/held Left, navigation stability and exact source
-return in both styles. `radioFeedRetainsVisibleContent`
+`homeHorizontalBoundaryHonorsInterfaceStyle` (`allow_interface_navigation=1`)
+checks natural Home entry, each style's repeated/held Left behavior, Up-to-topbar
+for Classic, navigation stability and exact source return.
+`classicMenusKeepFocusWithinSharedSurface` (`allow_classic_menus=1`) checks real
+long-press/lyrics menus, first/last-row spacing and source restoration without
+activating cloud writes or changing lyric preferences. `radioFeedRetainsVisibleContent`
 (`allow_radio_stability=1`) samples an ordinary Radio visit for six seconds. It
 records whether source changes were actually observed and never treats warm
 cached content as proof of an uncached load.

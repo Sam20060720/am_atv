@@ -179,7 +179,7 @@ private class HomeShelfLayout(val classic: Boolean) {
     val headingStart = if (classic) 8.dp else BrowseTokens.RowHorizontalPadding
 
     fun columnGap(featured: Boolean) = if (classic && !featured) 20.dp else BrowseTokens.ColumnGap
-    fun headingGap(featured: Boolean) = if (classic && featured) 12.dp else BrowseTokens.HeadingCardGap
+    fun headingGap(featured: Boolean) = if (classic && featured) 4.dp else BrowseTokens.HeadingCardGap
     fun focusOutset(featured: Boolean) = if (classic) {
         val width = if (featured) showcaseWidth else cardWidth
         val scale = if (featured) showcaseFocusScale else cardFocusScale
@@ -200,9 +200,18 @@ private fun ContentShelf.cardWidth(layout: HomeShelfLayout) = when {
     else -> layout.cardWidth
 }
 
+// Album/playlist kind labels are intentionally omitted from classic eyebrows.
+// Reserve that band for the whole row only when a card can actually use it.
+private fun ContentShelf.hasClassicEyebrowBand() = items.isEmpty() || items.any {
+    it.catalogKind != CatalogKind.Album && it.catalogKind != CatalogKind.Playlist
+}
+
+private fun ContentShelf.featuredHeight(layout: HomeShelfLayout) = layout.showcaseHeight -
+    if (layout.classic && !hasClassicEyebrowBand()) 24.dp else 0.dp
+
 private fun ContentShelf.rowHeight(layout: HomeShelfLayout) = when {
     id == BrowseInlineSection.Genres.shelfId -> 76.dp + BrowseTokens.RowVerticalPadding * 2
-    featured -> layout.showcaseHeight + BrowseTokens.RowVerticalPadding * 2
+    featured -> featuredHeight(layout) + BrowseTokens.RowVerticalPadding * 2
     else -> layout.cardHeight + BrowseTokens.RowVerticalPadding * 2
 }
 
@@ -1118,6 +1127,15 @@ private fun HomeShelves(
         }
     }
 
+    fun handleLeftBoundary(): Boolean {
+        if (!homeLayout.classic) return requestNavigationFocus()
+        // The classic top bar is reached vertically. Left belongs to this row,
+        // including repeats; keep a focused row's reveal settling in place.
+        pendingPageFocus = null
+        cancelVerticalFocus(keepFocusedRowReveal = true)
+        return true
+    }
+
     fun recordFocused(shelf: Int, item: Int) {
         val returningHeader = retained.headerAction?.let(headerRequesters::get)
         if (returningHeader == null || contentEntry?.preferredReturnRequester !== returningHeader)
@@ -1428,7 +1446,7 @@ private fun HomeShelves(
                             }
                             KeyEvent.KEYCODE_DPAD_LEFT -> {
                                 val firstAction = header?.let { headerActions[it.first]?.firstOrNull() }
-                                return@onPreviewKeyEvent firstAction != null && firstAction.key == header?.second && requestNavigationFocus()
+                                return@onPreviewKeyEvent firstAction != null && firstAction.key == header?.second && handleLeftBoundary()
                             }
                             else -> return@onPreviewKeyEvent false
                         }
@@ -1464,7 +1482,7 @@ private fun HomeShelves(
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             pendingPageFocus = null
                             if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT &&
-                                navigationCursor.focused.item == 0 && requestNavigationFocus()) true
+                                navigationCursor.focused.item == 0 && handleLeftBoundary()) true
                             else {
                                 cancelVerticalFocus(keepFocusedRowReveal = true)
                                 false
@@ -1487,6 +1505,7 @@ private fun HomeShelves(
         ) {
             itemsIndexed(shelves, key = { _, shelf -> shelf.id }) { shelfIndex, shelf ->
                 Column(Modifier.automationId("home-row-$shelfIndex-count-${shelf.items.size}")) {
+                    val reserveClassicEyebrow = shelf.hasClassicEyebrowBand()
                     val actions = headerActions[shelf.id].orEmpty()
                     if (actions.isEmpty()) SectionHeading(shelf.title)
                     else Row(Modifier.fillMaxWidth().padding(end = BrowseTokens.RowHorizontalPadding),
@@ -1530,6 +1549,7 @@ private fun HomeShelves(
                                         } else if (focusedHeader == actionKey) focusedHeader = null
                                     }.focusProperties {
                                         left = if (actionIndex > 0) headerRequesters.getValue(shelf.id to actions[actionIndex - 1].key)
+                                            else if (homeLayout.classic) FocusRequester.Cancel
                                             else navigationFocusRequester ?: FocusRequester.Cancel
                                         right = if (actionIndex < actions.lastIndex) headerRequesters.getValue(shelf.id to actions[actionIndex + 1].key)
                                             else FocusRequester.Cancel
@@ -1569,7 +1589,8 @@ private fun HomeShelves(
                                 .then(if (firstContentFocusRequester != null && firstEntry == ShelfFocusPosition(shelfIndex, itemIndex))
                                     Modifier.focusRequester(firstContentFocusRequester) else Modifier)
                                 .focusProperties {
-                                    if (itemIndex == 0) left = navigationFocusRequester ?: FocusRequester.Cancel
+                                    if (itemIndex == 0) left = if (homeLayout.classic) FocusRequester.Cancel
+                                        else navigationFocusRequester ?: FocusRequester.Cancel
                                     if (itemIndex == shelf.items.lastIndex &&
                                         pagination[shelf.id]?.showAction != true
                                     ) right = FocusRequester.Cancel
@@ -1596,6 +1617,7 @@ private fun HomeShelves(
                                     focusModifier = focusModifier,
                                     warmup = cardWarmup,
                                     mountPriority = mountPriority,
+                                    reserveClassicEyebrow = reserveClassicEyebrow,
                                 )
                             } else {
                                 RecentCard(
@@ -1616,6 +1638,7 @@ private fun HomeShelves(
                                     pagination = page,
                                     featured = shelf.featured,
                                     compact = shelf.id == BrowseInlineSection.Genres.shelfId,
+                                    reserveClassicEyebrow = reserveClassicEyebrow,
                                     onClick = {
                                         if (!page.loading) {
                                             topEntryRequest = 0
@@ -1629,7 +1652,8 @@ private fun HomeShelves(
                                         .then(if (firstContentFocusRequester != null && firstEntry == ShelfFocusPosition(shelfIndex, shelf.items.size))
                                             Modifier.focusRequester(firstContentFocusRequester) else Modifier)
                                         .focusProperties {
-                                            if (shelf.items.isEmpty()) left = navigationFocusRequester ?: FocusRequester.Cancel
+                                            if (shelf.items.isEmpty()) left = if (homeLayout.classic) FocusRequester.Cancel
+                                                else navigationFocusRequester ?: FocusRequester.Cancel
                                             right = FocusRequester.Cancel
                                         }
                                         .onFocusChanged { state ->
@@ -1656,6 +1680,7 @@ private fun LibraryLoadMoreCard(
     pagination: LibraryShelfPagination,
     featured: Boolean,
     compact: Boolean = false,
+    reserveClassicEyebrow: Boolean = true,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1666,11 +1691,16 @@ private fun LibraryLoadMoreCard(
         pagination.empty -> R.string.browse_reload
         else -> R.string.browse_load_more
     })
+    val cardHeight = when {
+        compact -> 76.dp
+        featured -> homeLayout.showcaseHeight - if (homeLayout.classic && !reserveClassicEyebrow) 24.dp else 0.dp
+        else -> homeLayout.cardHeight
+    }
     FocusSurface(
         onClick = onClick,
         modifier = modifier
             .width(if (compact) 190.dp else if (featured) homeLayout.showcaseWidth else homeLayout.cardWidth)
-            .height(if (compact) 76.dp else if (featured) homeLayout.showcaseHeight else homeLayout.cardHeight)
+            .height(cardHeight)
             .semantics { stateDescription = label },
         cornerRadius = if (featured) homeLayout.showcaseRadius else homeLayout.cardRadius,
         focusedScale = if (featured) homeLayout.showcaseFocusScale else homeLayout.cardFocusScale,
@@ -1895,6 +1925,7 @@ private fun ClassicTopPick(
     focusModifier: Modifier,
     warmup: HomeCardWarmup?,
     mountPriority: () -> Int,
+    reserveClassicEyebrow: Boolean,
 ) {
     val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
         listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
@@ -1910,8 +1941,9 @@ private fun ClassicTopPick(
         it.isNotBlank() && !it.equals(track.artist, ignoreCase = true) &&
             genericEyebrows.none { generic -> it.equals(generic, ignoreCase = true) }
     }.orEmpty()
-    Column(Modifier.width(ClassicBrowseVisuals.ShowcaseWidth).height(ClassicBrowseVisuals.ShowcaseHeight)) {
-        Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.TopStart) {
+    Column(Modifier.width(ClassicBrowseVisuals.ShowcaseWidth)
+        .height(ClassicBrowseVisuals.ShowcaseHeight - if (reserveClassicEyebrow) 0.dp else 24.dp)) {
+        if (reserveClassicEyebrow) Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.TopStart) {
             if (contentReady.value) Text(distinctEyebrow,
                 color = Color.White.copy(alpha = 0.62f), fontSize = 14.sp,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1969,9 +2001,10 @@ private fun TopPick(
     focusModifier: Modifier = Modifier,
     warmup: HomeCardWarmup? = null,
     mountPriority: () -> Int = { 1 },
+    reserveClassicEyebrow: Boolean = true,
 ) {
     if (LocalInterfaceStyle.current == InterfaceStyle.Classic) {
-        ClassicTopPick(label, track, onClick, focusModifier, warmup, mountPriority)
+        ClassicTopPick(label, track, onClick, focusModifier, warmup, mountPriority, reserveClassicEyebrow)
         return
     }
     val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {

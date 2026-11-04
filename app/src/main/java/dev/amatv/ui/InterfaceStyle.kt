@@ -11,11 +11,11 @@ internal enum class InterfaceStyle(val storedValue: String) {
 
     companion object {
         fun fromStoredValue(value: String?): InterfaceStyle =
-            entries.firstOrNull { it.storedValue == value } ?: Apple
+            entries.firstOrNull { it.storedValue == value } ?: Classic
     }
 }
 
-internal val LocalInterfaceStyle = staticCompositionLocalOf { InterfaceStyle.Apple }
+internal val LocalInterfaceStyle = staticCompositionLocalOf { InterfaceStyle.Classic }
 
 /** Presentation preference only; changing it never replaces a playback session. */
 internal class InterfaceStylePreferences(context: Context) {

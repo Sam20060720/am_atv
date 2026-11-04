@@ -111,7 +111,9 @@ internal fun BrowseShell(
     val interfaceStyle = LocalInterfaceStyle.current
     val classicInterface = interfaceStyle == InterfaceStyle.Classic
     val settingsFocusPending = interfaceStyleFocusPending && destination == Destination.Account
-    val contentTop = if (classicInterface) 88.dp else BrowseTokens.ContentTop
+    val contentTop = if (classicInterface) {
+        if (destination == Destination.Home) 100.dp else 88.dp
+    } else BrowseTokens.ContentTop
     var observedInterfaceStyle by remember { mutableStateOf(interfaceStyle) }
     val capabilities = remember(services) { services.presentationCapabilities }
     val navigationDestinations = remember {

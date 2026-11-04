@@ -7,19 +7,15 @@ import android.animation.ValueAnimator
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.focusGroup
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -28,12 +24,10 @@ import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.*
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -48,7 +42,6 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -57,18 +50,11 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.disabled
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -100,8 +86,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-
-private val LocalCatalogMenuCanActivate = staticCompositionLocalOf<() -> Boolean> { { true } }
 
 internal val LocalCatalogActionMenu = staticCompositionLocalOf<((Track) -> Unit)?> { null }
 internal fun Track.hasCatalogMenu(): Boolean = catalogKind != CatalogKind.Page || resourceType == "library-playlist-folders"
@@ -999,6 +983,9 @@ private fun CatalogActionSheetContent(
         }
         TvBrowseViewport {
             val density = LocalDensity.current
+            val metrics = tvMenuMetrics()
+            val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+            val focusVisibility = remember(entrance) { derivedStateOf { entrance.value } }
             var viewportSize by remember { mutableStateOf(IntSize.Zero) }
             var menuSize by remember { mutableStateOf(IntSize.Zero) }
             val placement = remember(anchorBounds, menuSize, viewportSize, density) {
@@ -1006,8 +993,7 @@ private fun CatalogActionSheetContent(
                     catalogMenuPlacement(anchorBounds, menuSize, viewportSize, BrowseTokens.SafeHorizontal.toPx(), BrowseTokens.SafeTop.toPx(), CatalogMenuStyle.Gap.toPx())
                 }
             }
-            val shape = RoundedCornerShape(CatalogMenuStyle.Radius)
-            val material = backdropLayer != null && Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode
+            val material = !classic && backdropLayer != null && Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode
             val windowFocused = LocalWindowInfo.current.isWindowFocused
             SideEffect { menuWindowFocused = windowFocused }
             val active = menuLaidOut && windowFocused && entranceComplete &&
@@ -1055,12 +1041,13 @@ private fun CatalogActionSheetContent(
                 }
                 if (pane == CatalogSheetPane.LibraryManagement) runCatching { headerFocus.requestFocus() }
             }
-            CompositionLocalProvider(LocalContentFocusEntry provides null, LocalFocusFrameEnabled provides false,
+            CompositionLocalProvider(LocalContentFocusEntry provides null,
                 LocalFocusTargetsEnabled provides active, LocalBrowseMotionEnabled provides false,
                 LocalCatalogMenuCanActivate provides ::canActivateMenu,
                 LocalCatalogMenuAnchorReporter provides null,
                 LocalTelevisionFocusTimings provides TelevisionFocusTimings(100, 200),
                 LocalFocusMotionStyle provides if (motionEnabled) FocusMotionStyle.Television else FocusMotionStyle.Immediate) {
+                TvMenuFocusScope(visibility = focusVisibility, active = active) {
                 Box(Modifier.fillMaxSize().onSizeChanged { viewportSize = it }
                     .onPreviewKeyEvent { event ->
                         val native = event.nativeKeyEvent
@@ -1090,29 +1077,17 @@ private fun CatalogActionSheetContent(
                             opacity = { entrance.value },
                         )
                     }
-                    Column(Modifier
+                    TvMenuSurface(modifier = Modifier
                         .offset { IntOffset(placement.bounds.left.roundToInt(), placement.bounds.top.roundToInt()) }
-                        .width(if (pane == CatalogSheetPane.Create) 340.dp else CatalogMenuStyle.Width)
-                        .heightIn(max = if (pane == CatalogSheetPane.Create) 440.dp else CatalogMenuStyle.MaxHeight)
+                        .width(if (pane == CatalogSheetPane.Create) 340.dp else metrics.width)
+                        .heightIn(max = if (pane == CatalogSheetPane.Create) 440.dp else metrics.maxHeight)
                         .onSizeChanged { menuSize = it; menuLaidOut = it.width > 0 && it.height > 0 }
                         .onFocusChanged { menuHasFocus = it.hasFocus }.focusGroup()
                         .graphicsLayer {
                             alpha = entrance.value
                             val scale = if (motionEnabled) CatalogMenuStyle.StartingScale + (1f - CatalogMenuStyle.StartingScale) * entrance.value else 1f
                             scaleX = scale; scaleY = scale; transformOrigin = placement.origin
-                        }
-                        .dropShadow(shape) {
-                            radius = with(density) { 15.dp.toPx() }
-                            offset = Offset(0f, with(density) { 5.dp.toPx() })
-                            color = Color.Black; alpha = 0.30f
-                        }
-                        .clip(shape)
-                        .background(if (material) Color(0xFF1E1E22).copy(alpha = 0.72f) else Color(0xE61E1E1E))
-                        .border(0.5.dp, Color.White.copy(alpha = 0.08f), shape)
-                        .pointerInput(Unit) { detectTapGestures { } }
-                        .animateContentSize(if (motionEnabled) tween(200, easing = CatalogMenuStyle.EaseOut) else tween(0))
-                        .padding(CatalogMenuStyle.Padding)
-                    ) {
+                        }, material = material, motionEnabled = motionEnabled) {
                         Column(Modifier.graphicsLayer {
                             alpha = paneOpacity.value
                             translationX = with(density) { 25.dp.toPx() } * paneDirection *
@@ -1225,7 +1200,7 @@ private fun CatalogActionSheetContent(
                                 // insets. Keep the row at its original width but
                                 // retain its focus expansion and shadow inside
                                 // that buffer instead of cropping both sides.
-                                modifier = Modifier.requiredWidth(CatalogMenuStyle.Width).weight(1f, fill = false).automationId("catalog-actions-list")
+                                modifier = Modifier.requiredWidth(metrics.width).weight(1f, fill = false).automationId("catalog-actions-list")
                                     .catalogMenuFades(listState.canScrollBackward, listState.canScrollForward)
                                     .onPreviewKeyEvent { event ->
                                         if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
@@ -1235,8 +1210,8 @@ private fun CatalogActionSheetContent(
                                             true
                                         } else false
                                     },
-                                verticalArrangement = Arrangement.spacedBy(CatalogMenuStyle.RowSpacing),
-                                contentPadding = PaddingValues(horizontal = CatalogMenuStyle.Padding, vertical = 4.dp)) {
+                                verticalArrangement = Arrangement.spacedBy(metrics.rowSpacing),
+                                contentPadding = PaddingValues(horizontal = metrics.padding, vertical = metrics.viewportPadding)) {
                                 if (pane == CatalogSheetPane.Actions) {
                                     itemsIndexed(mainRows, key = { _, row -> row.id }) { index, row ->
                                         val requester = mainRequesters.getOrPut(row.id) { FocusRequester() }
@@ -1340,7 +1315,7 @@ private fun CatalogActionSheetContent(
                                         }
                                     }
                                     if (pageLoading) item(key = "loading") {
-                                        Box(Modifier.fillMaxWidth().height(CatalogMenuStyle.RowHeight), Alignment.Center) { AppleLoadingIndicator(Modifier.size(16.dp)) }
+                                        Box(Modifier.fillMaxWidth().height(metrics.rowHeight), Alignment.Center) { AppleLoadingIndicator(Modifier.size(16.dp)) }
                                     }
                                     if (!pageLoading && content.isEmpty() && !pageFailed) item(key = "empty") {
                                         Text(stringResource(if (pane == CatalogSheetPane.Playlists) R.string.actions_no_playlists else R.string.actions_no_artists),
@@ -1359,6 +1334,7 @@ private fun CatalogActionSheetContent(
                         }
                     }
                 }
+                } // Window-local focus overlay is outside the panel's clipping.
             }
         }
     }
@@ -1376,82 +1352,6 @@ private fun CatalogActionSheetContent(
             onDismiss = { managementVisible = false })
     }
     if (shareVisible && shareUrl != null) AppleMusicShareDialog(shareUrl, item.title) { shareVisible = false }
-}
-
-@Composable
-internal fun CatalogSheetRow(
-    label: String, modifier: Modifier = Modifier, enabled: Boolean = true, selected: Boolean = false,
-    retainFocusWhenDisabled: Boolean = true,
-    artwork: Track? = null, icon: ImageVector? = null, submenu: Boolean = false, onClick: () -> Unit,
-) {
-    val density = LocalDensity.current
-    val textMeasurer = rememberTextMeasurer()
-    var rowFocused by remember { mutableStateOf(false) }
-    // Luna ButtonWidget selects its visual style from the current focus state.
-    // Its 100/200 ms animation applies to zoom, not to the outgoing white fill
-    // or reversed label. Fading every old row left several pale capsules behind
-    // during key repeat. Keep the actual focus target and its zoom animation.
-    val rowBackground = if (rowFocused) Color(0xFFEBEBEB) else Color.Transparent
-    val style = TextStyle(fontSize = 12.5.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium,
-        fontFamily = androidx.compose.material3.LocalTextStyle.current.fontFamily)
-    BoxWithConstraints(modifier.fillMaxWidth()) {
-        val titleWidth = with(density) { (maxWidth - CatalogMenuStyle.IconSlot - 10.dp - if (submenu) 15.dp else 0.dp).toPx().roundToInt().coerceAtLeast(1) }
-        val measured = textMeasurer.measure(label, style, maxLines = 2, overflow = TextOverflow.Ellipsis, constraints = Constraints(maxWidth = titleWidth))
-        val rowHeight = if (measured.lineCount > 1) CatalogMenuStyle.TwoLineHeight else CatalogMenuStyle.RowHeight
-        // horizontalExpand is 8 on the shipped 1920 px design canvas: 4 dp here.
-        val expandScale = 1f + 4f / maxWidth.value.coerceAtLeast(1f)
-        val active = LocalFocusTargetsEnabled.current
-        val canActivate = LocalCatalogMenuCanActivate.current
-        val submenuHeld = remember(submenu) { booleanArrayOf(false) }
-        FocusSurface({ if (enabled && canActivate()) onClick() }, Modifier.fillMaxWidth().height(rowHeight)
-            .semantics { if (!enabled) disabled() }
-            .onFocusChanged { rowFocused = it.isFocused }
-            .onPreviewKeyEvent { event ->
-                val native = event.nativeKeyEvent
-                if (!submenu || native.keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) false
-                else when (native.action) {
-                    KeyEvent.ACTION_DOWN -> { if (native.repeatCount == 0) submenuHeld[0] = enabled && active && canActivate(); true }
-                    KeyEvent.ACTION_UP -> {
-                        if (submenuHeld[0] && enabled && active && canActivate()) onClick()
-                        submenuHeld[0] = false
-                        true
-                    }
-                    else -> true
-                }
-            },
-            enabled = enabled || retainFocusWhenDisabled,
-            interactionFeedbackEnabled = enabled, cornerRadius = rowHeight / 2,
-            focusedScale = expandScale, focusedElevation = if (rowFocused) 4.dp else 0.dp,
-            background = rowBackground,
-            hoveredBackground = if (rowFocused) rowBackground else Color.White.copy(alpha = 0.15f),
-            focusedBackground = rowBackground,
-            padding = PaddingValues(end = 10.dp)) {
-            val color = when {
-                rowFocused && enabled -> Color(0xFF1E1E22)
-                rowFocused -> Color(0xFF1E1E22).copy(alpha = 0.40f)
-                enabled -> Color.White.copy(alpha = 0.94f)
-                else -> Color.White.copy(alpha = 0.40f)
-            }
-            Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.width(CatalogMenuStyle.IconSlot).fillMaxHeight(), Alignment.Center) {
-                    when {
-                        selected -> Icon(Icons.Rounded.Check, null, Modifier.size(10.dp), tint = color)
-                        artwork != null -> MotionArtwork(artwork, Modifier.size(24.dp), animate = false,
-                            cornerRadius = if (artwork.catalogKind == CatalogKind.Artist) 12.dp else 4.dp)
-                        icon != null -> Icon(icon, null, Modifier.size(CatalogMenuStyle.IconSize), tint = color)
-                    }
-                }
-                Text(label, color = color, style = style, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f))
-                if (submenu) Icon(Icons.Rounded.KeyboardArrowRight, null, Modifier.padding(start = 3.dp).size(12.dp), tint = color.copy(alpha = color.alpha * 0.65f))
-            }
-        }
-    }
-}
-
-@Composable
-internal fun CatalogSheetSeparator() {
-    Box(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp).height(0.5.dp).background(Color.White.copy(alpha = 0.10f)))
 }
 
 private fun catalogActionGroup(id: String): Int = when (id) {

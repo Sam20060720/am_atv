@@ -23,6 +23,157 @@ import java.io.File
 /** Public presentation switches only: no transport, queue, account or network mutations. */
 @RunWith(AndroidJUnit4::class)
 class InterfaceStyleSwitchTest {
+    /** Opens real menus but never activates catalog writes, lyric toggles or transport. */
+    @Test fun classicMenusKeepFocusWithinSharedSurface() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue("Explicit Classic menu check only", args.getString("allow_classic_menus") == "1")
+        check(Build.HARDWARE in setOf("ranchu", "goldfish"))
+        val runId = (args.getString("run_id") ?: "classic-menus-" + System.currentTimeMillis())
+            .also { require(it.matches(Regex("[A-Za-z0-9_.-]+"))) }
+        val directory = File(requireNotNull(instrumentation.context.getExternalFilesDir(null)), "classic-menus/$runId")
+        check(!directory.exists() && directory.mkdirs())
+        val ui = RenderingSurveyUi(instrumentation)
+        val cases = JSONArray()
+        val report = JSONObject().put("run_id", runId).put("playback_operations", false)
+            .put("cloud_writes", false).put("lyrics_preference_changes", false)
+            .put("visual_review_required", true).put("cases", cases)
+        var original: String? = null
+        var failure: Throwable? = null
+        try {
+            ui.launch(); openSettings(ui)
+            original = selectedStyle(ui)
+            if (original != "classic") {
+                activateStyle(instrumentation, ui, "classic"); awaitSelectedFocus(ui, "classic")
+            }
+            navigate(ui, "home")
+            ui.await("Home did not own a real card", 5_000) { ui.snapshot().focused.any(SHELF_CARD::matches) }
+            var album: String? = null
+            for (row in 0..4) {
+                album = ui.snapshot().ids.firstOrNull { it.matches(Regex("shelf-\\d+-item-\\d+-album")) }
+                if (album != null || row == 4) break
+                ui.key(KeyEvent.KEYCODE_DPAD_DOWN, 240)
+            }
+            val source = album
+            if (source != null) {
+                ui.focus(source) // Public setup only; menu focus below is never repaired.
+                val longPress = ui.verifiedAlbumLongPress(source)
+                longPress.execute()
+                val initialFocus = ui.assertNaturalFirstMenuFocus()
+                captureMenuEdges(ui, "catalog-action-", "catalog", directory, cases)
+                ui.key(KeyEvent.KEYCODE_BACK, 0); ui.awaitGone("catalog-actions-list")
+                ui.await("Catalog menu Back lost its actual album source", 4_000) { source in ui.snapshot().focused }
+                cases.put(JSONObject().put("case", "catalog-source-return").put("source", source)
+                    .put("long_press_ms", longPress.holdMs).put("initial_focus", initialFocus))
+            } else cases.put(JSONObject().put("case", "catalog-menu").put("status", "skipped")
+                .put("reason", "No real album card visible within four bounded Home Down steps"))
+
+            if (ui.has("nav-nowplaying")) {
+                ui.focus("nav-nowplaying"); ui.activate("nav-nowplaying", "navigation")
+                ui.awaitId("player-screen", 5_000)
+                revealPlayerControls(ui)
+                if (ui.has("player-lyrics-display")) {
+                    val state = ui.snapshot()
+                    val controls = state.nodes.filter { PLAYER_CONTROL.matches(it.id) && it.clickable }.map { it.id }.distinct()
+                    val from = controls.indexOfFirst { it in state.selected }
+                    val to = controls.indexOf("player-lyrics-display")
+                    check(from >= 0 && to >= 0)
+                    repeat(kotlin.math.abs(to - from)) { ui.key(
+                        if (to > from) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT, 55) }
+                    safeMenuCenter(instrumentation, ui, "player-lyrics-display", virtual = true)
+                    ui.awaitId("lyrics-display-menu", 3_000)
+                    captureMenuEdges(ui, "lyrics-menu-", "lyrics", directory, cases, "lyrics-larger-text")
+                    ui.focus("lyrics-menu-translation-language") // Submenu source setup; no preference activation.
+                    safeMenuCenter(instrumentation, ui, "lyrics-menu-translation-language")
+                    ui.awaitId("lyrics-menu-back", 3_000)
+                    ui.await("Language submenu did not own focus", 2_000) {
+                        ui.snapshot().focused.any { it.startsWith("lyrics-translation-language-") }
+                    }
+                    check(ui.device.takeScreenshot(File(directory, "lyrics-language-pane.png")))
+                    cases.put(JSONObject().put("case", "lyrics-language-pane").put("state", ui.snapshot().json(true)))
+                    ui.key(KeyEvent.KEYCODE_BACK, 0)
+                    ui.await("Language Back did not restore its actual row", 3_000) {
+                        "lyrics-menu-translation-language" in ui.snapshot().focused
+                    }
+                    ui.key(KeyEvent.KEYCODE_BACK, 0); ui.awaitGone("lyrics-display-menu")
+                    ui.await("Lyrics menu Back did not restore its virtual player control", 3_000) {
+                        val restored = ui.snapshot()
+                        "player-screen" in restored.focused && "player-lyrics-display" in restored.selected
+                    }
+                } else cases.put(JSONObject().put("case", "lyrics-menu").put("status", "skipped")
+                    .put("reason", "Existing track exposes no actual Lyrics Display control"))
+                ui.leavePlayerWithBack()
+            } else cases.put(JSONObject().put("case", "lyrics-menu").put("status", "skipped")
+                .put("reason", "No existing current track; playback was not seeded"))
+            report.put("status", "passed_pending_visual_review")
+        } catch (error: Throwable) {
+            failure = error
+            report.put("status", "failed").put("error", error.message?.take(500))
+            runCatching { report.put("failure_state", ui.snapshot().json(true)) }
+            runCatching { ui.device.takeScreenshot(File(directory, "failure.png")) }
+        } finally {
+            val restoreStyle = original
+            if (restoreStyle != null) runCatching {
+                openSettings(ui)
+                if (selectedStyle(ui) != restoreStyle) {
+                    activateStyle(instrumentation, ui, restoreStyle); awaitSelectedFocus(ui, restoreStyle)
+                }
+                check(selectedStyle(ui) == restoreStyle)
+                report.put("restored_style", restoreStyle)
+            }.onFailure { if (failure == null) failure = it; report.put("restore_error", it.message?.take(500)) }
+            if (failure != null) report.put("status", "failed")
+            File(directory, "result.json").writeText(report.toString(2)); ui.close()
+        }
+        failure?.let { throw it }
+    }
+
+    private fun safeMenuCenter(instrumentation: Instrumentation, ui: RenderingSurveyUi, id: String, virtual: Boolean = false) {
+        check(id in setOf("player-lyrics-display", "lyrics-menu-translation-language"))
+        ui.await("Allowed menu source does not own Center: $id", 2_000) {
+            val state = ui.snapshot()
+            if (virtual) "player-screen" in state.focused && id in state.selected else id in state.focused
+        }
+        val down = SystemClock.uptimeMillis()
+        for (action in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) check(instrumentation.uiAutomation.injectInputEvent(
+            KeyEvent(down, SystemClock.uptimeMillis(), action, KeyEvent.KEYCODE_DPAD_CENTER, 0, 0,
+                KeyCharacterMap.VIRTUAL_KEYBOARD, 0, KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_DPAD), true))
+    }
+
+    private fun captureMenuEdges(ui: RenderingSurveyUi, prefix: String, name: String, directory: File,
+        cases: JSONArray, extraRow: String? = null) {
+        fun isRow(id: String) = id.startsWith(prefix) || id == extraRow
+        fun focusedRow(): String = ui.snapshot().focused.singleOrNull(::isRow)
+            ?: error("$name menu has no unique actual focused row")
+        ui.awaitId("tv-menu-surface", 3_000)
+        ui.await("$name menu did not naturally own row focus", 3_000) { ui.snapshot().focused.any(::isRow) }
+        fun capture(edge: String) {
+            ui.settle(220)
+            val state = ui.snapshot()
+            val id = focusedRow()
+            fun bounds(target: String) = requireNotNull(Rect.unflattenFromString(state.nodes.first { it.id == target }.bounds))
+            val surface = bounds("tv-menu-surface")
+            val row = bounds(id)
+            // Classic's shared surface is 300dp wide. Require 6dp clear space;
+            // screenshot review still checks the actual painted focus outline.
+            val inset = maxOf(4, (surface.width() * 6f / 300f).toInt())
+            check(surface.contains(row) && row.left - surface.left >= inset && surface.right - row.right >= inset &&
+                row.top - surface.top >= inset && surface.bottom - row.bottom >= inset) { "$name $edge row lacks focus-frame inset" }
+            check(ui.device.takeScreenshot(File(directory, "$name-$edge.png")))
+            cases.put(JSONObject().put("case", "$name-$edge").put("focus", id)
+                .put("minimum_inset_px", inset).put("state", state.json(true)))
+        }
+        capture("first-row")
+        var unchanged = 0
+        var presses = 0
+        while (unchanged < 2 && presses++ < 20) {
+            val before = focusedRow()
+            ui.key(KeyEvent.KEYCODE_DPAD_DOWN, 220)
+            unchanged = if (focusedRow() == before) unchanged + 1 else 0
+        }
+        check(unchanged == 2) { "$name menu did not reach a bounded last row" }
+        capture("last-row")
+    }
+
     /** Samples the existing feed without clearing cache or forcing a refresh. */
     @Test fun radioFeedRetainsVisibleContent() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -78,7 +229,7 @@ class InterfaceStyleSwitchTest {
     }
 
     /** Actual Left presses own every assertion after one public card-focus setup. */
-    @Test fun homeLeftBoundaryReturnsToNavigation() {
+    @Test fun homeHorizontalBoundaryHonorsInterfaceStyle() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val args = InstrumentationRegistry.getArguments()
         assumeTrue("Explicit Home boundary check only", args.getString("allow_interface_navigation") == "1")
@@ -171,14 +322,14 @@ class InterfaceStyleSwitchTest {
                 it.groupValues[1].toInt() == start.first && it.groupValues[2].toInt() == column
             } == true }
         }
-        fun awaitNavigation() = ui.await("$style Left at the first card did not reach actual Home navigation", 2_500) {
+        fun awaitNavigation() = ui.await("$style navigation handoff did not reach actual nav-home", 2_500) {
             "nav-home" in ui.snapshot().focused
         }
-        fun returnToFirst(label: String) {
+        fun returnToFirst(label: String, expectedSource: String = first) {
             ui.key(if (style == "classic") KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_RIGHT, 0)
-            ui.await("$style navigation did not return to its actual boundary card", 2_500) { first in ui.snapshot().focused }
+            ui.await("$style navigation did not return to its actual content source", 2_500) { expectedSource in ui.snapshot().focused }
             ui.settle(250)
-            check(first in ui.snapshot().focused) { "$style content return drifted after the handoff" }
+            check(expectedSource in ui.snapshot().focused) { "$style content return drifted after the handoff" }
             record(label)
         }
         // Setup only. No accessibility focus is used to repair any tested key transition.
@@ -191,14 +342,15 @@ class InterfaceStyleSwitchTest {
             record("fresh-left-${press + 1}")
         }
         ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 0)
-        awaitNavigation()
-        record("fresh-left-navigation")
+        if (style == "classic") awaitCard(0) else awaitNavigation()
+        record(if (style == "classic") "fresh-left-stops-at-first-card" else "fresh-left-navigation")
         ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 0)
         ui.settle(550)
-        check("nav-home" in ui.snapshot().focused) { "$style an additional Left restarted a stale content handoff" }
-        record("additional-left-navigation-stable")
-        check(ui.device.takeScreenshot(File(directory, "$style-left-navigation.png")))
-        returnToFirst("fresh-left-return")
+        val boundaryOwner = if (style == "classic") first else "nav-home"
+        check(boundaryOwner in ui.snapshot().focused) { "$style an additional Left escaped its boundary owner" }
+        record("additional-left-boundary-stable")
+        check(ui.device.takeScreenshot(File(directory, "$style-left-boundary.png")))
+        if (style != "classic") returnToFirst("fresh-left-return")
         ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 0)
         ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 0)
         ui.await("$style fast Right/Left reversal escaped its card", 2_000) { first in ui.snapshot().focused }
@@ -212,18 +364,34 @@ class InterfaceStyleSwitchTest {
             KeyEvent.KEYCODE_DPAD_LEFT, repeat, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
             KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_DPAD)
         try {
-            // One held press must cross the same boundary; the held-Up policy
-            // must not trap horizontal repeats on the first card.
+            // Apple crosses to navigation; Classic deliberately stops on item0.
             repeat(start.second + 2) { repeatCount ->
                 check(instrumentation.uiAutomation.injectInputEvent(held(KeyEvent.ACTION_DOWN, repeatCount), true))
-                if (repeatCount < start.second) awaitCard(start.second - repeatCount - 1) else awaitNavigation()
+                if (repeatCount < start.second) awaitCard(start.second - repeatCount - 1)
+                else if (style == "classic") awaitCard(0) else awaitNavigation()
                 record("held-left-repeat-$repeatCount")
             }
         } finally {
             check(instrumentation.uiAutomation.injectInputEvent(held(KeyEvent.ACTION_UP, 0), true))
         }
-        returnToFirst("held-left-release-return")
-        entry.put("status", "passed").put("navigation_screenshot", "$style-left-navigation.png")
+        if (style == "classic") {
+            ui.settle(250)
+            check(first in ui.snapshot().focused) { "Classic held Left escaped after release" }
+            record("held-left-release-still-first-card")
+            var returnSource = first
+            var upPresses = 0
+            while ("nav-home" !in ui.snapshot().focused && upPresses < ((start.first + 1) * 2 + 1).coerceAtMost(8)) {
+                ui.snapshot().focused.firstOrNull { SHELF_CARD.matches(it) || it.startsWith("home-shelf-") }
+                    ?.let { returnSource = it }
+                ui.key(KeyEvent.KEYCODE_DPAD_UP, 160)
+                record("classic-up-${++upPresses}")
+            }
+            awaitNavigation()
+            record("classic-up-navigation")
+            entry.put("up_return_source", returnSource)
+            returnToFirst("classic-down-restores-source", returnSource)
+        } else returnToFirst("held-left-release-return")
+        entry.put("status", "passed").put("boundary_screenshot", "$style-left-boundary.png")
     }
 
     /** Captures real focus rendering; the saved images still require visual inspection. */

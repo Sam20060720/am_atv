@@ -18,8 +18,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -53,7 +51,6 @@ import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.DisposableEffect
@@ -102,6 +99,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -362,6 +360,28 @@ fun PlayerScreen(
         if (focusedQueueMode !in availableQueueModes) focusedQueueMode = availableQueueModes.first()
     }
     val playerFocusRequester = remember { FocusRequester() }
+    val playerWindowFocused = LocalWindowInfo.current.isWindowFocused
+    var lyricsMenuReturnPending by remember { mutableStateOf(false) }
+    fun dismissLyricsMenu() {
+        if (!showLyricsSettings) return
+        showLyricsSettings = false
+        controlsVisible = true
+        controlsActivity++
+        navigationZone = PlayerNavigationZone.Controls
+        focusedControl = PlayerControl.LyricsDisplay.takeIf { it in availableControls }
+            ?: availableControls.first()
+        lyricsMenuReturnPending = true
+    }
+    LaunchedEffect(showLyricsSettings, playerWindowFocused, isActiveScreen) {
+        if (showLyricsSettings || !lyricsMenuReturnPending || !playerWindowFocused || !isActiveScreen) return@LaunchedEffect
+        repeat(4) {
+            withFrameNanos { }
+            if (runCatching { playerFocusRequester.requestFocus() }.getOrDefault(false)) {
+                lyricsMenuReturnPending = false
+                return@LaunchedEffect
+            }
+        }
+    }
     val playbackPosition = rememberPlaybackPositionState(
         trackId = track.id,
         positionAnchorMs = positionAnchorMs,
@@ -490,6 +510,7 @@ fun PlayerScreen(
         }
     }
 
+    CompositionLocalProvider(LocalFocusTargetsEnabled provides (LocalFocusTargetsEnabled.current && !showLyricsSettings)) {
     Box(
         modifier
             .automationId(if (isActiveScreen) "player-screen" else "player-retained")
@@ -548,7 +569,7 @@ fun PlayerScreen(
                     native.repeatCount > 0) return@onPreviewKeyEvent true
                 if (showLyricsSettings) {
                     return@onPreviewKeyEvent if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
-                        showLyricsSettings = false
+                        dismissLyricsMenu()
                         consumeBackRelease = true
                         true
                     } else {
@@ -1003,356 +1024,14 @@ fun PlayerScreen(
                 onPronunciationLargerChange = onLyricPronunciationLargerChange,
                 onTranslationLanguageChange = onLyricTranslationLanguageChange,
                 onPronunciationLanguageChange = onLyricPronunciationLanguageChange,
-                onDismiss = { showLyricsSettings = false },
+                onDismiss = ::dismissLyricsMenu,
             )
         }
 
     }
-}
-
-
-private enum class LyricsLanguagePicker { Translation, Pronunciation, LargerText }
-
-private val TranslationLanguageTags = listOf(
-    "", "zh-TW", "zh-CN", "en-US", "ja-JP", "ko-KR", "es-ES", "fr-FR", "de-DE",
-)
-
-@Composable
-private fun LyricsDisplaySettingsDialog(
-    translationEnabled: Boolean,
-    pronunciationEnabled: Boolean,
-    pronunciationLarger: Boolean,
-    translationAvailable: Boolean,
-    pronunciationAvailable: Boolean,
-    translationLanguageTag: String,
-    pronunciationLanguageTag: String,
-    appLanguageTag: String,
-    enhancementsReady: Boolean,
-    enhancementsFailed: Boolean,
-    onTranslationChange: (Boolean) -> Unit,
-    onPronunciationChange: (Boolean) -> Unit,
-    onPronunciationLargerChange: (Boolean) -> Unit,
-    onTranslationLanguageChange: (String) -> Unit,
-    onPronunciationLanguageChange: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var languagePicker by remember { mutableStateOf<LyricsLanguagePicker?>(null) }
-    val firstFocus = remember { FocusRequester() }
-    LaunchedEffect(languagePicker) {
-        withFrameNanos { }
-        runCatching { firstFocus.requestFocus() }
-    }
-    val effectiveTranslationTag = translationLanguageTag.ifBlank { appLanguageTag }
-    val appLocale = remember(appLanguageTag) {
-        Locale.forLanguageTag(appLanguageTag).takeUnless { it.language.isBlank() } ?: Locale.getDefault()
-    }
-    fun languageName(tag: String): String = Locale.forLanguageTag(tag)
-        .getDisplayName(appLocale)
-        .replaceFirstChar { if (it.isLowerCase()) it.titlecase(appLocale) else it.toString() }
-
-    CompositionLocalProvider(LocalFocusFrameEnabled provides false) {
-        AlertDialog(
-            onDismissRequest = onDismiss,
-            title = {
-                Text(
-                    text = stringResource(
-                        when (languagePicker) {
-                            LyricsLanguagePicker.Translation -> R.string.player_lyrics_choose_translation_language
-                            LyricsLanguagePicker.Pronunciation -> R.string.player_lyrics_choose_pronunciation_script
-                            LyricsLanguagePicker.LargerText -> R.string.player_lyrics_larger_text
-                            null -> R.string.player_lyrics_display_title
-                        },
-                    ),
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            },
-            text = {
-                Column(
-                    modifier = Modifier.width(520.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    when (languagePicker) {
-                        LyricsLanguagePicker.LargerText -> {
-                            listOf(false, true).forEachIndexed { index, larger ->
-                                LyricsLanguageChoiceRow(
-                                    label = stringResource(if (larger) R.string.player_lyrics_larger_pronunciation
-                                        else R.string.player_lyrics_larger_lyrics),
-                                    selected = larger == pronunciationLarger,
-                                    onClick = {
-                                        onPronunciationLargerChange(larger)
-                                        languagePicker = null
-                                    },
-                                    modifier = Modifier
-                                        .automationId(if (larger) "lyrics-larger-pronunciation" else "lyrics-larger-lyrics")
-                                        .then(if (index == 0) Modifier.focusRequester(firstFocus) else Modifier),
-                                )
-                            }
-                        }
-                        LyricsLanguagePicker.Translation -> {
-                            TranslationLanguageTags.forEachIndexed { index, tag ->
-                                val effectiveTag = tag.ifBlank { appLanguageTag }
-                                val label = if (tag.isBlank()) {
-                                    stringResource(
-                                        R.string.player_lyrics_language_follow_app_format,
-                                        languageName(effectiveTag),
-                                    )
-                                } else {
-                                    languageName(tag)
-                                }
-                                LyricsLanguageChoiceRow(
-                                    label = label,
-                                    selected = tag == translationLanguageTag,
-                                    onClick = {
-                                        onTranslationLanguageChange(tag)
-                                        languagePicker = null
-                                    },
-                                    modifier = if (index == 0) Modifier.focusRequester(firstFocus) else Modifier,
-                                )
-                            }
-                        }
-                        LyricsLanguagePicker.Pronunciation -> {
-                            val options = listOf("en-US", appLanguageTag).distinct()
-                            options.forEachIndexed { index, tag ->
-                                LyricsLanguageChoiceRow(
-                                    label = if (tag == "en-US") {
-                                        stringResource(R.string.player_lyrics_pronunciation_latin)
-                                    } else {
-                                        stringResource(
-                                            R.string.player_lyrics_pronunciation_app_script_format,
-                                            languageName(tag),
-                                        )
-                                    },
-                                    selected = tag == pronunciationLanguageTag,
-                                    onClick = {
-                                        onPronunciationLanguageChange(tag)
-                                        languagePicker = null
-                                    },
-                                    modifier = if (index == 0) Modifier.focusRequester(firstFocus) else Modifier,
-                                )
-                            }
-                        }
-                        null -> {
-                            LyricsLanguageSummaryRow(
-                                title = stringResource(R.string.player_lyrics_source_language),
-                                value = stringResource(R.string.player_lyrics_source_auto),
-                            )
-                            LyricsDisplaySettingRow(
-                                title = stringResource(R.string.player_lyrics_translation),
-                                description = stringResource(when {
-                                    translationEnabled && enhancementsFailed -> R.string.player_lyrics_enhancement_load_failed
-                                    translationEnabled && !enhancementsReady -> R.string.player_lyrics_enhancement_loading
-                                    translationEnabled && !translationAvailable -> R.string.player_lyrics_translation_unavailable
-                                    else -> R.string.player_lyrics_translation_hint
-                                }),
-                                enabled = translationEnabled,
-                                onClick = { onTranslationChange(!translationEnabled) },
-                                modifier = Modifier.focusRequester(firstFocus),
-                            )
-                            LyricsDisplayValueRow(
-                                title = stringResource(R.string.player_lyrics_translate_to),
-                                value = if (translationLanguageTag.isBlank()) {
-                                    stringResource(
-                                        R.string.player_lyrics_language_follow_app_format,
-                                        languageName(effectiveTranslationTag),
-                                    )
-                                } else languageName(effectiveTranslationTag),
-                                onClick = { languagePicker = LyricsLanguagePicker.Translation },
-                            )
-                            LyricsDisplaySettingRow(
-                                title = stringResource(R.string.player_lyrics_pronunciation),
-                                description = stringResource(when {
-                                    pronunciationEnabled && enhancementsFailed -> R.string.player_lyrics_enhancement_load_failed
-                                    pronunciationEnabled && !enhancementsReady -> R.string.player_lyrics_enhancement_loading
-                                    pronunciationEnabled && !pronunciationAvailable -> R.string.player_lyrics_pronunciation_unavailable
-                                    else -> R.string.player_lyrics_pronunciation_hint
-                                }),
-                                enabled = pronunciationEnabled,
-                                onClick = { onPronunciationChange(!pronunciationEnabled) },
-                            )
-                            LyricsDisplayValueRow(
-                                title = stringResource(R.string.player_lyrics_pronunciation_script),
-                                value = if (pronunciationLanguageTag == "en-US") {
-                                    stringResource(R.string.player_lyrics_pronunciation_latin)
-                                } else {
-                                    stringResource(
-                                        R.string.player_lyrics_pronunciation_app_script_format,
-                                        languageName(pronunciationLanguageTag),
-                                    )
-                                },
-                                onClick = { languagePicker = LyricsLanguagePicker.Pronunciation },
-                            )
-                            LyricsDisplayValueRow(
-                                title = stringResource(R.string.player_lyrics_larger_text),
-                                value = stringResource(if (pronunciationLarger) R.string.player_lyrics_larger_pronunciation
-                                    else R.string.player_lyrics_larger_lyrics),
-                                onClick = { languagePicker = LyricsLanguagePicker.LargerText },
-                                modifier = Modifier.automationId("lyrics-larger-text"),
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                FocusSurface(
-                    onClick = {
-                        if (languagePicker != null) languagePicker = null else onDismiss()
-                    },
-                    modifier = Modifier.width(112.dp).height(42.dp),
-                    cornerRadius = 21.dp,
-                    showBorder = LocalInterfaceStyle.current == InterfaceStyle.Classic,
-                    background = Color.White.copy(alpha = 0.12f),
-                    focusedBackground = Color.White,
-                ) { focused ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = stringResource(
-                                if (languagePicker == null) R.string.player_lyrics_display_done
-                                else R.string.player_lyrics_language_back,
-                            ),
-                            color = if (focused) Color(0xFF18181A) else Color.White,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-            },
-            containerColor = Color(0xFF252529),
-            titleContentColor = Color.White,
-            textContentColor = Color.White,
-        )
     }
 }
 
-@Composable
-private fun LyricsDisplaySettingRow(
-    title: String,
-    description: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    FocusSurface(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(68.dp).semantics { selected = enabled },
-        cornerRadius = 14.dp,
-        showBorder = true,
-        padding = PaddingValues(horizontal = 16.dp),
-        background = Color.White.copy(alpha = 0.08f),
-        focusedBackground = Color.White.copy(alpha = 0.18f),
-    ) { _ ->
-        Row(
-            Modifier.fillMaxSize(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    description,
-                    color = Color.White.copy(alpha = 0.55f),
-                    fontSize = 13.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .padding(start = 16.dp)
-                    .clip(RoundedCornerShape(13.dp))
-                    .background(if (enabled) Color.White else Color.White.copy(alpha = 0.12f))
-                    .padding(horizontal = 13.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = stringResource(
-                        if (enabled) R.string.player_lyrics_display_on else R.string.player_lyrics_display_off,
-                    ),
-                    color = if (enabled) Color(0xFF18181A) else Color.White.copy(alpha = 0.66f),
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun LyricsLanguageSummaryRow(title: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, color = Color.White.copy(alpha = 0.62f), fontSize = 14.sp)
-        Text(value, color = Color.White.copy(alpha = 0.82f), fontSize = 14.sp)
-    }
-}
-
-@Composable
-private fun LyricsDisplayValueRow(
-    title: String,
-    value: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    FocusSurface(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(56.dp),
-        cornerRadius = 14.dp,
-        showBorder = true,
-        padding = PaddingValues(horizontal = 16.dp),
-        background = Color.White.copy(alpha = 0.08f),
-        focusedBackground = Color.White.copy(alpha = 0.18f),
-    ) { _ ->
-        Row(
-            Modifier.fillMaxSize(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Text(
-                value,
-                color = Color.White.copy(alpha = 0.68f),
-                fontSize = 14.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 20.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun LyricsLanguageChoiceRow(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    FocusSurface(
-        onClick = onClick,
-        modifier = modifier.fillMaxWidth().height(46.dp).semantics { this.selected = selected },
-        cornerRadius = 13.dp,
-        showBorder = true,
-        padding = PaddingValues(horizontal = 16.dp),
-        background = if (selected) Color.White.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.06f),
-        focusedBackground = Color.White.copy(alpha = 0.22f),
-    ) { _ ->
-        Row(
-            Modifier.fillMaxSize(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(label, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            if (selected) {
-                Text("✓", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-    }
-}
 
 /**
  * Unified GPU-composited Now Playing stage that keeps the album artwork column,

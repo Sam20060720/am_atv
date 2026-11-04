@@ -48,6 +48,7 @@ private fun CatalogLibraryManagementContent(
     firstRequester: FocusRequester, onChanged: () -> Unit, onDeleted: () -> Unit,
     onBusyChanged: (Boolean) -> Unit, onBackHandlerChanged: ((() -> Boolean)?) -> Unit, onCancel: () -> Unit,
 ) {
+    val menuMetrics = tvMenuMetrics()
     val scope = rememberCoroutineScope()
     val keyboard = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
@@ -201,9 +202,9 @@ private fun CatalogLibraryManagementContent(
         }
         return
     }
-    LazyColumn(state = listState, modifier = Modifier.requiredWidth(CatalogMenuStyle.Width).heightIn(max = 280.dp)
-        .automationId("library-management-list"), contentPadding = PaddingValues(horizontal = CatalogMenuStyle.Padding, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(CatalogMenuStyle.RowSpacing)) {
+    LazyColumn(state = listState, modifier = Modifier.requiredWidth(menuMetrics.width).heightIn(max = 280.dp)
+        .automationId("library-management-list"), contentPadding = PaddingValues(horizontal = menuMetrics.padding, vertical = menuMetrics.viewportPadding),
+        verticalArrangement = Arrangement.spacedBy(menuMetrics.rowSpacing)) {
         if (busy || loading && (page != ManagementPage.Folders || folders.isEmpty()))
             item("loading") { AppleLoadingIndicator(Modifier.padding(10.dp).size(16.dp)) }
         if (pendingRead != null) {
