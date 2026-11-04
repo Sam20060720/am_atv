@@ -208,12 +208,19 @@ internal fun CatalogCollectionBody(
             val target = itemModifier("status", "catalog-collection-empty", true, true)
             if (failed) ArtistTextAction(catalogRecoveryLabel(failureReason),
                 { performCatalogRecovery(failureReason, onRetry, onSignIn) }, target.fillMaxWidth())
-            else Box(target.fillMaxWidth().heightIn(min = 96.dp).focusable(contentActive), Alignment.Center) {
-                if (loading || !loaded) Row(verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    AppleLoadingIndicator(Modifier.size(18.dp))
-                    Text(stringResource(R.string.browse_tracks_loading), color = Color.White.copy(alpha = .6f), fontSize = 13.sp)
-                } else Text(stringResource(R.string.collection_empty), color = Color.White.copy(alpha = .6f), fontSize = 14.sp)
+            else {
+                var statusFocused by remember { mutableStateOf(false) }
+                val statusFocusKey = remember { Any() }
+                Box(target.fillMaxWidth().heightIn(min = 96.dp)
+                    .onFocusChanged { statusFocused = it.isFocused }
+                    .then(if (classic) Modifier.focusFrameTarget(statusFocused && contentActive, statusFocusKey, 10.dp) else Modifier)
+                    .focusable(contentActive), Alignment.Center) {
+                    if (loading || !loaded) Row(verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        AppleLoadingIndicator(Modifier.size(18.dp))
+                        Text(stringResource(R.string.browse_tracks_loading), color = Color.White.copy(alpha = .6f), fontSize = 13.sp)
+                    } else Text(stringResource(R.string.collection_empty), color = Color.White.copy(alpha = .6f), fontSize = 14.sp)
+                }
             }
         }
         if (hasFooter) item(key = "more", span = { GridItemSpan(maxLineSpan) }, contentType = "continuation") {

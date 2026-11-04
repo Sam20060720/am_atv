@@ -549,6 +549,7 @@ internal fun ArtistCover(item: Track, modifier: Modifier, onClick: () -> Unit) {
     val openActions = catalogMenuFor(item)
     val radius = if (artist) cardWidth / 2 else if (classic) ClassicBrowseVisuals.CardRadius else BrowseTokens.CardRadius
     FocusSurface(onClick, modifier.catalogMenuKey(item).width(cardWidth).height(cardHeight).pageTopRevealTarget(),
+        cornerRadius = if (classic) ClassicBrowseVisuals.CardRadius else 18.dp,
         focusedScale = if (classic) ClassicBrowseVisuals.CardFocusScale else BrowseTokens.CardFocusScale,
         focusedLift = if (classic) ClassicBrowseVisuals.CardLift else 0.dp, background = Color.Transparent, focusedBackground = Color.Transparent,
         onLongClick = openActions?.let { { it(item) } }) { focused ->

@@ -23,6 +23,137 @@ import java.io.File
 /** Public presentation switches only: no transport, queue, account or network mutations. */
 @RunWith(AndroidJUnit4::class)
 class InterfaceStyleSwitchTest {
+    /** Captures real focus rendering; the saved images still require visual inspection. */
+    @Test fun classicRemoteFocusPresentation() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue("Explicit classic focus check only", args.getString("allow_interface_focus") == "1")
+        check(Build.HARDWARE in setOf("ranchu", "goldfish")) { "Focus check is emulator-only" }
+        val runId = (args.getString("run_id") ?: "interface-focus-" + System.currentTimeMillis())
+            .also { require(it.matches(Regex("[A-Za-z0-9_.-]+"))) }
+        val directory = File(requireNotNull(instrumentation.context.getExternalFilesDir(null)), "interface-focus/$runId")
+        check(!directory.exists() && directory.mkdirs()) { "Do not overwrite an earlier focus check" }
+        val ui = RenderingSurveyUi(instrumentation)
+        val cases = JSONArray()
+        val report = JSONObject().put("run_id", runId).put("playback_operations", false)
+            .put("queue_mutations", false).put("account_mutations", false)
+            .put("session_continuity_tested", false).put("visual_review_required", true).put("cases", cases)
+        var original: String? = null
+        var failure: Throwable? = null
+        fun capture(name: String, owner: String) {
+            ui.settle(250) // Let the changed focus spring/outline reach its visible state.
+            val state = ui.snapshot()
+            check(owner in state.focused) { "$name has no actual native focus owner $owner" }
+            check(ui.device.takeScreenshot(File(directory, "$name.png")))
+            cases.put(JSONObject().put("case", name).put("screenshot", "$name.png")
+                .put("player_state_description", ui.playerStateDescription()).put("state", state.json(true)))
+        }
+        try {
+            ui.launch()
+            openSettings(ui)
+            original = selectedStyle(ui)
+            report.put("original_style", original)
+            if (original != "classic") {
+                activateStyle(instrumentation, ui, "classic")
+                awaitSelectedFocus(ui, "classic")
+            }
+            navigate(ui, "home")
+            ui.focus("nav-home")
+            capture("topbar-home", "nav-home")
+            val topbar = ui.snapshot()
+            fun navBounds(id: String) = requireNotNull(Rect.unflattenFromString(topbar.nodes.first { it.id == id }.bounds))
+            ui.key(if (navBounds("nav-browse").centerX() > navBounds("nav-home").centerX())
+                KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT)
+            ui.await("Remote focus did not move from Home to Browse", 2_000) { "nav-browse" in ui.snapshot().focused }
+            check(ui.has("browse-home")) { "Moving focus selected another tab" }
+            capture("topbar-browse-home-active", "nav-browse")
+
+            if (ui.has("nav-nowplaying")) {
+                ui.focus("nav-nowplaying")
+                ui.activate("nav-nowplaying", "navigation")
+                ui.awaitId("player-screen", 5_000)
+                ui.await("Player did not acquire native remote focus", 2_000) { "player-screen" in ui.snapshot().focused }
+                revealPlayerControls(ui)
+                capture("player-control", "player-screen")
+                ui.key(KeyEvent.KEYCODE_DPAD_UP, 160) // Focus progress only; never seek or confirm.
+                if ("player-progress" in ui.snapshot().selected) capture("player-progress", "player-screen")
+                else cases.put(JSONObject().put("case", "player-progress").put("status", "skipped")
+                    .put("reason", "Current retained item has no seekable progress zone"))
+                revealPlayerControls(ui)
+                val controls = ui.snapshot()
+                val ids = controls.nodes.filter { PLAYER_CONTROL.matches(it.id) && it.clickable }.map { it.id }.distinct()
+                val from = ids.indexOfFirst { it in controls.selected }
+                val to = ids.indexOf("player-queue")
+                check(from >= 0 && to >= 0) { "Player has no proven control selection/queue action" }
+                repeat(kotlin.math.abs(to - from)) {
+                    ui.key(if (to > from) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT, 55)
+                }
+                ui.await("Queue view does not own activation", 1_500) { "player-queue" in ui.snapshot().selected }
+                // The only player activation allowed by this test is opening its queue view.
+                val down = SystemClock.uptimeMillis()
+                fun center(action: Int) = KeyEvent(down, SystemClock.uptimeMillis(), action, KeyEvent.KEYCODE_DPAD_CENTER,
+                    0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_DPAD)
+                check(instrumentation.uiAutomation.injectInputEvent(center(KeyEvent.ACTION_DOWN), true))
+                check(instrumentation.uiAutomation.injectInputEvent(center(KeyEvent.ACTION_UP), true))
+                ui.awaitId("queue-panel", 3_000)
+                if (ui.snapshot().selected.any { it.startsWith("player-queue-item-") }) {
+                    capture("player-queue-card", "player-screen")
+                    ui.key(KeyEvent.KEYCODE_DPAD_UP, 160) // Queue card -> modes; no mode is activated.
+                } else cases.put(JSONObject().put("case", "player-queue-card").put("status", "skipped")
+                    .put("reason", "Current retained queue has no selected existing card"))
+                ui.awaitId("queue-mode-controls", 2_000)
+                capture("player-queue-modes", "player-screen")
+                report.put("player_back_steps", ui.leavePlayerWithBack())
+            } else cases.put(JSONObject().put("case", "player-surfaces").put("status", "skipped")
+                .put("reason", "No existing current track; this check never seeds playback"))
+
+            navigate(ui, "home")
+            ui.focus("nav-home")
+            ui.key(KeyEvent.KEYCODE_BACK, 160)
+            ui.awaitId("app-exit-dialog", 3_000)
+            ui.await("Exit prompt did not default to Stay", 2_000) { "app-exit-stay" in ui.snapshot().focused }
+            capture("exit-dialog-stay", "app-exit-stay")
+            ui.key(KeyEvent.KEYCODE_BACK, 0)
+            ui.awaitGone("app-exit-dialog")
+            report.put("status", "passed_pending_visual_review")
+        } catch (error: Throwable) {
+            failure = error
+            report.put("status", "failed").put("error", error.message?.take(500))
+            runCatching { ui.device.takeScreenshot(File(directory, "failure.png")) }
+        } finally {
+            val restoreStyle = original
+            if (restoreStyle != null) runCatching {
+                openSettings(ui)
+                if (selectedStyle(ui) != restoreStyle) {
+                    activateStyle(instrumentation, ui, restoreStyle)
+                    awaitSelectedFocus(ui, restoreStyle)
+                }
+                check(selectedStyle(ui) == restoreStyle)
+                report.put("restored_style", restoreStyle)
+            }.onFailure { error ->
+                report.put("restore_error", error.message?.take(500))
+                if (failure == null) failure = error
+            }
+            if (failure != null) report.put("status", "failed")
+            File(directory, "result.json").writeText(report.toString(2))
+            ui.close()
+        }
+        failure?.let { throw it }
+    }
+
+    private fun revealPlayerControls(ui: RenderingSurveyUi) {
+        // Back unwinds preview/queue/chrome only. Wait for each closing animation
+        // before another press so a stale visible node cannot cause player exit.
+        repeat(3) {
+            if (ui.has("player-controls") || ui.has("queue-panel")) ui.key(KeyEvent.KEYCODE_BACK, 420)
+        }
+        check(ui.has("player-screen") && !ui.has("player-controls") && !ui.has("queue-panel"))
+        ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 320) // Hidden controls consume this key without activating transport.
+        ui.await("Player controls have no virtual focus", 2_000) {
+            "player-screen" in ui.snapshot().focused && ui.snapshot().selected.any(PLAYER_CONTROL::matches)
+        }
+    }
+
     @Test fun stylesKeepPlaybackAndReturnOwnership() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val args = InstrumentationRegistry.getArguments()
@@ -287,5 +418,6 @@ class InterfaceStyleSwitchTest {
     private companion object {
         const val APPLE = "settings-interface-apple"
         const val CLASSIC = "settings-interface-classic"
+        val PLAYER_CONTROL = Regex("player-(previous|play-pause|next|lyrics-display|lyrics|queue|more|radio)")
     }
 }

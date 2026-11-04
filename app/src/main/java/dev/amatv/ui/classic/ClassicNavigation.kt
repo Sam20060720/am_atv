@@ -53,7 +53,6 @@ import dev.amatv.model.Destination
 import dev.amatv.ui.FocusMotionStyle
 import dev.amatv.ui.FocusSurface
 import dev.amatv.ui.LocalContentFocusEntry
-import dev.amatv.ui.LocalFocusFrameEnabled
 import dev.amatv.ui.LocalFocusMotionStyle
 import dev.amatv.ui.automationId
 
@@ -123,7 +122,8 @@ internal fun ClassicNavigation(
 
     CompositionLocalProvider(
         LocalContentFocusEntry provides null,
-        LocalFocusFrameEnabled provides false,
+        // The selected page keeps its white fill. Actual remote focus inherits
+        // the shared browse frame, including its visibility and blur cleanup.
         LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Spring,
     ) {
         Row(

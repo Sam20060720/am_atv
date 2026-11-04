@@ -69,12 +69,17 @@ import kotlin.math.min
 
 /** Normalize only the control overlay. The artwork and lyric viewport retain their density. */
 @Composable
-internal fun TvPlaybackViewport(lowPerformanceMode: Boolean = false, content: @Composable () -> Unit) {
+internal fun TvPlaybackViewport(
+    lowPerformanceMode: Boolean = false,
+    focusVisibility: State<Float>? = null,
+    content: @Composable () -> Unit,
+) {
     if (LocalInterfaceStyle.current == InterfaceStyle.Classic) {
         // Classic controls use the original player density, like its artwork
         // and lyric stage. Only their presentation changes, never player state.
-        CompositionLocalProvider(LocalFocusMotionStyle provides
-            if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Spring,
+        CompositionLocalProvider(
+            LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Spring,
+            LocalFocusFrameVisibility provides focusVisibility,
         ) { content() }
         return
     }
@@ -172,6 +177,12 @@ internal fun TvPlaybackButton(
             .focusProperties { canFocus = false }
             .hoverable(interactionSource = interaction, enabled = interactive)
             .clickable(interactionSource = interaction, indication = null, enabled = interactive, onClick = onClick)
+            .then(if (classic) Modifier.focusFrameTarget(
+                selected = inputFocused,
+                key = "player-control:$controlId",
+                cornerRadius = 20.dp,
+                visualScale = (1f + .08f * focus.value) * pressScale.value,
+            ) else Modifier)
             .graphicsLayer {
                 val growth = if (classic) .08f else 37f / 33f - 1f
                 val scale = if (enabled) (1f + growth * focus.value) * pressScale.value else 1f
@@ -307,7 +318,8 @@ private fun ClassicPlaybackProgress(
     val hasDuration = durationMs > 0L
     val textAlpha = if (scrubPositionMs != null) 1f else if (isFocused) .95f else .60f
     Column(Modifier.fillMaxWidth().automationId("player-progress").semantics { selected = isFocused }
-        .focusFrameTarget(isFocused, "player-progress", 12.dp).padding(vertical = 4.dp)) {
+        .focusFrameTarget(isFocused && LocalFocusTargetsEnabled.current, "player-progress", 12.dp)
+        .padding(vertical = 4.dp)) {
         Canvas(Modifier.fillMaxWidth().height(18.dp)) {
             val h = (4f + 4f * focus.value).dp.toPx()
             val y = (size.height - h) / 2f

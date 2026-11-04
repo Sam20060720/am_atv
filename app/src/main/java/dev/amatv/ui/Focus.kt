@@ -191,6 +191,8 @@ fun FocusSurface(
     val frameController = LocalFocusFrameController.current
     val frameEnabled = LocalFocusFrameEnabled.current
     val frameVisibility = LocalFocusFrameVisibility.current
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val localFrameFallback = !frameEnabled || frameController == null
     val scrollPlacement = LocalFocusScrollPlacement.current
     val frameKey = remember { Any() }
     val contentEntry = LocalContentFocusEntry.current
@@ -380,17 +382,30 @@ fun FocusSurface(
                     cornerRadius = CornerRadius(radius, radius),
                 )
                 if (showBorder) {
+                    // A dialog's unified outer frame owns Classic focus;
+                    // retain only the idle decorative stroke beneath it.
+                    val borderFocus = if (classic && localFrameFallback) 0f else focus
                     drawRoundRect(
                         color = lerp(
                             Color.White.copy(alpha = 0.08f),
                             Color.White.copy(alpha = 0.92f),
-                            focus,
+                            borderFocus,
                         ),
                         cornerRadius = CornerRadius(radius, radius),
                         style = androidx.compose.ui.graphics.drawscope.Stroke(
-                            width = (1.dp.toPx() * (1f + focus)),
+                            width = (1.dp.toPx() * (1f + borderFocus)),
                         ),
                     )
+                }
+            } else Modifier)
+            .then(if (classic) Modifier.localFocusFrame(cornerRadius) {
+                if (!interactive) 0f else {
+                    // Dialog controls cannot draw into the Activity overlay.
+                    // Keep keyboard focus there equally visible, while normal
+                    // browse focus continues to use only its shared overlay.
+                    val focusOpacity = if (localFrameFallback) focusProgress.value else 0f
+                    val hoverOpacity = if (hovered && !inputFocused) 0.45f else 0f
+                    maxOf(focusOpacity, hoverOpacity) * (frameVisibility?.value ?: 1f)
                 }
             } else Modifier)
             .focusRequester(contentRequester)

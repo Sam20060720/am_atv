@@ -860,7 +860,7 @@ fun PlayerScreen(
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 30.dp),
         ) {
             CompositionLocalProvider(LocalFocusFrameVisibility provides chromeFocusVisibility,
-                LocalFocusFrameEnabled provides false,
+                LocalFocusFrameEnabled provides (classic && LocalFocusFrameEnabled.current && LocalFocusTargetsEnabled.current),
                 LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Television,
                 LocalTelevisionFocusTimings provides TelevisionFocusTimings(75, 150)) {
                 QueueModeControls(
@@ -880,7 +880,7 @@ fun PlayerScreen(
                 else fadeOut(tween(300, easing = LinearEasing)),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
-            TvPlaybackViewport(lowPerformanceMode) {
+            TvPlaybackViewport(lowPerformanceMode, focusVisibility = chromeFocusVisibility) {
                 Column(
                     Modifier.automationId("player-controls").fillMaxWidth()
                         .background(Brush.verticalGradient(
@@ -1200,6 +1200,7 @@ private fun LyricsDisplaySettingsDialog(
                     },
                     modifier = Modifier.width(112.dp).height(42.dp),
                     cornerRadius = 21.dp,
+                    showBorder = LocalInterfaceStyle.current == InterfaceStyle.Classic,
                     background = Color.White.copy(alpha = 0.12f),
                     focusedBackground = Color.White,
                 ) { focused ->
@@ -2683,6 +2684,7 @@ private fun KaraokeLyricLine(
     positionState: State<Long>,
     pronunciationLarger: Boolean,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val hasMainPronunciation = !line.pronunciationText.isNullOrBlank() ||
         line.words.any { !it.pronunciationText.isNullOrBlank() }
     val compactMainLocalization = hasMainPronunciation && !line.translation.isNullOrBlank()
@@ -2708,6 +2710,9 @@ private fun KaraokeLyricLine(
                 .padding(start = 24.dp, end = 84.dp, top = 2.dp, bottom = 10.dp)
                 .then(if (isFocused) Modifier.background(
                     Color.White.copy(alpha = 0.18f), RoundedCornerShape(16.dp),
+                ) else Modifier)
+                .then(if (classic && isFocused) Modifier.border(
+                    2.dp, Color.White.copy(alpha = .92f), RoundedCornerShape(16.dp),
                 ) else Modifier)
                 .padding(horizontal = 14.dp, vertical = 6.dp),
         ) {
@@ -2863,6 +2868,9 @@ private fun KaraokeLyricLine(
             .padding(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 8.dp)
             .then(if (isFocused) Modifier.background(
                 Color.White.copy(alpha = 0.18f), RoundedCornerShape(16.dp),
+            ) else Modifier)
+            .then(if (classic && isFocused) Modifier.border(
+                2.dp, Color.White.copy(alpha = .92f), RoundedCornerShape(16.dp),
             ) else Modifier)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         contentAlignment = if (alignEnd) Alignment.TopEnd else Alignment.TopStart,
@@ -3810,6 +3818,8 @@ private fun QueuePanel(
     audioSpectrum: () -> AudioSpectrum,
     bandsEnabled: Boolean,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val focusEnabled = LocalFocusTargetsEnabled.current
     val density = LocalDensity.current
     val targetStageOffsetPx = with(density) {
         if (controlsVisible) {
@@ -3887,6 +3897,12 @@ private fun QueuePanel(
                                 track = item,
                                 modifier = Modifier
                                     .size(176.dp)
+                                    .then(if (classic) Modifier.focusFrameTarget(
+                                        selected = focused && focusEnabled,
+                                        key = "player-queue:${queueKeys.getOrNull(index) ?: index}",
+                                        cornerRadius = 16.dp,
+                                        visualScale = scale,
+                                    ) else Modifier)
                                     .zIndex(if (focused) 1f else 0f)
                                     .graphicsLayer {
                                         scaleX = scale

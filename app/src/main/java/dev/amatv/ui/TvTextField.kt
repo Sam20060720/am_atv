@@ -66,7 +66,10 @@ internal fun TvTextField(
     val hovered = interactive && hasHover
     val search = size == TvTextFieldSize.Search
     val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
-    val minimumHeight = if (classic) { if (search) 56.dp else 44.dp } else if (search) 42.5.dp else 33.dp
+    val minimumHeight = if (classic && search) 56.dp else if (search) 42.5.dp else 33.dp
+    val frameKey = remember { Any() }
+    val globalFrame = LocalFocusFrameEnabled.current && LocalFocusFrameController.current != null
+    val frameVisibility = LocalFocusFrameVisibility.current
     val foreground = when {
         !interactive -> Color.White.copy(alpha = 0.4f)
         classic -> Color.White
@@ -100,8 +103,8 @@ internal fun TvTextField(
     })
     val textStyle = LocalTextStyle.current.copy(
         color = foreground,
-        fontSize = if (classic) 16.sp else if (search) 28.5.sp else 12.sp,
-        lineHeight = if (classic) 24.sp else if (search) 34.sp else 17.sp,
+        fontSize = if (classic && search) 16.sp else if (search) 28.5.sp else 12.sp,
+        lineHeight = if (classic && search) 24.sp else if (search) 34.sp else 17.sp,
         fontWeight = if (classic) FontWeight.Normal else if (search) FontWeight.Bold else FontWeight.Medium,
     )
     val shape = if (classic) MaterialTheme.shapes.extraSmall else RoundedCornerShape(if (search) 21.25.dp else 16.5.dp)
@@ -114,6 +117,15 @@ internal fun TvTextField(
             value = value,
             onValueChange = onValueChange,
             modifier = modifier.heightIn(min = minimumHeight)
+                .then(if (classic) Modifier.focusFrameTarget(focused, frameKey, 4.dp)
+                    .localFocusFrame(4.dp) {
+                        val opacity = when {
+                            focused && !globalFrame -> 1f
+                            hovered && !focused -> .45f
+                            else -> 0f
+                        }
+                        opacity * (frameVisibility?.value ?: 1f)
+                    } else Modifier)
                 .clip(shape).background(background).border(if (classic && focused) 2.dp else 1.dp, border, shape)
                 .hoverable(interactionSource = interaction, enabled = interactive),
             enabled = interactive,
@@ -128,8 +140,8 @@ internal fun TvTextField(
             decorationBox = { innerTextField ->
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = minimumHeight)
-                        .padding(horizontal = if (classic) 16.dp else if (search) 0.dp else 12.dp,
-                            vertical = if (classic) 12.dp else if (search) 0.dp else 8.dp),
+                        .padding(horizontal = if (classic && search) 16.dp else if (search) 0.dp else 12.dp,
+                            vertical = if (classic && search) 12.dp else if (search) 0.dp else 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {

@@ -665,6 +665,7 @@ private fun SearchCover(item: Track, modifier: Modifier, onOpen: () -> Unit) {
     FocusSurface(onOpen, modifier.catalogMenuKey(item)
         .then(if (classic) Modifier.width(ClassicBrowseVisuals.CardWidth).height(ClassicBrowseVisuals.CardHeight) else Modifier.fillMaxWidth())
         .onFocusChanged { if (it.isFocused) backdrop?.select(item) },
+        cornerRadius = if (classic) ClassicBrowseVisuals.CardRadius else 18.dp,
         focusedScale = 1.035f, focusedLift = if (classic) ClassicBrowseVisuals.CardLift else 0.dp, background = Color.Transparent, focusedBackground = Color.Transparent,
         onLongClick = actions?.let { { it(item) } }) { focused ->
         Column(horizontalAlignment = if (artist) Alignment.CenterHorizontally else Alignment.Start) {

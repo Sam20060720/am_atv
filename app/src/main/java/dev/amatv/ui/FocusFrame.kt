@@ -23,6 +23,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.nativeCanvas
@@ -166,6 +167,28 @@ internal fun FocusFrameOverlay(controller: FocusFrameController) {
         val h = (height * scale + inset * 2f).coerceAtLeast(0f)
         val r = (radius * scale + inset).coerceAtLeast(0f)
         painter.draw(drawContext.canvas.nativeCanvas, x, y, w, h, r, opacity, density)
+    }
+}
+
+/** Window-local fallback for controls that cannot use the Activity's overlay. */
+internal fun Modifier.localFocusFrame(
+    cornerRadius: Dp,
+    opacity: () -> Float,
+): Modifier = drawWithCache {
+    // Idle/deferred cards retain just a draw node. Native paint and gradient
+    // objects are created only if this target actually needs a local outline.
+    var painter: FocusFramePainter? = null
+    val inset = 4.dp.toPx()
+    val radius = cornerRadius.toPx() + inset
+    onDrawWithContent {
+        drawContent()
+        val alpha = opacity().coerceIn(0f, 1f)
+        if (alpha > 0.01f) {
+            val activePainter = painter ?: FocusFramePainter().also { painter = it }
+            activePainter.draw(drawContext.canvas.nativeCanvas, -inset, -inset,
+                size.width + inset * 2f, size.height + inset * 2f,
+                radius, alpha, density)
+        }
     }
 }
 

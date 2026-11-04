@@ -23,6 +23,12 @@ Changing the setting keeps the user in Settings and restores focus to the chosen
 option. The handoff has a bounded lifetime and ownership token so a cancelled
 request cannot overwrite a later choice. Unknown stored values select Apple.
 
+Classic navigation and virtual player controls register with the shared focus
+overlay. Controls in native Dialog windows use the same painter locally because
+the Activity overlay cannot draw above another window. A local fallback is not
+drawn over an enabled global frame. Selection fills remain separate from remote
+focus, and inactive controls release their frame when a menu takes input.
+
 Classic includes the current Radio, artist, full-section, Library, pagination,
 context-menu and queue operations even when the original interface had no such
 page. New surfaces use classic geometry while retaining their current behavior.
@@ -37,3 +43,8 @@ kept in ignored `work/` and `dist/` directories.
 
 The collection row-placement unit test covers both the Apple list's two header
 items and the Classic list's separate metadata column.
+
+`InterfaceStyleSwitchTest#classicRemoteFocusPresentation` is a separate opt-in
+focus check (`allow_interface_focus=1`). Its screenshots require visual review;
+semantics alone do not prove a frame was rendered. It covers existing player UI
+without starting playback, and records unavailable surfaces as skipped.

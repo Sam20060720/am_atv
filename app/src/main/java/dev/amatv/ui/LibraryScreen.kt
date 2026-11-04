@@ -598,7 +598,8 @@ private fun LibraryCover(track: Track, modifier: Modifier, onClick: () -> Unit) 
     FocusSurface(onClick, modifier.catalogMenuKey(track).onFocusChanged { if (it.isFocused) backdrop?.select(track) }.fillMaxWidth(),
         onLongClick = actionMenu?.let { open -> { open(track) } }, onLongClickLabel = stringResource(R.string.actions_menu),
         focusedScale = if (classic) ClassicBrowseVisuals.CardFocusScale else 1.025f, focusedLift = if (classic) ClassicBrowseVisuals.CardLift else 0.dp, focusedElevation = 0.dp,
-        cornerRadius = if (artist) 64.dp else radius, background = Color.Transparent, focusedBackground = Color.Transparent,
+        cornerRadius = if (classic) ClassicBrowseVisuals.CardRadius else if (artist) 64.dp else radius,
+        background = Color.Transparent, focusedBackground = Color.Transparent,
     ) { focused ->
         Column(horizontalAlignment = if (artist) Alignment.CenterHorizontally else Alignment.Start) {
             val shape = if (artist) CircleShape else RoundedCornerShape(radius)

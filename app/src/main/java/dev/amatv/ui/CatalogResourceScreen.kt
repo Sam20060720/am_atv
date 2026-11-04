@@ -295,7 +295,9 @@ internal fun ResourceReadingSurface(
     requester: FocusRequester, menuFocus: FocusRequester, aboveFocus: FocusRequester? = null,
     onFocused: () -> Unit, modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     var focused by remember { mutableStateOf(false) }
+    val focusFrameKey = remember { Any() }
     val targetsEnabled = active && LocalFocusTargetsEnabled.current
     val scope = rememberCoroutineScope()
     val scrollJob = remember { arrayOfNulls<Job>(1) }
@@ -333,7 +335,8 @@ internal fun ResourceReadingSurface(
                     }
                 }
             }
-        }.background(if (focused) Color.White.copy(alpha = 0.055f) else Color.Transparent, RoundedCornerShape(10.dp))
+        }.then(if (classic) Modifier.focusFrameTarget(focused && targetsEnabled, focusFrameKey, 10.dp) else Modifier)
+        .background(if (focused) Color.White.copy(alpha = 0.055f) else Color.Transparent, RoundedCornerShape(10.dp))
         .semantics(mergeDescendants = true) {}.focusable(enabled = targetsEnabled).padding(horizontal = 12.dp, vertical = 10.dp),
         content = content)
 }
