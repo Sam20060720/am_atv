@@ -131,7 +131,8 @@ internal fun CatalogSheetRow(
     label: String, modifier: Modifier = Modifier, enabled: Boolean = true, selected: Boolean = false,
     retainFocusWhenDisabled: Boolean = true,
     artwork: Track? = null, icon: ImageVector? = null, submenu: Boolean = false,
-    subtitle: String? = null, value: String? = null, onClick: () -> Unit,
+    subtitle: String? = null, value: String? = null, singleLine: Boolean = false,
+    onClick: () -> Unit,
 ) {
     val metrics = tvMenuMetrics()
     val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
@@ -148,12 +149,13 @@ internal fun CatalogSheetRow(
         val valueWidth = if (value != null) maxWidth * .34f else 0.dp
         val titleWidth = with(density) { (maxWidth - metrics.iconSlot - 10.dp - valueWidth -
             if (submenu) 15.dp else 0.dp).toPx().roundToInt().coerceAtLeast(1) }
-        val measured = textMeasurer.measure(label, style, maxLines = 2, overflow = TextOverflow.Ellipsis,
+        val labelLines = if (singleLine) 1 else 2
+        val measured = textMeasurer.measure(label, style, maxLines = labelLines, overflow = TextOverflow.Ellipsis,
             constraints = Constraints(maxWidth = titleWidth))
         val baseHeight = if (measured.lineCount > 1 || subtitle != null) metrics.twoLineHeight else metrics.rowHeight
         val subtitleStyle = TextStyle(fontSize = if (classic) 12.sp else 11.sp,
             lineHeight = if (classic) 17.sp else 14.sp, fontFamily = style.fontFamily)
-        val rowHeight = if (subtitle == null) {
+        val rowHeight = if (singleLine) metrics.rowHeight else if (subtitle == null) {
             if (classic) maxOf(baseHeight, with(density) { measured.size.height.toDp() } + 8.dp) else baseHeight
         } else {
             val subtitleHeight = textMeasurer.measure(subtitle, subtitleStyle, maxLines = 1,
@@ -205,12 +207,14 @@ internal fun CatalogSheetRow(
                     }
                 }
                 Column(Modifier.weight(1f)) {
-                    Text(label, color = color, style = style, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    if (subtitle != null) Text(subtitle, color = color.copy(alpha = color.alpha * .65f), style = subtitleStyle,
+                    Text(label, color = color, style = style, maxLines = labelLines, overflow = TextOverflow.Ellipsis)
+                    if (subtitle != null && !singleLine) Text(subtitle, color = color.copy(alpha = color.alpha * .65f), style = subtitleStyle,
                         maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (value != null) Text(value, color = color.copy(alpha = color.alpha * .72f),
-                    fontSize = if (classic) 13.sp else 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = if (singleLine) style else LocalTextStyle.current,
+                    fontSize = if (singleLine) metrics.textSize else if (classic) 13.sp else 11.sp,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.widthIn(max = valueWidth).padding(start = 8.dp))
                 if (submenu) Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null,
                     Modifier.padding(start = 3.dp).size(12.dp), tint = color.copy(alpha = color.alpha * .65f))

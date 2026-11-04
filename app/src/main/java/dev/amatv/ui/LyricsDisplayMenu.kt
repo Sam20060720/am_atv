@@ -12,7 +12,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Translate
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -20,7 +19,6 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
@@ -28,11 +26,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import dev.amatv.R
@@ -75,8 +70,8 @@ internal fun LyricsDisplaySettingsDialog(
     // The intended pane changes synchronously, before the shared fade swaps
     // rendered content. Back during that fade therefore pops rather than closes.
     var requestedPicker by remember { mutableStateOf<LyricsLanguagePicker?>(null) }
-    var returnRow by remember { mutableStateOf("translation") }
-    var pendingFocus by remember { mutableStateOf<String?>("translation") }
+    var returnRow by remember { mutableStateOf("close") }
+    var pendingFocus by remember { mutableStateOf<String?>("close") }
     var focusedRow by remember { mutableStateOf<String?>(null) }
     var lastFocusedRow by remember(picker) { mutableStateOf<String?>(null) }
     var backHeld by remember { mutableStateOf(false) }
@@ -149,16 +144,16 @@ internal fun LyricsDisplaySettingsDialog(
                 motion.entranceComplete && !motion.closing && !motion.transitioning
             val pronunciationOptions = remember(appLanguageTag) { listOf("en-US", appLanguageTag).distinct() }
             val entryIds = when (picker) {
-                null -> listOf("translation", "translation-language", "pronunciation", "pronunciation-language", "larger")
-                LyricsLanguagePicker.Translation -> TranslationLanguageTags.indices.map { "option-$it" }
-                LyricsLanguagePicker.Pronunciation -> pronunciationOptions.indices.map { "option-$it" }
-                LyricsLanguagePicker.LargerText -> listOf("option-0", "option-1")
+                null -> listOf("close", "translation", "translation-language", "pronunciation", "pronunciation-language", "larger")
+                LyricsLanguagePicker.Translation -> listOf("back") + TranslationLanguageTags.indices.map { "option-$it" }
+                LyricsLanguagePicker.Pronunciation -> listOf("back") + pronunciationOptions.indices.map { "option-$it" }
+                LyricsLanguagePicker.LargerText -> listOf("back", "option-0", "option-1")
             }
             val requesters = remember(entryIds) {
-                (entryIds + "back" + "done").associateWith { FocusRequester() }
+                entryIds.associateWith { FocusRequester() }
             }
             val scroll = if (picker == null) mainScroll else pickerScroll
-            val navigationIds = if (picker == null) entryIds + "done" else listOf("back") + entryIds
+            val navigationIds = entryIds
             val ready = active && focusedRow != null && pendingFocus == null
             val latestReady by rememberUpdatedState(ready)
             LaunchedEffect(picker, pendingFocus, focusedRow, active) {
@@ -189,19 +184,11 @@ internal fun LyricsDisplaySettingsDialog(
                     } else if (focusedRow == id) focusedRow = null
                 }
             fun rowModifier(id: String, index: Int): Modifier = target(id).focusProperties {
-                up = entryIds.getOrNull(index - 1)?.let(requesters::getValue)
-                    ?: if (picker != null) requesters.getValue("back") else FocusRequester.Cancel
-                down = entryIds.getOrNull(index + 1)?.let(requesters::getValue)
-                    ?: if (picker == null) requesters.getValue("done") else FocusRequester.Cancel
+                up = entryIds.getOrNull(index - 1)?.let(requesters::getValue) ?: FocusRequester.Cancel
+                down = entryIds.getOrNull(index + 1)?.let(requesters::getValue) ?: FocusRequester.Cancel
                 left = FocusRequester.Cancel
                 right = FocusRequester.Cancel
             }
-            val title = stringResource(when (picker) {
-                null -> R.string.player_lyrics_display_title
-                LyricsLanguagePicker.Translation -> R.string.player_lyrics_choose_translation_language
-                LyricsLanguagePicker.Pronunciation -> R.string.player_lyrics_choose_pronunciation_script
-                LyricsLanguagePicker.LargerText -> R.string.player_lyrics_larger_text
-            })
             CompositionLocalProvider(
                 LocalFocusTargetsEnabled provides active,
                 LocalContentFocusEntry provides null,
@@ -255,108 +242,84 @@ internal fun LyricsDisplaySettingsDialog(
                             .automationId("lyrics-menu-panel")
                             .focusGroup().pointerInput(Unit) { detectTapGestures { } },
                             material = material, motionEnabled = motion.motionEnabled) {
-                            Column(Modifier.tvMenuPane(motion)) {
-                            if (picker == null) {
-                                Text(title, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.padding(horizontal = metrics.viewportPadding, vertical = 6.dp))
-                                Text(stringResource(R.string.player_lyrics_source_language) + ": " +
-                                    stringResource(R.string.player_lyrics_source_auto),
-                                    color = Color.White.copy(alpha = .62f), fontSize = 12.sp,
-                                    modifier = Modifier.padding(horizontal = metrics.viewportPadding, vertical = 4.dp))
-                            } else {
-                                CatalogSheetRow(title, target("back").automationId("lyrics-menu-back")
-                                    .padding(horizontal = metrics.viewportPadding).focusProperties {
-                                        up = FocusRequester.Cancel; down = requesters.getValue(entryIds.first())
-                                        left = FocusRequester.Cancel; right = FocusRequester.Cancel
-                                    }, icon = Icons.AutoMirrored.Rounded.ArrowBack, onClick = ::back)
-                            }
-                            CatalogSheetSeparator()
-                            LazyColumn(state = scroll, modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
+                            LazyColumn(state = scroll,
+                                modifier = Modifier.fillMaxWidth().tvMenuPane(motion),
                                 verticalArrangement = Arrangement.spacedBy(metrics.rowSpacing),
                                 contentPadding = PaddingValues(metrics.viewportPadding)) {
                                 itemsIndexed(entryIds, key = { _, id -> id }) { index, id ->
                                     val row = rowModifier(id, index)
-                                    when (picker) {
-                                        null -> when (id) {
-                                            "translation" -> CatalogSheetRow(
-                                                stringResource(R.string.player_lyrics_translation),
-                                                row.automationId("lyrics-menu-translation"), selected = translationEnabled,
-                                                icon = Icons.Rounded.Translate,
-                                                subtitle = stringResource(when {
-                                                    translationEnabled && enhancementsFailed -> R.string.player_lyrics_enhancement_load_failed
-                                                    translationEnabled && !enhancementsReady -> R.string.player_lyrics_enhancement_loading
-                                                    translationEnabled && !translationAvailable -> R.string.player_lyrics_translation_unavailable
-                                                    else -> R.string.player_lyrics_translation_hint
-                                                }),
-                                                value = stringResource(if (translationEnabled) R.string.player_lyrics_display_on else R.string.player_lyrics_display_off),
-                                                onClick = { onTranslationChange(!translationEnabled) })
-                                            "translation-language" -> CatalogSheetRow(
-                                                stringResource(R.string.player_lyrics_translate_to),
-                                                row.automationId("lyrics-menu-translation-language"), submenu = true,
-                                                value = if (translationLanguageTag.isBlank()) stringResource(
-                                                    R.string.player_lyrics_language_follow_app_format, languageName(appLanguageTag))
-                                                    else languageName(translationLanguageTag),
-                                                onClick = { openPicker(LyricsLanguagePicker.Translation, id) })
-                                            "pronunciation" -> CatalogSheetRow(
-                                                stringResource(R.string.player_lyrics_pronunciation),
-                                                row.automationId("lyrics-menu-pronunciation"), selected = pronunciationEnabled,
-                                                subtitle = stringResource(when {
-                                                    pronunciationEnabled && enhancementsFailed -> R.string.player_lyrics_enhancement_load_failed
-                                                    pronunciationEnabled && !enhancementsReady -> R.string.player_lyrics_enhancement_loading
-                                                    pronunciationEnabled && !pronunciationAvailable -> R.string.player_lyrics_pronunciation_unavailable
-                                                    else -> R.string.player_lyrics_pronunciation_hint
-                                                }),
-                                                value = stringResource(if (pronunciationEnabled) R.string.player_lyrics_display_on else R.string.player_lyrics_display_off),
-                                                onClick = { onPronunciationChange(!pronunciationEnabled) })
-                                            "pronunciation-language" -> CatalogSheetRow(
-                                                stringResource(R.string.player_lyrics_pronunciation_script),
-                                                row.automationId("lyrics-menu-pronunciation-language"), submenu = true,
-                                                value = if (pronunciationLanguageTag == "en-US") stringResource(R.string.player_lyrics_pronunciation_latin)
-                                                    else stringResource(R.string.player_lyrics_pronunciation_app_script_format, languageName(pronunciationLanguageTag)),
-                                                onClick = { openPicker(LyricsLanguagePicker.Pronunciation, id) })
-                                            "larger" -> CatalogSheetRow(
-                                                stringResource(R.string.player_lyrics_larger_text),
-                                                row.automationId("lyrics-larger-text"), submenu = true,
-                                                value = stringResource(if (pronunciationLarger) R.string.player_lyrics_larger_pronunciation else R.string.player_lyrics_larger_lyrics),
-                                                onClick = { openPicker(LyricsLanguagePicker.LargerText, id) })
-                                        }
-                                        LyricsLanguagePicker.Translation -> {
-                                            val tag = TranslationLanguageTags[index]
-                                            CatalogSheetRow(
-                                                if (tag.isBlank()) stringResource(R.string.player_lyrics_language_follow_app_format, languageName(appLanguageTag))
-                                                else languageName(tag),
-                                                row.automationId("lyrics-translation-language-${tag.ifBlank { "app" }}"),
-                                                selected = tag == translationLanguageTag,
-                                                onClick = { onTranslationLanguageChange(tag); back() })
-                                        }
-                                        LyricsLanguagePicker.Pronunciation -> {
-                                            val tag = pronunciationOptions[index]
-                                            CatalogSheetRow(
-                                                if (tag == "en-US") stringResource(R.string.player_lyrics_pronunciation_latin)
-                                                else stringResource(R.string.player_lyrics_pronunciation_app_script_format, languageName(tag)),
-                                                row.automationId("lyrics-pronunciation-language-$tag"),
-                                                selected = tag == pronunciationLanguageTag,
-                                                onClick = { onPronunciationLanguageChange(tag); back() })
-                                        }
-                                        LyricsLanguagePicker.LargerText -> {
-                                            val larger = index == 1
-                                            CatalogSheetRow(stringResource(if (larger) R.string.player_lyrics_larger_pronunciation else R.string.player_lyrics_larger_lyrics),
-                                                row.automationId(if (larger) "lyrics-larger-pronunciation" else "lyrics-larger-lyrics"),
-                                                selected = larger == pronunciationLarger,
-                                                onClick = { onPronunciationLargerChange(larger); back() })
+                                    when (id) {
+                                        "close" -> CatalogSheetRow(
+                                            stringResource(R.string.player_lyrics_menu_close),
+                                            row.automationId("lyrics-menu-close"), icon = Icons.Rounded.Close,
+                                            singleLine = true, onClick = ::back)
+                                        "back" -> CatalogSheetRow(
+                                            stringResource(R.string.player_lyrics_language_back),
+                                            row.automationId("lyrics-menu-back"), icon = Icons.AutoMirrored.Rounded.ArrowBack,
+                                            singleLine = true, onClick = ::back)
+                                        else -> when (picker) {
+                                            null -> when (id) {
+                                                "translation" -> CatalogSheetRow(
+                                                    stringResource(R.string.player_lyrics_translation),
+                                                    row.automationId("lyrics-menu-translation"), selected = translationEnabled,
+                                                    icon = Icons.Rounded.Translate, singleLine = true,
+                                                    value = stringResource(toggleStatus(translationEnabled, translationAvailable,
+                                                        enhancementsReady, enhancementsFailed)),
+                                                    onClick = { onTranslationChange(!translationEnabled) })
+                                                "translation-language" -> CatalogSheetRow(
+                                                    stringResource(R.string.player_lyrics_translate_to),
+                                                    row.automationId("lyrics-menu-translation-language"), submenu = true, singleLine = true,
+                                                    value = if (translationLanguageTag.isBlank()) stringResource(R.string.player_lyrics_menu_follow_app)
+                                                        else lyricsLanguageValue(translationLanguageTag, appLocale),
+                                                    onClick = { openPicker(LyricsLanguagePicker.Translation, id) })
+                                                "pronunciation" -> CatalogSheetRow(
+                                                    stringResource(R.string.player_lyrics_pronunciation),
+                                                    row.automationId("lyrics-menu-pronunciation"), selected = pronunciationEnabled, singleLine = true,
+                                                    value = stringResource(toggleStatus(pronunciationEnabled, pronunciationAvailable,
+                                                        enhancementsReady, enhancementsFailed)),
+                                                    onClick = { onPronunciationChange(!pronunciationEnabled) })
+                                                "pronunciation-language" -> CatalogSheetRow(
+                                                    stringResource(R.string.player_lyrics_pronunciation_script),
+                                                    row.automationId("lyrics-menu-pronunciation-language"), submenu = true, singleLine = true,
+                                                    value = stringResource(if (pronunciationLanguageTag == "en-US") R.string.player_lyrics_menu_latin
+                                                        else R.string.player_lyrics_menu_follow_app),
+                                                    onClick = { openPicker(LyricsLanguagePicker.Pronunciation, id) })
+                                                "larger" -> CatalogSheetRow(
+                                                    stringResource(R.string.player_lyrics_larger_text),
+                                                    row.automationId("lyrics-larger-text"), submenu = true, singleLine = true,
+                                                    value = stringResource(if (pronunciationLarger) R.string.player_lyrics_menu_pronunciation_short
+                                                        else R.string.player_lyrics),
+                                                    onClick = { openPicker(LyricsLanguagePicker.LargerText, id) })
+                                            }
+                                            LyricsLanguagePicker.Translation -> {
+                                                val tag = TranslationLanguageTags[id.removePrefix("option-").toInt()]
+                                                CatalogSheetRow(
+                                                    if (tag.isBlank()) stringResource(R.string.player_lyrics_menu_follow_app)
+                                                        else languageName(tag),
+                                                    row.automationId("lyrics-translation-language-${tag.ifBlank { "app" }}"),
+                                                    selected = tag == translationLanguageTag, singleLine = true,
+                                                    onClick = { onTranslationLanguageChange(tag); back() })
+                                            }
+                                            LyricsLanguagePicker.Pronunciation -> {
+                                                val tag = pronunciationOptions[id.removePrefix("option-").toInt()]
+                                                CatalogSheetRow(
+                                                    if (tag == "en-US") stringResource(R.string.player_lyrics_pronunciation_latin)
+                                                        else stringResource(R.string.player_lyrics_pronunciation_app_script_format, languageName(tag)),
+                                                    row.automationId("lyrics-pronunciation-language-$tag"),
+                                                    selected = tag == pronunciationLanguageTag, singleLine = true,
+                                                    onClick = { onPronunciationLanguageChange(tag); back() })
+                                            }
+                                            LyricsLanguagePicker.LargerText -> {
+                                                val larger = id == "option-1"
+                                                CatalogSheetRow(stringResource(if (larger) R.string.player_lyrics_larger_pronunciation
+                                                        else R.string.player_lyrics_larger_lyrics),
+                                                    row.automationId(if (larger) "lyrics-larger-pronunciation" else "lyrics-larger-lyrics"),
+                                                    selected = larger == pronunciationLarger, singleLine = true,
+                                                    onClick = { onPronunciationLargerChange(larger); back() })
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            if (picker == null) {
-                                CatalogSheetSeparator()
-                                CatalogSheetRow(stringResource(R.string.player_lyrics_display_done),
-                                    target("done").automationId("lyrics-menu-done").padding(horizontal = metrics.viewportPadding)
-                                        .focusProperties {
-                                            up = requesters.getValue(entryIds.last()); down = FocusRequester.Cancel
-                                            left = FocusRequester.Cancel; right = FocusRequester.Cancel
-                                        }, icon = Icons.Rounded.Close, onClick = ::back)
-                            }
                             }
                         }
                     }
@@ -364,4 +327,23 @@ internal fun LyricsDisplaySettingsDialog(
             }
         }
     }
+}
+
+/** Compact main-menu values preserve load state without a second line of help text. */
+private fun toggleStatus(enabled: Boolean, available: Boolean, ready: Boolean, failed: Boolean): Int = when {
+    !enabled -> R.string.player_lyrics_display_off
+    failed -> R.string.player_lyrics_menu_failed
+    !ready -> R.string.player_loading
+    !available -> R.string.player_lyrics_menu_unavailable
+    else -> R.string.player_lyrics_display_on
+}
+
+@Composable
+private fun lyricsLanguageValue(tag: String, appLocale: Locale): String {
+    val locale = remember(tag) { Locale.forLanguageTag(tag) }
+    return if (locale.language == "zh") {
+        stringResource(if (locale.script == "Hant" || locale.country in listOf("TW", "HK", "MO"))
+            R.string.language_traditional_chinese else R.string.language_simplified_chinese)
+    } else locale.getDisplayLanguage(appLocale)
+        .replaceFirstChar { if (it.isLowerCase()) it.titlecase(appLocale) else it.toString() }
 }
