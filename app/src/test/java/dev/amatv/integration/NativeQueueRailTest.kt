@@ -10,6 +10,22 @@ class NativeQueueRailTest {
         Track("song:$catalog", catalog, "Artist", "Album", 180_000L, emptyList(), emptyList(), catalogId = catalog))
     private fun q(nativeId: Long, catalog: String = "$nativeId") = NativeQueueObservation(nativeId, catalog)
 
+    @Test fun manualReuseRequiresTheVerifiedAdjacentOccurrenceEvenForIdenticalSongs() {
+        val rail = NativeQueueRail()
+        rail.begin(7, e(1, "900"), listOf(e(2, "900"), e(3, "900")))
+        val current = listOf(q(101, "900"))
+        rail.observe(current, 101)
+        rail.committed(rail.edit(current, 101)!!)
+        assertNull(rail.preparedSuccessorId(2, "900")) // Async append not yet observed.
+        rail.observe(current + listOf(q(102, "900"), q(103, "900")), 101)
+        assertEquals(102L, rail.preparedSuccessorId(2, "900"))
+        assertNull(rail.preparedSuccessorId(3, "900"))
+        assertNull(rail.preparedSuccessorId(2, "901"))
+        rail.updateUpcoming(7, listOf(e(3, "900")))
+        assertNull(rail.preparedSuccessorId(2, "900"))
+        assertNull(rail.preparedSuccessorId(3, "900")) // Reorder requires full replacement.
+    }
+
     @Test fun uploadsOnlyTwoAdjacentKnownSongsAndDoesNotSubmitAnAsyncAddTwice() {
         val rail = NativeQueueRail()
         rail.begin(10, e(1), listOf(e(2), e(3), e(4)))

@@ -108,7 +108,17 @@ internal class NativeQueueRail {
 
     fun hasReadySuccessor(): Boolean {
         val next = desired.firstOrNull() ?: return false
-        return uploaded.firstOrNull()?.entryId == next.entryId && bindings.any { (nativeId, entry) -> nativeId in observedNativeIds && entry.entryId == next.entryId }
+        return preparedSuccessorId(next.entryId, next.track.catalogId) != null
+    }
+
+    /** Only the first adjacent occurrence is eligible for a native manual skip. */
+    fun preparedSuccessorId(entryId: Long, catalogId: String?): Long? {
+        val next = desired.firstOrNull()?.takeIf { it.entryId == entryId && it.track.catalogId == catalogId }
+            ?: return null
+        if (uploaded.firstOrNull()?.entryId != next.entryId) return null
+        return bindings.entries.firstOrNull { (nativeId, entry) ->
+            nativeId in observedNativeIds && entry.entryId == entryId && entry.track.catalogId == catalogId
+        }?.key
     }
 
     fun edit(queue: List<NativeQueueObservation>, nativeCurrentId: Long?): NativeQueueEdit? {

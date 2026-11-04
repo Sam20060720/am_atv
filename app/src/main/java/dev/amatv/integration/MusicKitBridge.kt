@@ -17,6 +17,8 @@ import dev.amatv.model.Track
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Proxy
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 enum class PlaybackRepeatMode {
     Off,
@@ -201,6 +203,73 @@ class MusicKitBridge(private val context: Context) {
             prepareNewNativeContext(currentController, provider)
         }
         return generation
+    }
+
+    /** Reuse a verified adjacent occurrence instead of discarding its native provider. */
+    internal suspend fun prepareQueuedSuccessor(track: Track, developerToken: String, userToken: String,
+        positionMs: Long, playWhenReady: Boolean, entryId: Long?): Long? {
+        if (track.catalogKind != CatalogKind.Song || entryId == null || positionMs != 0L ||
+            playbackDeveloperToken != developerToken || playbackUserToken != userToken) return null
+        val handler = playbackHandler ?: return null
+        val currentController = controller ?: return null
+        val generation = prepareGeneration.get()
+        return suspendCancellableCoroutine { result ->
+            var issued = false
+            var deadline = 0L
+            lateinit var confirm: Runnable
+            confirm = Runnable {
+                if (!result.isActive) return@Runnable
+                synchronized(this) {
+                    if (!result.isActive) return@synchronized
+                    if (generation != prepareGeneration.get() || generation != activeGeneration ||
+                        currentController !== controller || pendingPlaybackError != null ||
+                        playbackDeveloperToken != developerToken || playbackUserToken != userToken) {
+                        result.resume(null)
+                        return@synchronized
+                    }
+                    try {
+                        if (!issued) {
+                            val nextId = nativeRail.preparedSuccessorId(entryId, track.catalogId)
+                            val nativeCurrent = currentController.callOrNull("getCurrentItem")
+                                ?.callOrNull("getPlaybackQueueId") as? Number
+                            @Suppress("UNCHECKED_CAST")
+                            val following = currentController.callOrNull("getQueueItems") as? List<Any?>
+                            val actualNext = following?.firstOrNull()?.callOrNull("getPlaybackQueueId") as? Number
+                            val confirmedCurrent = currentController.callOrNull("getCurrentItem")
+                                ?.callOrNull("getPlaybackQueueId") as? Number
+                            if (nextId == null || actualNext?.toLong() != nextId ||
+                                confirmedCurrent?.toLong() != nativeCurrent?.toLong() ||
+                                nativeRail.entryForNativeId(nativeCurrent?.toLong())?.entryId != nativeRail.current?.entryId ||
+                                currentController.callOrNull("canSkipToNextItem") != true) {
+                                result.resume(null)
+                                return@synchronized
+                            }
+                            desiredPlaying = playWhenReady
+                            playbackIntent.requestPlaying(playWhenReady)
+                            currentController.callVoid("pause")
+                            currentController.callVoid("skipToNextItem")
+                            issued = true
+                            deadline = SystemClock.elapsedRealtime() + 1_000L
+                        }
+                        // Bind the actual handoff before acknowledging it. The new
+                        // app future must not retire this pending occurrence early.
+                        val value = readSnapshot(currentController, generation)
+                        if (value.appQueueEntryId == entryId && value.errorMessage == null) {
+                            Log.i(TAG, "Reused native successor generation=$generation entry=$entryId")
+                            result.resume(generation)
+                            dispatchSnapshot()
+                        } else if (value.errorMessage != null || SystemClock.elapsedRealtime() >= deadline) {
+                            result.resume(null) // Full replacement still targets this same app occurrence.
+                        } else handler.postDelayed(confirm, 50L)
+                    } catch (error: Exception) {
+                        Log.w(TAG, "Native successor reuse unavailable (${error.javaClass.simpleName})")
+                        result.resume(null)
+                    }
+                }
+            }
+            result.invokeOnCancellation { handler.removeCallbacks(confirm) }
+            if (!handler.post(confirm)) result.resume(null)
+        }
     }
 
     /**
@@ -600,7 +669,8 @@ class MusicKitBridge(private val context: Context) {
         if (decision.prepared && currentQueueItem != null && currentTrack?.catalogId == requestedTrack?.catalogId) {
             preparedNativeQueueId = currentTrack?.playbackQueueId
         }
-        if (decision.prepared && pendingPlaybackError == null && !waitingForNativeNext) {
+        if (decision.playing && playbackIntent.hasStartedPlayback &&
+            pendingPlaybackError == null && !waitingForNativeNext) {
             synchronizeNativeRail(currentController, observations, nativeId, completeObservationWindow)
         }
         if (lastLoggedPlaybackState != playbackState || lastLoggedTrackId != currentTrack?.id) {

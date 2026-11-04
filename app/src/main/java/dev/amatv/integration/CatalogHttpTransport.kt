@@ -87,13 +87,26 @@ internal suspend fun catalogRequestWithTokenRefresh(
 
 // Android DNS is not always interruptible. Keep a hard thread/call bound even
 // when timed-out platform lookups outlive their cancelled UI request.
-private val catalogHttpClient: OkHttpClient by lazy {
-    val executor = Executors.newFixedThreadPool(4) { runnable ->
-        Thread(runnable, "AMATV-catalog-http").apply { isDaemon = true }
-    }
+internal val catalogHttpClient: OkHttpClient by lazy {
     OkHttpClient.Builder()
-        .dispatcher(Dispatcher(executor).apply { maxRequests = 4; maxRequestsPerHost = 4 })
+        .dispatcher(catalogDispatcher(4, "AMATV-catalog-http"))
         .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
         .connectTimeout(10, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS)
         .callTimeout(25, TimeUnit.SECONDS).build()
+}
+
+// Song identity, storefront and credentials must not queue behind browse pages
+// and decorative metadata. Share connections/TLS, but reserve two bounded workers
+// for these small dependencies of an explicit playback request.
+internal val playbackCatalogHttpClient: OkHttpClient by lazy {
+    catalogHttpClient.newBuilder()
+        .dispatcher(catalogDispatcher(2, "AMATV-playback-http"))
+        .build()
+}
+
+private fun catalogDispatcher(limit: Int, name: String): Dispatcher {
+    val executor = Executors.newFixedThreadPool(limit) { runnable ->
+        Thread(runnable, name).apply { isDaemon = true }
+    }
+    return Dispatcher(executor).apply { maxRequests = limit; maxRequestsPerHost = limit }
 }

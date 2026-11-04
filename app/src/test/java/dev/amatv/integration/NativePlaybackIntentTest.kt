@@ -4,6 +4,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NativePlaybackIntentTest {
+    @Test fun lookaheadWaitsForActualProgressAndStopsDuringUserPauseOrBufferRecovery() {
+        val intent = NativePlaybackIntent()
+        intent.begin("song", 45_000L, true, 0L)
+        assertFalse(intent.hasStartedPlayback)
+        intent.observe(probe(now = 100L, position = 45_000L))
+        assertFalse(intent.hasStartedPlayback)
+        intent.observe(probe(now = 200L, position = 45_000L, playing = true))
+        assertFalse("A resumed cursor is not proof that audio advanced", intent.hasStartedPlayback)
+        intent.observe(probe(now = 300L, position = 45_100L, playing = true))
+        assertFalse(intent.hasStartedPlayback)
+        intent.observe(probe(now = 500L, position = 45_300L, playing = true))
+        assertTrue(intent.hasStartedPlayback)
+        intent.requestPlaying(false)
+        assertFalse(intent.hasStartedPlayback)
+        intent.requestPlaying(true)
+        intent.observe(probe(now = 600L, position = 45_300L, buffering = true))
+        assertFalse(intent.hasStartedPlayback)
+        intent.observe(probe(now = 700L, position = 45_300L, playing = true))
+        assertFalse(intent.hasStartedPlayback)
+        intent.observe(probe(now = 1_000L, position = 45_600L, playing = true))
+        assertTrue(intent.hasStartedPlayback)
+    }
+
     private fun probe(
         now: Long = 1_000L,
         position: Long = 0L,

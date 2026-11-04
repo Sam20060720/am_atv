@@ -22,6 +22,9 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.io.IOException
 import java.net.SocketTimeoutException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.awaitAll
 
 class CatalogHttpTransportTest {
     private val request = Request.Builder().url("https://api.music.apple.com/v1/me/library/albums/l.test/tracks")
@@ -56,6 +59,47 @@ class CatalogHttpTransportTest {
 
     private fun response(body: ResponseBody, status: Int = 200) = Response.Builder()
         .request(request).protocol(Protocol.HTTP_1_1).code(status).message("Fixture").body(body).build()
+
+    @Test fun saturatedBrowseDispatcherDoesNotDelayPlaybackDependencies() = runBlocking {
+        val occupied = CountDownLatch(4)
+        val release = CountDownLatch(1)
+        val fifthStarted = CountDownLatch(1)
+        val browse = catalogHttpClient.newBuilder().addInterceptor { chain ->
+            if (chain.request().url.encodedPath == "/fifth") fifthStarted.countDown()
+            occupied.countDown()
+            check(release.await(5, TimeUnit.SECONDS)) { "Browse fixture was not released" }
+            response(TrackedBody("browse")).newBuilder().request(chain.request()).build()
+        }.build()
+        val playback = playbackCatalogHttpClient.newBuilder().addInterceptor { chain ->
+            response(TrackedBody("playback")).newBuilder().request(chain.request()).build()
+        }.build()
+        assertSame(browse.connectionPool, playback.connectionPool)
+        assertNotSame(browse.dispatcher, playback.dispatcher)
+        assertEquals(4, browse.dispatcher.maxRequests)
+        assertEquals(2, playback.dispatcher.maxRequests)
+        val ordinary = CatalogHttpTransport(browse)
+        val active = (1..4).map {
+            async(start = CoroutineStart.UNDISPATCHED) { ordinary.execute(request) }
+        }
+        try {
+            assertTrue("Four ordinary calls should occupy the browse dispatcher",
+                occupied.await(2, TimeUnit.SECONDS))
+            val queued = async(start = CoroutineStart.UNDISPATCHED) {
+                ordinary.execute(request.newBuilder().url("https://api.music.apple.com/fifth").build())
+            }
+            try {
+                val reply = withTimeout(2_000L) { CatalogHttpTransport(playback).execute(request) }
+                assertEquals("playback", reply.body)
+                // This is the original bottleneck: an ordinary fifth request
+                // still cannot start, even though the playback dependency finished.
+                assertEquals(1L, fifthStarted.count)
+                assertFalse(queued.isCompleted)
+            } finally { queued.cancel() }
+        } finally {
+            release.countDown()
+            active.awaitAll()
+        }
+    }
 
     @Test fun optionalPublicBodyLimitRejectsAnUnknownLengthStreamAndStillClosesIt() = runBlocking {
         val call = FakeCall(request)

@@ -54,6 +54,9 @@ internal class NativePlaybackIntent {
     private var lastPlayingDuration = 0L
     private var completionCandidateAt: Long? = null
 
+    /** Preparation alone is not evidence that the selected stream has started. */
+    val hasStartedPlayback: Boolean get() = phase == Phase.Ready && wantsPlay && !playRecoveryAllowed
+
     fun begin(catalogId: String?, positionMs: Long, playWhenReady: Boolean, nowMs: Long) {
         this.catalogId = catalogId
         startPosition = positionMs.coerceAtLeast(0L)

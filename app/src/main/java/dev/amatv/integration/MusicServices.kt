@@ -25,7 +25,6 @@ import dev.amatv.model.CatalogKind
 import dev.amatv.model.matchesPlaybackQueueEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.ensureActive
@@ -497,22 +496,18 @@ class MusicServices(context: Context) : RecommendationProvider {
                     val local = if (engine == PlaybackEngine.StationWeb) {
                         bridge.pause()
                         bridge.release()
-                        // Reuse the account storefront already resolved by browsing;
-                        // MusicKit JS otherwise defaults this separate instance to US.
-                        val stationStorefront = try {
-                            withTimeoutOrNull(1_500L) { api.userStorefront() }
-                                ?: BuildConfig.APPLE_MUSIC_STOREFRONT
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (_: Exception) {
-                            BuildConfig.APPLE_MUSIC_STOREFRONT
-                        }
+                        // Cached after browsing; a cold request uses the reserved
+                        // playback dispatcher. Never turn a short queue/network
+                        // delay into a different account's default storefront.
+                        val stationStorefront = api.userStorefront()
                         stationPlayer.preparePlayback(track, developerToken, userToken, positionMs, playWhenReady,
                             storefront = stationStorefront)
                     } else {
                         stationPlayer.release()
-                        bridge.preparePlayback(track, developerToken, userToken, positionMs, playWhenReady,
-                            currentAppEntryId, upcoming)
+                        bridge.prepareQueuedSuccessor(track, developerToken, userToken, positionMs,
+                            playWhenReady, currentAppEntryId)
+                            ?: bridge.preparePlayback(track, developerToken, userToken, positionMs, playWhenReady,
+                                currentAppEntryId, upcoming)
                     }
                     val pending = synchronized(engineLock) {
                         request.localGeneration = local

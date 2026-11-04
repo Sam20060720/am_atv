@@ -67,7 +67,7 @@ class DeveloperTokenClient(
             AppText.text(R.string.services_token_https_required)
         }
         val value = runCatching { withCatalogRequestDeadline {
-                val reply = CatalogHttpTransport().execute(Request.Builder().url(endpoint)
+                val reply = CatalogHttpTransport(playbackCatalogHttpClient).execute(Request.Builder().url(endpoint)
                     .header("Accept", "application/json, text/plain").get().build())
                 val status = reply.status
                 val body = reply.body.trim()
@@ -149,7 +149,7 @@ class AppleMusicApi(
         userStorefrontCache?.takeIf { it.userToken == currentUserToken }?.let { return it.storefront }
         return userStorefrontMutex.withLock {
             userStorefrontCache?.takeIf { it.userToken == currentUserToken }?.let { return@withLock it.storefront }
-            val root = requestRoot(path = "/v1/me/storefront", needsUserToken = true)
+            val root = requestRoot(path = "/v1/me/storefront", needsUserToken = true, playback = true)
             val resolved = parseUserStorefrontId(root)
                 ?: error(AppText.text(R.string.services_user_storefront_missing))
             userStorefrontCache = UserStorefrontCache(currentUserToken, resolved)
@@ -550,6 +550,7 @@ class AppleMusicApi(
         val root = requestRoot(
             path = "/v1/me/library/songs/${URLEncoder.encode(id, Charsets.UTF_8.name())}?include=catalog",
             needsUserToken = true,
+            playback = true,
         )
         val item = root.optJSONArray("data")?.optJSONObject(0)
             ?: throw CatalogRequestException(CatalogFailureReason.Unavailable,
@@ -572,6 +573,7 @@ class AppleMusicApi(
         val equivalents = requestRoot(
             path = "/v1/catalog/$storefront/songs?filter%5Bequivalents%5D=${URLEncoder.encode(id, Charsets.UTF_8.name())}",
             needsUserToken = false,
+            playback = true,
         )
         val playable = requireEquivalentCatalogSongId(
             equivalents, id,
@@ -602,6 +604,7 @@ class AppleMusicApi(
             needsUserToken = true,
             method = "POST",
             postBody = bodyJson.toString(),
+            playback = true,
         )
         return continuousStationFromResponse(root, ::stationNextTracks)
     }
@@ -767,6 +770,7 @@ class AppleMusicApi(
         needsUserToken: Boolean,
         method: String = "GET",
         postBody: String? = null,
+        playback: Boolean = false,
     ): JSONObject = withContext(Dispatchers.IO) { withCatalogRequestDeadline {
         val endpoint = URI("https://api.music.apple.com$path")
         require(path.startsWith("/v1/") && endpoint.scheme == "https" && endpoint.host == "api.music.apple.com" &&
@@ -788,7 +792,7 @@ class AppleMusicApi(
                 .header("Authorization", "Bearer $developerToken").header("Accept", "application/json")
                 .apply { if (!musicUserToken.isNullOrBlank()) header("Music-User-Token", musicUserToken) }
                 .method(method, requestBody).build()
-            return CatalogHttpTransport().execute(request)
+            return CatalogHttpTransport(if (playback) playbackCatalogHttpClient else catalogHttpClient).execute(request)
         }
 
         val (status, body) = catalogRequestWithTokenRefresh(::execute)

@@ -1,6 +1,6 @@
 # 與 v0.6.2 最後提交版本的差異 — 2026-11-04
 
-比對基準為 `6754603`（`release: prepare v0.6.2`）與目前完整 working tree，包含未追蹤的新來源；不是 `HEAD~1..HEAD`。這是功能、資料來源與播放生命週期的大修改，並非只有首頁效能微調。這批變更隨本地測試版整理提交。
+比對基準為 `6754603`（`release: prepare v0.6.2`）與後續本地實作，涵蓋初次整理時未追蹤的新來源；不是 `HEAD~1..HEAD`。這是功能、資料來源與播放生命週期的大修改，並非只有首頁效能微調。這批變更隨本地測試版整理提交。
 
 使用者已認可既有介面與手機 QR 登入。本輪沿用版面、卡片、字體、陰影與動態效果，補操作入口、非同步狀態與可恢復行為。新增設定的預設值維持既有外觀及帳號行為。
 
@@ -67,17 +67,17 @@ B6完整單元測試 **862項通過**，最終mutation針對性測試另有 **41
 
 依使用者要求完成64個分區的subagent程式審查，重複發現合併處理。正式程式再淨減255行，沒有新增正式來源檔／owner；刪除45條未引用翻譯與1份舊layout。修正重點是：UI／背景prepare與重連改由原runtime統一管理；跨Repeat.All／Previous的canonical source occurrence與待續頁Play Last順序；checkpoint／full context混代；Library刷新權威替換與索引暫停；action Refresh晚到結果；palette／快取設定race；token取消、真TTL、空Room續頁與未使用推薦嵌入樹。
 
-相對HEAD目前434個變更項目；比先前422多的12項是9個原有檔納入修正及3個新增回歸測試，不能當成新增12個正式元件。表面檔案數沒有用來取代程式合理性判斷；保留必要快取、Surface ACK、不同版型與版本相依patch。完整處置、每區結果與逐檔差異見[64分區審查](../work/repo-review/20261104/sweep-64/README.md)。
+64分區審查完成時，相對`6754603`為434個變更項目；比先前422多的12項是9個原有檔納入修正及3個新增回歸測試，不能當成新增12個正式元件。表面檔案數沒有用來取代程式合理性判斷；保留必要快取、Surface ACK、不同版型與版本相依patch。完整處置、每區結果與逐檔差異見[64分區審查](../work/repo-review/20261104/sweep-64/README.md)。
 
 ## 本地測試版交付 — 2026-11-04
 
-- 分享用 APK：[AMATV-0.6.2-test-20261104.apk](../dist/AMATV-0.6.2-test-20261104.apk)，約22.6 MiB；Android 9以上，包含ARM32／ARM64／x86／x86_64。
-- 選用的ADB安裝套件：[APK＋對應baseline profiles](../dist/AMATV-0.6.2-test-20261104-install-kit.zip)。單獨APK也可正常側載。
+- 分享用 APK：[AMATV-0.6.2-playback-fix-20261104.apk](../dist/AMATV-0.6.2-playback-fix-20261104.apk)，約22.6 MiB；Android 9以上，包含ARM32／ARM64／x86／x86_64。
+- 選用的ADB安裝套件：[APK＋對應baseline profiles](../dist/AMATV-0.6.2-playback-fix-20261104-install-kit.zip)。單獨APK也可正常側載。
 - 版本維持0.6.2／versionCode15。使用既有`standalone` variant，沿用本機既有開發簽章以保留更新相容性；繼承release的R8與資源縮減，除錯及cleartext關閉，沒有測試fixture／probe元件。
-- SHA-256：`28bd603ee34fb1be25257085fa8efe3db41239ad6b77afdd0bb080398a97fca5`。與已安裝模擬器的quiet-feedback版為同一份二進位檔，改成明確的分享檔名。
+- SHA-256：`58e68844af4c7fca4901cbd345f9a09409252846c3cbf625accb50ca6a2fcd40`。本次為播放啟動回歸修正版，已保留資料安裝至模擬器。
 - 真正的播放錯誤維持清楚提示；一般準備／緩衝超過1.5秒才以淡色小字顯示。包含首頁卡片快取、搜尋樣式、冷載封面、即時準備動態素材，以及歌詞跳轉後回進度條的修正。
 
-本次只確認正式建置與目前來源一致、APK簽章／manifest及APK＋DM配對；沒有重跑播放、雲端寫入或長時間巡迴。先前909項單測屬64分區檢查，後續封面17項與緩衝提示8項屬各次針對性驗證，不能當成本次新跑的結果。實體TV首頁改善已由使用者確認，上下仍有偶發尖峰，未宣稱全頁穩定60fps。
+本次確認正式建置、APK簽章與APK＋DM配對，並完成82項針對性單測及模擬器歌曲／切歌／電台啟動短測。先前909項單測屬64分區檢查，後續封面17項與緩衝提示8項屬各次針對性驗證，不能當成本次新跑的結果。實體TV首頁改善已由使用者確認，上下仍有偶發尖峰，未宣稱全頁穩定60fps。
 
 實體TV保留先前已確認順暢的版本；[對應復原安裝包](../dist/AMATV-tv-card-cache-install-kit.zip)仍在。本次不操作電視。只做本地Git提交，沒有push、tag或公開發佈。
 
@@ -85,4 +85,10 @@ B6完整單元測試 **862項通過**，最終mutation針對性測試另有 **41
 
 已移除歷次測試的模擬器備份、舊APK／重複解壓安裝包、舊原始追蹤與畫面擷取、一次性解包／工具鏈及專案編譯快取。保留目前運作中的模擬器、必要來源復原檔、最新實體TV量測、修正摘要、正式宣傳影片及仍有用途的回歸測試。先前紀錄中的舊產物路徑為歷史位置，部分已清除；本節連結為目前交付位置。
 
-逐項清理清單、建置紀錄與這份APK的R8 mapping保存在[交付與清理紀錄](../work/repo-cleanup/20261104/README.md)。來源與版本比較仍以本文件前述功能群為準，不能把被忽略的測試產物占用量當成Git程式差異。
+逐項清理清單保存在[清理紀錄](../work/repo-cleanup/20261104/README.md)；目前APK的建置、安裝與R8 mapping見[播放修正交付](../work/playback-regression/20261104/README.md)。來源與版本比較仍以本文件前述功能群為準，不能把被忽略的測試產物占用量當成Git程式差異。
+
+## 播放啟動回歸修正
+
+播放必要的歌曲／Library映射、storefront及credential讀取使用保留的2槽HTTP排程，沿用既有connection pool，避免被一般4槽首頁／素材請求阻塞。當前歌曲確實產生進度後才預載下一首；手動下一首若app occurrence、catalog ID、原生queue ID、憑證及generation均吻合，確認handoff後沿用該原生項目，避免清掉已備好的provider再prepare。確認不成立則完整準備同一目標。電台使用真帳號地區，取消1.5秒後誤用預設地區的fallback。
+
+82項針對性測試及正式建置通過。模擬器首次prepare、手動原生項目重用與Apple Music 1啟動均有短測；電台冷載此次仍約5.3秒，主要在官方腳本及串流準備。完整原因、界線及交付見[播放修正紀錄](../work/playback-regression/20261104/README.md)。
