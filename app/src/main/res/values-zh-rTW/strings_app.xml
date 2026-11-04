@@ -25,4 +25,8 @@
     <string name="app_apple_signed_out">已從這台電視登出 Apple Music。</string>
     <string name="app_account">帳號</string>
     <string name="app_sign_in">登入</string>
+    <string name="app_exit_title">要離開 %1$s 嗎？</string>
+    <string name="app_exit_background_playback">音樂會繼續在背景播放。</string>
+    <string name="app_exit_stay">繼續使用</string>
+    <string name="app_exit_confirm">離開</string>
 </resources>

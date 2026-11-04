@@ -25,4 +25,8 @@
     <string name="app_apple_signed_out">Signed out of Apple Music on this TV.</string>
     <string name="app_account">Account</string>
     <string name="app_sign_in">Sign In</string>
+    <string name="app_exit_title">Exit %1$s?</string>
+    <string name="app_exit_background_playback">Music will continue playing in the background.</string>
+    <string name="app_exit_stay">Stay</string>
+    <string name="app_exit_confirm">Exit</string>
 </resources>

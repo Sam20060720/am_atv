@@ -204,6 +204,7 @@ fun AmAtvApp() {
     var catalogActionItem by remember { mutableStateOf<Track?>(null) }
     var catalogQueueActionEntryId by remember { mutableStateOf<Long?>(null) }
     val catalogModalInput = remember { CatalogModalInputGate() }
+    var exitConfirmationVisible by remember { mutableStateOf(false) }
     var catalogDetailIntent by remember { mutableStateOf<CatalogDetailIntent?>(null) }
     var catalogDeletedResource by remember { mutableStateOf<CatalogResourceRef?>(null) }
     var catalogModalExitToken by remember { mutableIntStateOf(0) }
@@ -2069,8 +2070,28 @@ fun AmAtvApp() {
             else -> false
         }
     }
-    BackHandler(enabled = isNowPlaying || catalogActionItem != null) {
-        if (catalogActionItem != null) dismissCatalogActions() else destination = previousDestination
+    fun dismissExitConfirmation() {
+        catalogModalInput.dialogBackDismissed()
+        exitConfirmationVisible = false
+    }
+    fun showExitConfirmation() {
+        catalogModalInput.menuOpened()
+        exitConfirmationVisible = true
+    }
+    // Registered before the browse/player subtree: every inner Back owner gets
+    // first refusal. Only an exhausted root reaches the exit confirmation.
+    BackHandler {
+        when {
+            exitConfirmationVisible -> dismissExitConfirmation()
+            catalogActionItem != null -> dismissCatalogActions()
+            phoneSignInVisible -> {
+                pendingAuthentication.clear()
+                pendingAuthAttempt = null
+                closePhoneSignIn()
+            }
+            isNowPlaying -> destination = previousDestination
+            else -> showExitConfirmation()
+        }
     }
 
     val focusFrameController = remember { FocusFrameController() }
@@ -2088,11 +2109,14 @@ fun AmAtvApp() {
                             KeyEvent.KEYCODE_MEDIA_REWIND, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD)) {
                         return@onPreviewKeyEvent if (native.action == KeyEvent.ACTION_UP) dispatchMediaKey(native.keyCode) else true
                     }
-                    when (catalogModalInput.host(catalogActionItem != null, native.keyCode == KeyEvent.KEYCODE_BACK,
+                    when (catalogModalInput.host(catalogActionItem != null || exitConfirmationVisible, native.keyCode == KeyEvent.KEYCODE_BACK,
                         native.action == KeyEvent.ACTION_DOWN, native.action == KeyEvent.ACTION_UP,
                         activation = native.keyCode in listOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
                             KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_SPACE), repeat = native.repeatCount)) {
-                        CatalogModalInputGate.HostResult.DismissMenu -> { dismissCatalogActions(); return@onPreviewKeyEvent true }
+                        CatalogModalInputGate.HostResult.DismissMenu -> {
+                            if (exitConfirmationVisible) dismissExitConfirmation() else dismissCatalogActions()
+                            return@onPreviewKeyEvent true
+                        }
                         CatalogModalInputGate.HostResult.Consume -> return@onPreviewKeyEvent true
                         CatalogModalInputGate.HostResult.Pass -> Unit
                     }
@@ -2138,6 +2162,7 @@ fun AmAtvApp() {
                     TvBrowseViewport {
                     BrowseShell(
                         services = services,
+                        onBackExhausted = ::showExitConfirmation,
                         contextMenuVisible = catalogActionItem != null,
                         isContextMenuOpen = { catalogActionItem != null },
                         onDismissPendingContextMenu = ::dismissCatalogActions,
@@ -2469,6 +2494,15 @@ fun AmAtvApp() {
                     phase = phoneSignInPhase,
                     onRetry = { closePhoneSignIn(); startPhoneSignIn() },
                     onDismiss = { pendingAuthentication.clear(); pendingAuthAttempt = null; closePhoneSignIn() },
+                )
+                if (exitConfirmationVisible) AppExitDialog(
+                    backgroundPlayback = playWhenReady || isPlaying,
+                    inputGate = catalogModalInput,
+                    onStay = ::dismissExitConfirmation,
+                    onExit = {
+                        exitConfirmationVisible = false
+                        (context as? android.app.Activity)?.finish()
+                    },
                 )
                 FocusFrameOverlay(focusFrameController)
             }

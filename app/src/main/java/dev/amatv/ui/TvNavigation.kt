@@ -113,7 +113,7 @@ internal fun TvNavigation(
     onDestination: (Destination) -> Unit,
     onEnterContent: () -> Unit,
     backdropLayer: GraphicsLayer? = null,
-    registerExpandedBackHandler: ((() -> Boolean)?, Boolean) -> Unit = { _, _ -> },
+    registerExpandedBackHandler: ((() -> Boolean)?) -> Unit = {},
     onPanelVisibleChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -136,7 +136,6 @@ internal fun TvNavigation(
     val panelWidth = 179.dp
     var pillFocused by remember { mutableStateOf(false) }
     var focusedDestination by remember { mutableStateOf<Destination?>(null) }
-    var consumeBackRelease by remember { mutableStateOf(false) }
     var homeFocusRequested by remember { mutableStateOf(false) }
     var panelVisible by remember { mutableStateOf(expanded) }
     val latestExpandedChange by rememberUpdatedState(onExpandedChange)
@@ -155,11 +154,11 @@ internal fun TvNavigation(
         }
     }
     SideEffect {
-        latestBackRegistration(expandedBack, expanded && focusedDestination == Destination.Home)
+        latestBackRegistration(expandedBack)
         latestPanelVisibility(expanded || panelVisible)
     }
     DisposableEffect(Unit) {
-        onDispose { latestBackRegistration(null, false); latestPanelVisibility(false) }
+        onDispose { latestBackRegistration(null); latestPanelVisibility(false) }
     }
     val expansion = animateFloatAsState(
         targetValue = if (expanded) 1f else 0f,
@@ -191,7 +190,6 @@ internal fun TvNavigation(
     LaunchedEffect(expanded) {
         if (expanded) panelVisible = true
         if (!expanded) {
-            consumeBackRelease = false
             homeFocusRequested = false
             focusedDestination = null
         }
@@ -360,17 +358,6 @@ internal fun TvNavigation(
                         .onPreviewKeyEvent { event ->
                             val key = event.nativeKeyEvent
                             when {
-                                key.keyCode == KeyEvent.KEYCODE_BACK && key.action == KeyEvent.ACTION_UP && consumeBackRelease -> {
-                                    consumeBackRelease = false
-                                    true
-                                }
-                                key.keyCode == KeyEvent.KEYCODE_BACK && key.action == KeyEvent.ACTION_DOWN -> {
-                                    if (key.repeatCount > 0) consumeBackRelease
-                                    else {
-                                        consumeBackRelease = expandedBack()
-                                        consumeBackRelease
-                                    }
-                                }
                                 key.action == KeyEvent.ACTION_DOWN && key.keyCode == enterContentKey -> { onEnterContent(); true }
                                 else -> false
                             }

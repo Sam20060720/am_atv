@@ -133,6 +133,7 @@ internal fun BrowseShell(
     connectionState: MusicConnectionState,
     setupMessage: String?,
     onDestination: (Destination) -> Unit,
+    onBackExhausted: () -> Unit,
     onSignIn: () -> Unit,
     ytmSignedIn: Boolean,
     ytmPairing: GoogleTvPairing?,
@@ -184,7 +185,6 @@ internal fun BrowseShell(
     var navigationExpanded by remember { mutableStateOf(false) }
     var navigationPanelVisible by remember { mutableStateOf(false) }
     var expandedBackHandler by remember { mutableStateOf<(() -> Boolean)?>(null) }
-    var sidebarHomeFocused by remember { mutableStateOf(false) }
     var expandedBackHeld by remember { mutableStateOf(false) }
     var pendingExpandedBack by remember { mutableStateOf(false) }
     fun handleExpandedBack(): Boolean {
@@ -417,11 +417,26 @@ internal fun BrowseShell(
             resetRootPending = false
         }
     }
-    // Until the panel has real Home focus, Back is an in-app focus move,
-    // including the frame in which its Column is not yet the key-event owner.
+    fun handleSidebarBack() {
+        if (isContextMenuOpen()) {
+            onDismissPendingContextMenu()
+        } else if (!handleExpandedBack()) {
+            // Home focus is the end of sidebar navigation, but a page may
+            // still be open behind it. Exhaust that page before asking to exit.
+            when {
+                detail != null -> { navigationExpanded = false; closeDetail() }
+                auxiliaryOpen -> { navigationExpanded = false; backAuxiliary() }
+                destination != Destination.Home -> {
+                    navigationExpanded = false
+                    onDestination(Destination.Home)
+                }
+                else -> onBackExhausted()
+            }
+        }
+    }
     BackHandler(enabled = isBrowseVisible && switchingTab) { }
-    BackHandler(enabled = isBrowseVisible && !switchingTab && navigationExpanded && !sidebarHomeFocused && !contextMenuVisible) {
-        if (isContextMenuOpen()) onDismissPendingContextMenu() else handleExpandedBack()
+    BackHandler(enabled = isBrowseVisible && !switchingTab && navigationExpanded && !contextMenuVisible) {
+        handleSidebarBack()
     }
     BackHandler(enabled = isBrowseVisible && !switchingTab && detail == null && !auxiliaryOpen &&
         !navigationExpanded && !contextMenuVisible) {
@@ -524,12 +539,18 @@ internal fun BrowseShell(
                 }
                 if (native.keyCode == KeyEvent.KEYCODE_BACK) {
                     if (expandedBackHeld) {
-                        if (native.action == KeyEvent.ACTION_UP) expandedBackHeld = false
+                        if (native.action == KeyEvent.ACTION_UP) {
+                            expandedBackHeld = false
+                            if (!native.isCanceled && navigationExpanded) handleSidebarBack()
+                        }
                         return@onPreviewKeyEvent true
                     }
                     if (isBrowseVisible && navigationExpanded && !isContextMenuOpen() &&
-                        native.action == KeyEvent.ACTION_DOWN && handleExpandedBack()) {
-                        expandedBackHeld = true
+                        native.action == KeyEvent.ACTION_DOWN) {
+                        // Own the whole press, including Home's final Back.
+                        // Letting it fall through clears Compose focus before
+                        // the Activity's BackHandler can open the exit dialog.
+                        expandedBackHeld = native.repeatCount == 0
                         return@onPreviewKeyEvent true
                     }
                 }
@@ -772,10 +793,7 @@ internal fun BrowseShell(
                 menuRequester = menuRequester,
                 canFocusMenu = upBoundary::allowsMenuFocus,
                 focusRequesters = navigationFocus,
-                registerExpandedBackHandler = { handler, homeFocused ->
-                    expandedBackHandler = handler
-                    sidebarHomeFocused = homeFocused
-                },
+                registerExpandedBackHandler = { expandedBackHandler = it },
                 onPanelVisibleChange = { navigationPanelVisible = it },
                 onExpandedChange = expandedChange@{ expanded ->
                     if (switchingTab) return@expandedChange
