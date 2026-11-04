@@ -378,6 +378,7 @@ private fun LibraryItems(
     @StringRes emptyMessage: Int = R.string.library_empty,
 ) {
     val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val columns = if (songs) 1 else if (classic) 4 else 5
     val active = LocalFocusTargetsEnabled.current && screenActive
     val gridState = rememberLazyGridState()
     val listState = rememberLazyListState()
@@ -408,7 +409,7 @@ private fun LibraryItems(
         lastRevision[0] = transformRevision
         if (!changed || !active || currentJump != null) return@LaunchedEffect
         val target = libraryFocusTarget(resourceIndices, tracks.size, savedItemKey, savedItemIndex) ?: return@LaunchedEffect
-        val first = libraryViewportFirstItem(oldViewport[0], savedItemIndex, target, if (songs) 1 else 5)
+        val first = libraryViewportFirstItem(oldViewport[0], savedItemIndex, target, columns)
         val offset = oldViewport[1]
         val ticket = ++navigationGeneration
         val shouldFocus = currentContentFocus
@@ -494,7 +495,6 @@ private fun LibraryItems(
         }
         false
     }
-    val columns = if (classic) 4 else 5
     val loadMore by rememberUpdatedState(onLoadMore)
     val guard = with(LocalDensity.current) { 18.dp.toPx() }
     val bringIntoView = remember(guard) { object : BringIntoViewSpec {

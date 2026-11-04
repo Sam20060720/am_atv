@@ -1922,29 +1922,23 @@ fun AmAtvApp() {
                     val generation = libraryPagingGeneration
                     radioRefreshComplete = false
                     var completed = false
+                    val firstPages = linkedMapOf<String, LibraryPage>()
                     services.radioShelves(
-                        onPartial = { partial ->
-                            if (generation == libraryPagingGeneration) {
-                                // Keep settled sections while each independent source refreshes.
-                                val incoming = capabilities.filterShelves(partial)
-                                val old = shelvesByDestination[target].orEmpty()
-                                val ids = incoming.mapTo(mutableSetOf()) { it.id }
-                                shelvesByDestination = shelvesByDestination + (target to
-                                    (incoming + old.filter { it.id !in ids }))
-                                if (partial.isNotEmpty()) loadingDestinations = loadingDestinations - target
-                            }
-                        },
-                        onPage = { id, page -> if (generation == libraryPagingGeneration) {
-                            libraryPageJobs.remove(id)?.cancel()
-                            libraryLoadingShelves = libraryLoadingShelves - id
-                            libraryVisitedPages = libraryVisitedPages - id
-                            libraryNextPages = libraryNextPages - id
-                            libraryTotals = libraryTotals - id
-                            rememberLibraryPage(id, page)
-                        } },
+                        onPage = { id, page -> firstPages[id] = page },
                         onFinished = { completed = it },
                     ).let { fresh ->
                         if (generation == libraryPagingGeneration) {
+                            // Keep the old rows and their continuation controls
+                            // intact during refresh. Commit page cursors with
+                            // the settled shelves, not each source completion.
+                            firstPages.forEach { (id, page) ->
+                                libraryPageJobs.remove(id)?.cancel()
+                                libraryLoadingShelves = libraryLoadingShelves - id
+                                libraryVisitedPages = libraryVisitedPages - id
+                                libraryNextPages = libraryNextPages - id
+                                libraryTotals = libraryTotals - id
+                                rememberLibraryPage(id, page)
+                            }
                             radioRefreshComplete = completed
                             radioRefreshFinishedAt = SystemClock.elapsedRealtime()
                             radioRecentPlaybackId = playedRadio

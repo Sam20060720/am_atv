@@ -197,8 +197,14 @@ internal fun TvNavigation(
     LaunchedEffect(expanded, selected, homeFocusRequested) {
         if (expanded) {
             withFrameNanos { }
-            val target = if (homeFocusRequested) Destination.Home else selected
-            runCatching { focusRequesters.getValue(target).requestFocus() }
+            // Only complete an unclaimed entry. A native focus event or a
+            // deliberate next directional move supersedes this default.
+            val target = when {
+                homeFocusRequested -> Destination.Home
+                focusedDestination == null -> selected
+                else -> null
+            }
+            target?.let { runCatching { focusRequesters.getValue(it).requestFocus() } }
         }
     }
     // The page stays mounted. Only this overlay draws while the spring moves.
@@ -357,6 +363,11 @@ internal fun TvNavigation(
                         }
                         .onPreviewKeyEvent { event ->
                             val key = event.nativeKeyEvent
+                            if (key.action == KeyEvent.ACTION_DOWN && focusedDestination != null &&
+                                key.keyCode in setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                                    KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)) {
+                                homeFocusRequested = false
+                            }
                             when {
                                 key.action == KeyEvent.ACTION_DOWN && key.keyCode == enterContentKey -> { onEnterContent(); true }
                                 else -> false
@@ -410,7 +421,10 @@ internal fun TvNavigation(
                                 .automationId("nav-${destination.name.lowercase()}")
                                 .focusRequester(focusRequesters.getValue(destination))
                                 .onFocusChanged {
-                                    if (it.isFocused) focusedDestination = destination
+                                    if (it.isFocused) {
+                                        focusedDestination = destination
+                                        if (destination == Destination.Home) homeFocusRequested = false
+                                    }
                                     else if (focusedDestination == destination) focusedDestination = null
                                 }
                                 .focusProperties {

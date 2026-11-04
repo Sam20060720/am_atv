@@ -23,6 +23,209 @@ import java.io.File
 /** Public presentation switches only: no transport, queue, account or network mutations. */
 @RunWith(AndroidJUnit4::class)
 class InterfaceStyleSwitchTest {
+    /** Samples the existing feed without clearing cache or forcing a refresh. */
+    @Test fun radioFeedRetainsVisibleContent() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue("Explicit Radio stability check only", args.getString("allow_radio_stability") == "1")
+        check(Build.HARDWARE in setOf("ranchu", "goldfish"))
+        val runId = (args.getString("run_id") ?: "radio-stability-" + System.currentTimeMillis())
+            .also { require(it.matches(Regex("[A-Za-z0-9_.-]+"))) }
+        val directory = File(requireNotNull(instrumentation.context.getExternalFilesDir(null)), "radio-stability/$runId")
+        check(!directory.exists() && directory.mkdirs())
+        val ui = RenderingSurveyUi(instrumentation)
+        val samples = JSONArray()
+        val signatures = mutableSetOf<String>()
+        val report = JSONObject().put("run_id", runId).put("playback_operations", false)
+            .put("cold_load_proven", false).put("cache_cleared", false).put("refresh_forced", false)
+            .put("requested_observation_ms", 6_000).put("sample_interval_ms", 250).put("samples", samples)
+        try {
+            ui.launch()
+            navigate(ui, "radio")
+            if (ui.snapshot().focused.any { it.startsWith("nav-") }) ui.key(
+                if (ui.has("classic-navigation")) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_RIGHT, 0)
+            ui.await("Radio has no existing nonempty visible feed/focus", 8_000) {
+                val state = ui.snapshot()
+                state.ids.any(SHELF_CARD::matches) && state.focused.isNotEmpty()
+            }
+            check(ui.device.takeScreenshot(File(directory, "radio-first.png")))
+            val started = SystemClock.uptimeMillis()
+            do {
+                val state = ui.snapshot()
+                val rows = state.ids.filter { it.startsWith("home-row-") && it.contains("-count-") }.sorted()
+                val signature = rows.joinToString("\n") { it + ":" + ui.label(it) }
+                signatures += signature
+                samples.put(JSONObject().put("elapsed_ms", SystemClock.uptimeMillis() - started)
+                    .put("row_signature", signature).put("state", state.json()))
+                check("browse-radio" in state.ids && state.ids.any { it.matches(Regex("home-shelves-count-[1-9]\\d*")) } &&
+                    state.ids.any(SHELF_CARD::matches)) { "Radio replaced visible content with a blank/loading page" }
+                check(state.focused.isNotEmpty()) { "Radio feed update lost native focus" }
+                val remaining = 6_000L - (SystemClock.uptimeMillis() - started)
+                if (remaining > 0) ui.settle(minOf(250L, remaining))
+            } while (SystemClock.uptimeMillis() - started < 6_000L)
+            check(ui.device.takeScreenshot(File(directory, "radio-settled.png")))
+            report.put("source_change_observed", signatures.size > 1).put("distinct_visible_row_signatures", signatures.size)
+                .put("observed_ms", SystemClock.uptimeMillis() - started).put("status", "passed_sampled_window")
+        } catch (error: Throwable) {
+            report.put("status", "failed").put("error", error.message?.take(500))
+            runCatching { ui.device.takeScreenshot(File(directory, "failure.png")) }
+            throw error
+        } finally {
+            report.put("source_change_observed", signatures.size > 1)
+            File(directory, "result.json").writeText(report.toString(2))
+            ui.close()
+        }
+    }
+
+    /** Actual Left presses own every assertion after one public card-focus setup. */
+    @Test fun homeLeftBoundaryReturnsToNavigation() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val args = InstrumentationRegistry.getArguments()
+        assumeTrue("Explicit Home boundary check only", args.getString("allow_interface_navigation") == "1")
+        check(Build.HARDWARE in setOf("ranchu", "goldfish")) { "Navigation check is emulator-only" }
+        val runId = (args.getString("run_id") ?: "interface-navigation-" + System.currentTimeMillis())
+            .also { require(it.matches(Regex("[A-Za-z0-9_.-]+"))) }
+        val directory = File(requireNotNull(instrumentation.context.getExternalFilesDir(null)), "interface-navigation/$runId")
+        check(!directory.exists() && directory.mkdirs()) { "Do not overwrite an earlier navigation check" }
+        val ui = RenderingSurveyUi(instrumentation)
+        val cases = JSONArray()
+        val report = JSONObject().put("run_id", runId).put("playback_operations", false)
+            .put("queue_mutations", false).put("account_mutations", false)
+            .put("assertion_focus_repairs", 0).put("cases", cases)
+        var original: String? = null
+        var failure: Throwable? = null
+        try {
+            ui.launch()
+            openSettings(ui)
+            original = selectedStyle(ui)
+            report.put("original_style", original)
+            for (style in listOf("apple", "classic")) {
+                if (selectedStyle(ui) != style) {
+                    activateStyle(instrumentation, ui, style)
+                    awaitSelectedFocus(ui, style)
+                }
+                navigate(ui, "home")
+                // This assertion deliberately precedes public focus setup: Home
+                // itself must enter its first usable card, never a heading action.
+                ui.await("$style Home did not naturally focus its first usable card", 5_000) {
+                    val state = ui.snapshot()
+                    val first = state.ids.filter { SHELF_CARD.matchEntire(it)?.groupValues?.get(2) == "0" }
+                        .minByOrNull { SHELF_CARD.matchEntire(it)!!.groupValues[1].toInt() }
+                    first != null && first in state.focused
+                }
+                checkHomeLeftBoundary(instrumentation, ui, style, cases, directory)
+                openSettings(ui)
+            }
+            report.put("status", "passed")
+        } catch (error: Throwable) {
+            failure = error
+            report.put("status", "failed").put("error", error.message?.take(500))
+            runCatching { report.put("failure_state", ui.snapshot().json(true)) }
+            runCatching { ui.device.takeScreenshot(File(directory, "failure.png")) }
+        } finally {
+            val restoreStyle = original
+            if (restoreStyle != null) runCatching {
+                openSettings(ui)
+                if (selectedStyle(ui) != restoreStyle) {
+                    activateStyle(instrumentation, ui, restoreStyle)
+                    awaitSelectedFocus(ui, restoreStyle)
+                }
+                check(selectedStyle(ui) == restoreStyle)
+                report.put("restored_style", restoreStyle)
+            }.onFailure { error ->
+                report.put("restore_error", error.message?.take(500))
+                if (failure == null) failure = error
+            }
+            if (failure != null) report.put("status", "failed")
+            File(directory, "result.json").writeText(report.toString(2))
+            ui.close()
+        }
+        failure?.let { throw it }
+    }
+
+    private fun checkHomeLeftBoundary(instrumentation: Instrumentation, ui: RenderingSurveyUi, style: String,
+        cases: JSONArray, directory: File) {
+        val steps = JSONArray()
+        fun record(label: String) {
+            val state = ui.snapshot()
+            check("browse-home" in state.ids && "app-exit-dialog" !in state.ids) { "$style Left left the Home scope" }
+            check(state.ids.none { it.startsWith("home-shelf-") && it.endsWith("-insights-replay") }) {
+                "$style Home still exposes the removed Replay heading action"
+            }
+            steps.put(JSONObject().put("step", label).put("state", state.json(true)))
+        }
+        val entry = JSONObject().put("case", "$style-home-left-boundary").put("steps", steps)
+        cases.put(entry) // Preserve partial evidence if a later key fails.
+        record("natural-first-card")
+        ui.await("$style Home has no existing row with a second visible card", 4_000) {
+            ui.snapshot().ids.mapNotNull { id -> SHELF_CARD.matchEntire(id)?.let { it.groupValues[1] to it.groupValues[2] } }
+                .groupBy({ it.first }, { it.second }).values.any { "0" in it && "1" in it }
+        }
+        val cards = ui.snapshot().ids.mapNotNull { id -> SHELF_CARD.matchEntire(id)?.let {
+            Triple(it.groupValues[1].toInt(), it.groupValues[2].toInt(), id)
+        } }.groupBy { it.first }.toSortedMap().values.first { row -> row.any { it.second == 0 } && row.any { it.second == 1 } }
+        val start = cards.firstOrNull { it.second == 2 } ?: cards.first { it.second == 1 }
+        val first = cards.first { it.second == 0 }.third
+        fun awaitCard(column: Int) = ui.await("$style Left/Right did not reach row ${start.first} column $column", 2_000) {
+            ui.snapshot().focused.any { id -> SHELF_CARD.matchEntire(id)?.let {
+                it.groupValues[1].toInt() == start.first && it.groupValues[2].toInt() == column
+            } == true }
+        }
+        fun awaitNavigation() = ui.await("$style Left at the first card did not reach actual Home navigation", 2_500) {
+            "nav-home" in ui.snapshot().focused
+        }
+        fun returnToFirst(label: String) {
+            ui.key(if (style == "classic") KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_RIGHT, 0)
+            ui.await("$style navigation did not return to its actual boundary card", 2_500) { first in ui.snapshot().focused }
+            ui.settle(250)
+            check(first in ui.snapshot().focused) { "$style content return drifted after the handoff" }
+            record(label)
+        }
+        // Setup only. No accessibility focus is used to repair any tested key transition.
+        ui.focus(start.third)
+        entry.put("source", start.third).put("boundary_card", first)
+        record("public-second-or-middle-card-setup")
+        repeat(start.second) { press ->
+            ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 70)
+            awaitCard(start.second - press - 1)
+            record("fresh-left-${press + 1}")
+        }
+        ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 0)
+        awaitNavigation()
+        record("fresh-left-navigation")
+        ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 0)
+        ui.settle(550)
+        check("nav-home" in ui.snapshot().focused) { "$style an additional Left restarted a stale content handoff" }
+        record("additional-left-navigation-stable")
+        check(ui.device.takeScreenshot(File(directory, "$style-left-navigation.png")))
+        returnToFirst("fresh-left-return")
+        ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 0)
+        ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 0)
+        ui.await("$style fast Right/Left reversal escaped its card", 2_000) { first in ui.snapshot().focused }
+        record("fast-right-left-reversal")
+        repeat(start.second) { column ->
+            ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 70)
+            awaitCard(column + 1)
+        }
+        val downTime = SystemClock.uptimeMillis()
+        fun held(action: Int, repeat: Int) = KeyEvent(downTime, SystemClock.uptimeMillis(), action,
+            KeyEvent.KEYCODE_DPAD_LEFT, repeat, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
+            KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_DPAD)
+        try {
+            // One held press must cross the same boundary; the held-Up policy
+            // must not trap horizontal repeats on the first card.
+            repeat(start.second + 2) { repeatCount ->
+                check(instrumentation.uiAutomation.injectInputEvent(held(KeyEvent.ACTION_DOWN, repeatCount), true))
+                if (repeatCount < start.second) awaitCard(start.second - repeatCount - 1) else awaitNavigation()
+                record("held-left-repeat-$repeatCount")
+            }
+        } finally {
+            check(instrumentation.uiAutomation.injectInputEvent(held(KeyEvent.ACTION_UP, 0), true))
+        }
+        returnToFirst("held-left-release-return")
+        entry.put("status", "passed").put("navigation_screenshot", "$style-left-navigation.png")
+    }
+
     /** Captures real focus rendering; the saved images still require visual inspection. */
     @Test fun classicRemoteFocusPresentation() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -419,5 +622,6 @@ class InterfaceStyleSwitchTest {
         const val APPLE = "settings-interface-apple"
         const val CLASSIC = "settings-interface-classic"
         val PLAYER_CONTROL = Regex("player-(previous|play-pause|next|lyrics-display|lyrics|queue|more|radio)")
+        val SHELF_CARD = Regex("shelf-(\\d+)-item-(\\d+)-[a-z]+")
     }
 }

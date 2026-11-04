@@ -132,7 +132,7 @@ internal fun BrowseShell(
     }
     val scope = rememberCoroutineScope()
     val menuRequester = remember(interfaceStyle) { FocusRequester() }
-    var navigationExpanded by remember { mutableStateOf(classicInterface) }
+    var navigationExpanded by remember { mutableStateOf(false) }
     var navigationPanelVisible by remember(interfaceStyle) { mutableStateOf(false) }
     var expandedBackHandler by remember(interfaceStyle) { mutableStateOf<(() -> Boolean)?>(null) }
     var expandedBackHeld by remember { mutableStateOf(false) }
@@ -220,6 +220,12 @@ internal fun BrowseShell(
     val detailVisits by details.visits.collectAsState()
     val artistVisits by details.artists.visits.collectAsState()
     val detail = detailVisits.lastOrNull()
+    var inputRootBackHeld by remember(destination, detail?.key, auxiliaryPage, interfaceStyle) {
+        mutableStateOf(false)
+    }
+    LaunchedEffect(windowFocused, isBrowseVisible, contextMenuVisible) {
+        if (!windowFocused || !isBrowseVisible || contextMenuVisible) inputRootBackHeld = false
+    }
     // The root remains visible behind the sidebar. Its first data must load
     // before Right can hand focus into it; gating on sidebar closure deadlocks.
     SideEffect { onRootVisibleChange(isBrowseVisible && detail == null && !auxiliaryOpen &&
@@ -231,7 +237,15 @@ internal fun BrowseShell(
         auxiliaryOpen -> auxiliaryContentHasFocus
         else -> rootContentHasFocus
     }
-    val observedContentHasFocus by rememberUpdatedState(currentContentHasFocus)
+    // The key/focus callbacks run before the next composition. Keep the active
+    // page selection current, but read its mutable focus state at call time.
+    val contentHasFocusNow by rememberUpdatedState<() -> Boolean>({
+        when {
+            detail != null -> detailContentHasFocus
+            auxiliaryOpen -> auxiliaryContentHasFocus
+            else -> rootContentHasFocus
+        }
+    })
     val upBoundary = remember(interfaceStyle) { BrowseUpBoundary() }
     LaunchedEffect(interfaceStyle) {
         if (observedInterfaceStyle == interfaceStyle) return@LaunchedEffect
@@ -338,15 +352,23 @@ internal fun BrowseShell(
         resetRootStarted = false
         resetRootPending = false
     }
-    fun handleRootBack() {
+    fun enterNavigation() {
+        if (switchingTab || !isBrowseVisible || isContextMenuOpen() || !upBoundary.allowsMenuFocus()) return
+        // A content edge is an explicit ownership handoff, not a geometric
+        // search that can race an old card-restoration coroutine.
         modalReturnPending = false
-        if (rootReturnToTop?.invoke() == true) return
         contentEntryEpoch++
         contentEntryPending = false
         enterContentAfterNavigation = false
         resetRootStarted = false
         resetRootPending = false
         navigationExpanded = true
+    }
+    fun handleRootBack() {
+        modalReturnPending = false
+        if (rootReturnToTop?.invoke() == true) return
+        upBoundary.release()
+        enterNavigation()
     }
     LaunchedEffect(isBrowseVisible) {
         if (!isBrowseVisible) {
@@ -422,18 +444,25 @@ internal fun BrowseShell(
     LaunchedEffect(destination, isBrowseVisible, detail?.key, collectionState.loading, collectionState.error, returnToContent, auxiliaryPage, contextMenuVisible, modalExitToken, switchingTab, windowFocused, interfaceStyle, interfaceStyleFocusPending) {
         if (!isBrowseVisible || !windowFocused || contextMenuVisible || switchingTab || resetRootPending ||
             settingsFocusPending || observedInterfaceStyle != interfaceStyle) return@LaunchedEffect
-        // The style chooser ends its handoff only after an actual settings
-        // action has focus. Do not replace that owner with a generic first item.
-        if (destination == Destination.Account && currentContentHasFocus) return@LaunchedEffect
+        val entry = when {
+            detail != null -> detail.focus
+            auxiliaryOpen -> auxiliaryFocus
+            else -> contentFocusEntry
+        }
+        // A data/window update is not a new entry intent. Respect real content
+        // focus unless an explicit source return still needs to be fulfilled.
+        fun hasSettledContentOwner() = contentHasFocusNow() && !contentEntryPending &&
+            !enterContentAfterNavigation && entry.preferredReturnRequester == null
+        if (hasSettledContentOwner()) return@LaunchedEffect
         val requestEpoch = contentEntryEpoch
         withFrameNanos { }
-        if (requestEpoch != contentEntryEpoch || navigationExpanded) return@LaunchedEffect
+        if (requestEpoch != contentEntryEpoch || navigationExpanded || hasSettledContentOwner()) return@LaunchedEffect
         // Returning from the player changes visibility without popping a
         // detail or incrementing returnToContent. The old default requested the
         // pill here, and its dwell then opened the sidebar over the source card.
-        // Every content return uses the same placed-target retry path, including
-        // loading details; only a never-entered root starts at the page pill.
-        if (detail != null || auxiliaryOpen || tab.rootHasBeenFocused ||
+        // Home and every content return use the same placed-target retry path,
+        // including loading details. Other fresh roots may start in navigation.
+        if (destination == Destination.Home || detail != null || auxiliaryOpen || tab.rootHasBeenFocused ||
             returnToContent > 0 || enterContentAfterNavigation || modalExitToken > 0) {
             contentEntryPending = true
         } else runCatching { menuRequester.requestFocus() }
@@ -446,7 +475,7 @@ internal fun BrowseShell(
             // A requester can accept a transaction while a lazy target or its
             // native window is being replaced. Only the visible content owner
             // winning actual focus completes this navigation intent.
-            if (!observedContentHasFocus) return false
+            if (!contentHasFocusNow()) return false
             if (detail == null && !auxiliaryOpen && contentFocusEntry.preferredReturnRequester != null) return false
             enterContentAfterNavigation = false
             contentEntryPending = false
@@ -486,12 +515,23 @@ internal fun BrowseShell(
             .onPreviewKeyEvent { event ->
                 val native = event.nativeKeyEvent
                 if (switchingTab) return@onPreviewKeyEvent true
+                if (contentEntryPending && !contentHasFocusNow() && !navigationExpanded &&
+                    native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0 &&
+                    native.keyCode in setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+                        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_BACK)) {
+                    // Cold Home may temporarily focus navigation while its
+                    // first card is loading. A fresh remote action owns that
+                    // fallback; later data must not pull focus away from it.
+                    upBoundary.release()
+                    enterNavigation()
+                }
                 // Snapshot the actual origin before Home/sections advance a
                 // pending cursor. A fast next press during reveal is not a new
                 // permission to leave content; repeats never cross this edge.
                 if (native.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
                     if (native.action == KeyEvent.ACTION_UP) upBoundary.release()
-                    else if (native.action == KeyEvent.ACTION_DOWN && observedContentHasFocus &&
+                    else if (native.action == KeyEvent.ACTION_DOWN && contentHasFocusNow() &&
                         !navigationExpanded && !contextMenuVisible) {
                         val entry = when {
                             detail != null -> detail.focus
@@ -501,7 +541,7 @@ internal fun BrowseShell(
                         upBoundary.upDown(native.repeatCount, entry.navigationUpReady?.invoke() != false)
                     }
                 } else if (native.action == KeyEvent.ACTION_DOWN) upBoundary.release()
-                if (contentEntryPending && observedContentHasFocus && !navigationExpanded &&
+                if (contentEntryPending && contentHasFocusNow() && !navigationExpanded &&
                     native.action == KeyEvent.ACTION_DOWN && native.keyCode in setOf(
                         KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
                         KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
@@ -539,12 +579,23 @@ internal fun BrowseShell(
                 } else false
             }
             .onKeyEvent { event ->
-                // Library first lets its input cancel editing and its child
-                // bubble cancel preparation. Only an otherwise unhandled Back
-                // reaches the root navigation action.
-                if (isBrowseVisible && detail == null && !auxiliaryOpen && !navigationExpanded && !contextMenuVisible &&
-                    destination == Destination.Library && event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
-                    if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP) handleRootBack()
+                // Input roots first let their child cancel editing/IME or
+                // preparation. Own the otherwise unhandled whole Back press
+                // here before Compose can clear focus instead of navigating.
+                val native = event.nativeKeyEvent
+                if (native.keyCode != KeyEvent.KEYCODE_BACK) return@onKeyEvent false
+                val rootAvailable = isBrowseVisible && detail == null && !auxiliaryOpen &&
+                    !navigationExpanded && !contextMenuVisible &&
+                    destination in setOf(Destination.Search, Destination.Account, Destination.Library)
+                if (native.action == KeyEvent.ACTION_UP && inputRootBackHeld) {
+                    inputRootBackHeld = false
+                    if (rootAvailable && !native.isCanceled) handleRootBack()
+                    true
+                } else if (rootAvailable) {
+                    // A child may consume Down to dismiss editing, then let Up
+                    // bubble after editing is false. That release is not a new
+                    // root Back; only this owner's fresh Down grants navigation.
+                    if (native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0) inputRootBackHeld = true
                     true
                 } else false
             }
@@ -657,6 +708,7 @@ internal fun BrowseShell(
                             },
                             firstContentFocusRequester = firstContentFocus,
                             navigationFocusRequester = menuRequester,
+                            onRequestNavigation = ::enterNavigation,
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
@@ -763,15 +815,7 @@ internal fun BrowseShell(
         if (isBrowseVisible) {
             val changeNavigation: (Boolean) -> Unit = expandedChange@{ expanded ->
                 if (switchingTab) return@expandedChange
-                if (expanded) {
-                    modalReturnPending = false
-                    resetRootStarted = false
-                    resetRootPending = false
-                    contentEntryEpoch++
-                    contentEntryPending = false
-                    enterContentAfterNavigation = false
-                }
-                navigationExpanded = expanded
+                if (expanded) enterNavigation() else navigationExpanded = false
             }
             val selectNavigationDestination: (Destination) -> Unit = destinationSelection@{ next ->
                 if (switchingTab) return@destinationSelection
@@ -820,7 +864,11 @@ internal fun BrowseShell(
                     navigationFocused = navigationExpanded,
                     menuRequester = menuRequester,
                     focusRequesters = navigationFocus,
-                    onNavigationFocused = { if (!navigationExpanded) changeNavigation(true) },
+                    onNavigationFocused = {
+                        // Programmatic cold-load fallback is still waiting to
+                        // enter a card. Only a deliberate handoff claims nav.
+                        if (!contentEntryPending && !navigationExpanded) enterNavigation()
+                    },
                     onDestination = selectNavigationDestination,
                     onEnterContent = ::enterContent,
                     registerExpandedBackHandler = { expandedBackHandler = it },

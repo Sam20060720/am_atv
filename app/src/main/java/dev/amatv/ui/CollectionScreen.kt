@@ -271,7 +271,12 @@ internal fun CollectionScreen(
         if (!active || state.loadingMore || state.preparing || state.error != null || state.next == null) return@LaunchedEffect
         if (state.tracks.isEmpty()) onLoadMore()
         else snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
-            .collect { last -> if (last >= (state.tracks.size - 2).coerceAtLeast(2)) onLoadMore() }
+            .collect { last ->
+                // Prefetch by song position: Classic keeps metadata outside
+                // this list, while Apple has two header items before the songs.
+                val lastSong = last - songHeaderCount
+                if (lastSong >= (state.tracks.size - 4).coerceAtLeast(0)) onLoadMore()
+            }
     }
     LaunchedEffect(state.tracks.size, state.next, state.loadingMore, state.error, active, wantsContinuationFocus) {
         if (!active || !wantsContinuationFocus || state.loadingMore || state.error != null || continuationIndex < 0) return@LaunchedEffect

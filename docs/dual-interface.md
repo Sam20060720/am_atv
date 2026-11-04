@@ -29,6 +29,23 @@ the Activity overlay cannot draw above another window. A local fallback is not
 drawn over an enabled global frame. Selection fills remain separate from remote
 focus, and inactive controls release their frame when a menu takes input.
 
+Content-to-navigation handoff is one `BrowseShell` intent: cancel pending content
+focus/scroll work before giving navigation ownership. Each style only places its
+navigation targets. A later layout frame cannot reset a target already chosen by
+the remote. Home initially enters the first available card, and explicit returns
+retain their actual source. The Replay heading action is temporarily hidden in
+both styles; its data and browser remain available in code.
+
+Input roots let text editing/IME handle Back first. Only an unconsumed fresh Down
+grants the root ownership of its matching Up; an orphan release never pops the
+page. Grid restoration uses the actual layout column count and collection paging
+uses song positions after accounting for each layout's metadata headers.
+
+Radio sources still load in parallel, but publish one ordered result with their
+page cursors. Refresh keeps existing content until that result is ready. An empty
+first visit waits for the parallel sources to settle. Cards keep their existing
+opaque artwork crossfade without a second whole-card transparency animation.
+
 Classic includes the current Radio, artist, full-section, Library, pagination,
 context-menu and queue operations even when the original interface had no such
 page. New surfaces use classic geometry while retaining their current behavior.
@@ -48,3 +65,10 @@ items and the Classic list's separate metadata column.
 focus check (`allow_interface_focus=1`). Its screenshots require visual review;
 semantics alone do not prove a frame was rendered. It covers existing player UI
 without starting playback, and records unavailable surfaces as skipped.
+
+`homeLeftBoundaryReturnsToNavigation` (`allow_interface_navigation=1`) checks
+natural Home entry, repeated/held Left, navigation stability and exact source
+return in both styles. `radioFeedRetainsVisibleContent`
+(`allow_radio_stability=1`) samples an ordinary Radio visit for six seconds. It
+records whether source changes were actually observed and never treats warm
+cached content as proof of an uncached load.

@@ -399,9 +399,8 @@ class MusicServices(context: Context) : RecommendationProvider {
     suspend fun radioSectionPage(section: RadioCatalogSection, nextPage: String? = null): LibraryPage =
         api.radioCatalog.page(section, nextPage)
 
-    /** Public editorial sections load independently of personal station/history reads. */
+    /** Fetch independent radio sources in parallel, then publish one ordered result. */
     suspend fun radioShelves(
-        onPartial: (List<ContentShelf>) -> Unit = {},
         onPage: (String, LibraryPage) -> Unit = { _, _ -> },
         onFinished: (Boolean) -> Unit = {},
     ): List<ContentShelf> = coroutineScope {
@@ -412,7 +411,6 @@ class MusicServices(context: Context) : RecommendationProvider {
         suspend fun read(key: String, operation: suspend () -> List<ContentShelf>) {
             try {
                 sections[key] = operation()
-                onPartial(snapshot())
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) { if (firstFailure == null) firstFailure = failure }
         }

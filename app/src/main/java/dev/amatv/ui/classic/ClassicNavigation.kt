@@ -115,8 +115,15 @@ internal fun ClassicNavigation(
     LaunchedEffect(navigationFocused, selected, homeFocusRequested) {
         if (navigationFocused) {
             withFrameNanos { }
-            val target = if (homeFocusRequested) Destination.Home else selected
-            runCatching { focusRequesters.getValue(target).requestFocus() }
+            // A card's boundary request may have already focused a topbar
+            // item before this opening effect resumes. That actual target,
+            // including a deliberate next Left/Right, owns the handoff.
+            val target = when {
+                homeFocusRequested -> Destination.Home
+                focusedDestination == null -> selected
+                else -> null
+            }
+            target?.let { runCatching { focusRequesters.getValue(it).requestFocus() } }
         }
     }
 
@@ -131,7 +138,18 @@ internal fun ClassicNavigation(
                 .padding(start = 40.dp, end = 40.dp, top = 24.dp)
                 .automationId("classic-navigation")
                 .focusProperties { onEnter = { if (!canFocusMenu()) cancelFocusChange() } }
-                .focusGroup(),
+                .focusGroup()
+                .onPreviewKeyEvent { event ->
+                    val key = event.nativeKeyEvent
+                    if (key.action == KeyEvent.ACTION_DOWN && focusedDestination != null &&
+                        key.keyCode in setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
+                            KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)) {
+                        // A newer remote move supersedes an earlier Back's
+                        // pending Home target, even before native focus moves.
+                        homeFocusRequested = false
+                    }
+                    false
+                },
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -151,6 +169,7 @@ internal fun ClassicNavigation(
                         isRtl, menuRequester, focusRequesters,
                         onFocused = {
                             focusedDestination = it
+                            if (it == Destination.Home) homeFocusRequested = false
                             onNavigationFocused()
                         },
                         onFocusLost = {
@@ -171,6 +190,7 @@ internal fun ClassicNavigation(
                         isRtl, menuRequester, focusRequesters,
                         onFocused = {
                             focusedDestination = it
+                            if (it == Destination.Home) homeFocusRequested = false
                             onNavigationFocused()
                         },
                         onFocusLost = {

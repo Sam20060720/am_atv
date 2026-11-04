@@ -31,7 +31,6 @@ import androidx.compose.foundation.gestures.BringIntoViewSpec
 import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
@@ -145,6 +144,9 @@ private sealed interface HomeHeadingAction {
     data class Resource(val track: Track) : HomeHeadingAction { override val key = "see-all" }
     data object StationGenres : HomeHeadingAction { override val key = "station-genres" }
 }
+
+// Keep Replay's data/browser available while its Home entry is hidden.
+private const val HOME_REPLAY_ACTION_VISIBLE = false
 
 /** Home's source-qualified IDs retain the real recommendation identity, never a translated title. */
 internal fun homeShelfInsightsLink(shelfId: String, title: String? = null): HomeInsightsLink? {
@@ -263,6 +265,7 @@ internal fun HomeScreen(
     onPhoneSignIn: (() -> Unit)? = null,
     onLibrarySearch: () -> Unit = {},
     contentAuthorizationRequired: Boolean = false,
+    onRequestNavigation: (() -> Unit)? = null,
 ) {
     Column(modifier.fillMaxSize().automationId("browse-${destination.name.lowercase()}")) {
         when (destination) {
@@ -339,6 +342,7 @@ internal fun HomeScreen(
                         destination == Destination.Home && connectionState == MusicConnectionState.SignedIn
                     },
                     onOpenStationGenres = onOpenGenres.takeIf { destination == Destination.Radio },
+                    onRequestNavigation = onRequestNavigation,
                 )
             }
         }
@@ -777,6 +781,7 @@ private fun HomeShelves(
     onRegisterReturnToTop: ((() -> Boolean)?) -> Unit = {},
     onOpenInsights: ((HomeInsightsLink) -> Unit)? = null,
     onOpenStationGenres: (() -> Unit)? = null,
+    onRequestNavigation: (() -> Unit)? = null,
 ) {
     val homeLayout = homeShelfLayout()
     if (shelves.isEmpty()) {
@@ -921,8 +926,7 @@ private fun HomeShelves(
     } }
     val structure = remember(retained) { arrayOf<List<String>?>(null) }
     val contentEntry = LocalContentFocusEntry.current
-    // Only Replay changes heading membership when focus moves. Other header
-    // focus changes retain the same action lists and their animation state.
+    // Heading membership follows source identities, never transient focus.
     val replayShelf = retained.headerAction?.takeIf { it.second == "insights-replay" && it.first in shelfKey }?.first
         ?: shelves.firstOrNull()?.id
     val headerActions = remember(shelves, onOpenInsights != null, onOpenStationGenres != null, replayShelf) {
@@ -931,7 +935,8 @@ private fun HomeShelves(
                 shelf.seeAll?.let { add(HomeHeadingAction.Resource(it)) }
                 if (onOpenInsights != null) {
                     if (shelf.seeAll == null && shelf.hasMore) homeShelfInsightsLink(shelf.id, shelf.title)?.let { add(HomeHeadingAction.Insights(it)) }
-                    if (shelf.id == replayShelf) add(HomeHeadingAction.Insights(HomeInsightsLink(ListeningInsightsSource.Replay)))
+                    if (HOME_REPLAY_ACTION_VISIBLE && shelf.id == replayShelf)
+                        add(HomeHeadingAction.Insights(HomeInsightsLink(ListeningInsightsSource.Replay)))
                 }
                 if (index == 0 && onOpenStationGenres != null) add(HomeHeadingAction.StationGenres)
             }
@@ -961,7 +966,10 @@ private fun HomeShelves(
             else firstEntry
         // A pending destination is not proof that its native target has focus.
         if (topEntryRequest == 0) navigationCursor.onFocused(committedFocus.shelf, committedFocus.item)
-        val headerRequester = retained.headerAction?.let(headerRequesters::get)
+        // An incidental first native focus on a heading is not a user source.
+        // Initial entry belongs to the first real card; explicit Up/clicks set
+        // userNavigated and still restore their actual heading on return.
+        val headerRequester = retained.headerAction?.takeIf { retained.userNavigated }?.let(headerRequesters::get)
         contentEntry?.requester = headerRequester ?: itemFocusRequesters.getOrNull(committedFocus.shelf)?.getOrNull(committedFocus.item)
         if (headerRequester == null) {
             retained.headerAction = null
@@ -1088,6 +1096,26 @@ private fun HomeShelves(
         navigationCursor.cancel()
         verticalPlan.value = null
         cardWarmup.notifyPrioritiesChanged()
+    }
+
+    fun requestNavigationFocus(): Boolean {
+        val request = onRequestNavigation ?: return false
+        // Leaving content ends its pending scroll/focus work before the host
+        // transfers ownership. Both visual styles use that same handoff.
+        topEntryRequest = 0
+        pendingPageFocus = null
+        contentEntry?.preferredReturnRequester = null
+        cancelVerticalFocus()
+        request()
+        return true
+    }
+
+    fun focusAboveContent() {
+        if (aboveContentFocusRequester != null) {
+            runCatching { aboveContentFocusRequester.requestFocus() }
+        } else if (!requestNavigationFocus()) {
+            navigationFocusRequester?.let { runCatching { it.requestFocus() } }
+        }
     }
 
     fun recordFocused(shelf: Int, item: Int) {
@@ -1379,6 +1407,7 @@ private fun HomeShelves(
                     }
                     if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK) topEntryRequest = 0
                     if (focusedHeader != null) {
+                        val header = focusedHeader
                         retained.userNavigated = true
                         topEntryRequest = 0
                         contentEntry?.preferredReturnRequester = null
@@ -1393,9 +1422,13 @@ private fun HomeShelves(
                             KeyEvent.KEYCODE_DPAD_UP -> {
                                 if (!moveVerticalFocus(-1, includeHeader = false)) {
                                     cancelVerticalFocus()
-                                    (aboveContentFocusRequester ?: navigationFocusRequester)?.let { runCatching { it.requestFocus() } }
+                                    focusAboveContent()
                                 }
                                 return@onPreviewKeyEvent true
+                            }
+                            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                                val firstAction = header?.let { headerActions[it.first]?.firstOrNull() }
+                                return@onPreviewKeyEvent firstAction != null && firstAction.key == header?.second && requestNavigationFocus()
                             }
                             else -> return@onPreviewKeyEvent false
                         }
@@ -1418,9 +1451,7 @@ private fun HomeShelves(
                             pendingPageFocus = null
                             if (!moveVerticalFocus(-1)) {
                                 cancelVerticalFocus()
-                                (aboveContentFocusRequester ?: navigationFocusRequester)?.let { requester ->
-                                    runCatching { requester.requestFocus() }
-                                }
+                                focusAboveContent()
                             }
                             true
                         }
@@ -1432,8 +1463,12 @@ private fun HomeShelves(
                         KeyEvent.KEYCODE_DPAD_LEFT,
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             pendingPageFocus = null
-                            cancelVerticalFocus(keepFocusedRowReveal = true)
-                            false
+                            if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT &&
+                                navigationCursor.focused.item == 0 && requestNavigationFocus()) true
+                            else {
+                                cancelVerticalFocus(keepFocusedRowReveal = true)
+                                false
+                            }
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER,
                         KeyEvent.KEYCODE_ENTER,
@@ -1739,41 +1774,20 @@ private fun HomeCardContent(
     shadow: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
-    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     Box(if (staged) Modifier.fillMaxSize().clearAndSetSemantics { } else Modifier.fillMaxSize()) {
         if (!staged || ready.value) {
-            // Focus opacity invalidates this sibling's display list, not the
-            // offscreen card texture containing images, gradients and labels.
-            // Placeholders still wait for their original mounting permit.
-            val context = LocalContext.current
-            // A warm poster is already visible in the shell: keep it immediate.
-            // Only the first cold content grant needs a short presentation blend.
-            var revealed by remember(track.id, track.artworkUrl, track.motionPreviewUrl, classic) {
-                mutableStateOf(!staged || ArtworkImages.cachedImage(context, track.posterForAspect(
-                    if (!classic && featured && track.motionForAspect(BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value)
-                            ?.aspectRatio?.let { it < .9f } == true)
-                        BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value else 1f,
-                )) != null)
-            }
-            val reveal = if (!revealed) remember { Animatable(0f) } else null
-            if (reveal != null) {
-                LaunchedEffect(reveal) {
-                    reveal.animateTo(1f, tween(120))
-                    revealed = true
-                }
-                HomeCardPlaceholder(track, featured, showLabels = false)
-            }
+            // Artwork already blends each new image over an opaque poster.
+            // Keep the card/labels present when its mounting permit arrives.
             shadow()
-            CachedHomeCard(opacity = { reveal?.value ?: 1f }, content = content)
+            CachedHomeCard(content)
         } else HomeCardPlaceholder(track, featured)
     }
 }
 
 /** Cache the exact foreground raster while its ancestor moves; the shadow stays separate. */
 @Composable
-private fun CachedHomeCard(opacity: () -> Float, content: @Composable () -> Unit) {
+private fun CachedHomeCard(content: @Composable () -> Unit) {
     Box(Modifier.fillMaxSize().graphicsLayer {
-        alpha = opacity()
         // Auto can replay every image/gradient/label during scrolling on a
         // 32-bit TV. Retain the completed card instead, at its existing size.
         compositingStrategy = CompositingStrategy.Offscreen
@@ -1783,9 +1797,9 @@ private fun CachedHomeCard(opacity: () -> Float, content: @Composable () -> Unit
 
 /** No font shaping or image request before the grant; cached covers remain visible. */
 @Composable
-internal fun HomeCardPlaceholder(track: Track, featured: Boolean, showLabels: Boolean = true) {
+internal fun HomeCardPlaceholder(track: Track, featured: Boolean) {
     if (LocalInterfaceStyle.current == InterfaceStyle.Classic) {
-        ClassicHomeCardPlaceholder(track, featured, showLabels)
+        ClassicHomeCardPlaceholder(track, featured)
         return
     }
     val context = LocalContext.current
@@ -1819,7 +1833,6 @@ internal fun HomeCardPlaceholder(track: Track, featured: Boolean, showLabels: Bo
                 ),
                 cornerRadius = CornerRadius(radius),
             )
-            if (!showLabels) return@Canvas
             val textX = if (featured) 14.dp.toPx() else 0f
             val titleY = if (featured) size.height - 43.dp.toPx() else coverHeight + 9.dp.toPx()
             val titleWidth = size.width * (if (featured) 0.72f else 0.84f)
@@ -1841,7 +1854,7 @@ internal fun HomeCardPlaceholder(track: Track, featured: Boolean, showLabels: Bo
 
 /** Original card proportions, with the same cached-poster fallback as Apple. */
 @Composable
-private fun ClassicHomeCardPlaceholder(track: Track, featured: Boolean, showLabels: Boolean) {
+private fun ClassicHomeCardPlaceholder(track: Track, featured: Boolean) {
     val context = LocalContext.current
     val url = track.posterForAspect(1f)
     val cached = remember(url) { ArtworkImages.cachedImage(context, url)?.asPainter(context) }
@@ -1854,7 +1867,6 @@ private fun ClassicHomeCardPlaceholder(track: Track, featured: Boolean, showLabe
                 color = track.palette.first(), size = Size(size.width, imageHeight),
                 cornerRadius = if (featured) CornerRadius.Zero else CornerRadius(ClassicBrowseVisuals.CardRadius.toPx()),
             )
-            if (!showLabels) return@Canvas
             val titleWidth = size.width * 0.64f
             val artistWidth = size.width * 0.42f
             val titleY = imageHeight + (if (featured) 20.dp else 13.dp).toPx()
