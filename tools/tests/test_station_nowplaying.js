@@ -13,14 +13,15 @@ new vm.Script(inline);
 const handlers = {}, reports = [], requests = [];
 const station = {attributes:{name:'Station', artistName:'Curator'}, isLiveRadioStation:true};
 const music = {nowPlayingItem:station, playbackState:2, currentPlaybackDuration:12,
-  currentPlaybackTime:4, storefrontCountryCode:'tw', queue:{length:1,nextPlayableItemIndex:-1,previousPlayableItemIndex:-1},
+  currentPlaybackTime:4, storefrontCountryCode:'us', queue:{length:1,nextPlayableItemIndex:-1,previousPlayableItemIndex:-1},
   addEventListener:(name, callback)=>{handlers[name]=callback;}, setQueue:()=>Promise.resolve(),
   stop:()=>Promise.resolve(), play:()=>Promise.resolve(), pause:()=>Promise.resolve()};
 const context = {console, AbortController, document:{addEventListener:(name, callback)=>{handlers[name]=callback;}},
   bridge:{report:raw=>reports.push(JSON.parse(raw))},
   window:{setTimeout:()=>1,clearTimeout:()=>{},setInterval:()=>1},
   MusicKit:{PlaybackStates:{playing:2,stopped:4,loading:1,waiting:6,stalled:7,seeking:8,completed:9},
-    configure:()=>Promise.resolve(music),formatArtworkURL:a=>a.url.replace('{w}','600').replace('{h}','600')},
+    configure:configuration=>{assert.equal(configuration.storefrontId,'tw');return Promise.resolve(music);},
+    formatArtworkURL:a=>a.url.replace('{w}','600').replace('{h}','600')},
   fetch:(url, options)=>new Promise(resolve=>requests.push({url,options,resolve}))};
 vm.runInNewContext(inline, context);
 const flush = async()=>{for(let i=0;i<10;i++)await Promise.resolve();};
@@ -108,12 +109,15 @@ const latest = ()=>reports.at(-1);
     {country:'tw',ids:{TW:'12345'},expected:'https://api.music.apple.com/v1/catalog/tw/songs/12345'},
     {country:'tw',ids:{'143441':'99999','143462':'88888'},expected:null},
     {country:'us',ids:{'143441':'99999','143470':'12345'},expected:'https://api.music.apple.com/v1/catalog/us/songs/99999'},
+    {country:'jp',ids:{'143441':'99999','143462':'88888'},expected:'https://api.music.apple.com/v1/catalog/jp/songs/88888'},
   ]) {
     const events={},calls=[];
     const wrongDefaultMusic={...music,storefrontCountryCode:'us',storefrontId:'us',nowPlayingItem:station,
       addEventListener:(name,callback)=>{events[name]=callback;}};
     const environment={...context,document:{addEventListener:(name,callback)=>{events[name]=callback;}},
-      bridge:{report:()=>{}},MusicKit:{...context.MusicKit,configure:()=>Promise.resolve(wrongDefaultMusic)},
+      bridge:{report:()=>{}},MusicKit:{...context.MusicKit,configure:configuration=>{
+        assert.equal(configuration.storefrontId,fixture.country);return Promise.resolve(wrongDefaultMusic);
+      }},
       fetch:(url,options)=>{calls.push(url);return new Promise(()=>{});}};
     const configured=inline.replace('"storefront":"tw"','"storefront":"'+fixture.country+'"')
       .replace('"storefrontNumericId":"'+storefrontIds.tw+'"','"storefrontNumericId":"'+storefrontIds[fixture.country]+'"');

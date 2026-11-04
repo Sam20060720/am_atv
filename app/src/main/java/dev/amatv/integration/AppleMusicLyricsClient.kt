@@ -62,8 +62,7 @@ internal data class TtmlDocuments(
 
 /** Fetches Apple Music's canonical TTML and optional localization overlay. */
 class AppleMusicLyricsClient(
-    private val storefront: String,
-    private val storefrontProvider: suspend () -> String = { storefront },
+    private val storefrontProvider: suspend () -> String,
     private val userToken: () -> String?,
     private val webToken: AppleWebPlaybackTokenClient = AppleWebPlaybackTokenClient(),
     /** Debug builds only: raw syllable-lyrics responses are written here for inspection. */
@@ -312,6 +311,8 @@ class AppleWebPlaybackTokenClient internal constructor(private val fetch: suspen
                 cachedToken?.let { return@withLock it }
             }
 
+            // Anonymous bootstrap for the region-independent web bearer only.
+            // User catalog/lyrics requests choose their own account storefront.
             val html = fetch("$MUSIC_ORIGIN/us/browse")
             val assetPaths = extractAssetPaths(html)
             check(assetPaths.isNotEmpty()) { AppText.text(R.string.services_web_player_unavailable) }

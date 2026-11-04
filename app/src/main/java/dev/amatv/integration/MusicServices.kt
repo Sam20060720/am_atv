@@ -93,7 +93,7 @@ class MusicServices(context: Context) : RecommendationProvider {
     private val mediaSession = PlaybackMediaSession(appContext)
     private val playbackPreparation = Mutex()
     private val api = AppleMusicApi(
-        storefront = BuildConfig.APPLE_MUSIC_STOREFRONT,
+        storefront = BuildConfig.APPLE_MUSIC_GUEST_STOREFRONT,
         developerTokens = developerTokens,
         userToken = tokenStore::readUserToken,
     )
@@ -103,18 +103,13 @@ class MusicServices(context: Context) : RecommendationProvider {
         webRequest.request(path, method, body, fresh = method == "GET")
     }
     private val publicBrowse = PublicMusicBrowseClient(
-        storefront = {
-            if (tokenStore.readUserToken().isNullOrBlank()) BuildConfig.APPLE_MUSIC_STOREFRONT
-            else api.userStorefront()
-        },
+        storefront = api::effectiveStorefront,
         language = { appContext.resources.configuration.locales[0].toLanguageTag() },
         editorialRequest = ::requestPublicEditorial,
         parseResource = api::parseResourceItem,
     )
     private val publicEditorialMotion = PublicEditorialMotionClient(
-        storefront = {
-            if (tokenStore.readUserToken().isNullOrBlank()) BuildConfig.APPLE_MUSIC_STOREFRONT else api.userStorefront()
-        },
+        storefront = api::effectiveStorefront,
         language = { appContext.resources.configuration.locales[0].toLanguageTag() },
         cacheDirectory = java.io.File(appContext.cacheDir, "editorial-motion-metadata-v1"),
         cacheGeneration = { contentCache.generation },
@@ -143,7 +138,6 @@ class MusicServices(context: Context) : RecommendationProvider {
         stationWebPlaybackAvailable = stationPlayer.available)
 
     private val appleLyrics = AppleMusicLyricsClient(
-        storefront = BuildConfig.APPLE_MUSIC_STOREFRONT,
         storefrontProvider = api::userStorefront,
         userToken = tokenStore::readUserToken,
         debugDumpDir = if (BuildConfig.DEBUG) java.io.File(appContext.cacheDir, "lyrics-ttml") else null,
@@ -151,7 +145,7 @@ class MusicServices(context: Context) : RecommendationProvider {
         webToken = webPageToken,
     )
     private val google = GoogleTvAuthorization(tokenStore)
-    private val ytm = YtmInnertubeClient(google::accessToken)
+    private val ytm = YtmInnertubeClient(country = api::effectiveStorefront, accessToken = google::accessToken)
     private val resolver = CrossCatalogResolver(api)
 
     /** Opaque per-authorization cache boundary; tokens never reach cache keys or logs. */
@@ -297,7 +291,7 @@ class MusicServices(context: Context) : RecommendationProvider {
     /** Validate the new authorization before replacing the retained TV account. */
     internal suspend fun completePhoneAuthentication(userToken: String) {
         require(isPhoneMusicUserToken(userToken)) { AppText.text(R.string.services_auth_invalid_user_token) }
-        val candidate = AppleMusicApi(BuildConfig.APPLE_MUSIC_STOREFRONT, developerTokens) { userToken }
+        val candidate = AppleMusicApi(BuildConfig.APPLE_MUSIC_GUEST_STOREFRONT, developerTokens) { userToken }
         candidate.userStorefront()
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
         withContext(Dispatchers.IO) { tokenStore.writeUserToken(userToken) }

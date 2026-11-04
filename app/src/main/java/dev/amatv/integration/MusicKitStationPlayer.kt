@@ -146,7 +146,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
 
     fun preparePlayback(track: Track, developerToken: String, userToken: String,
         positionMs: Long = 0L, playWhenReady: Boolean = true,
-        storefront: String = BuildConfig.APPLE_MUSIC_STOREFRONT): Long {
+        storefront: String): Long {
         require(track.catalogKind == CatalogKind.Station)
         val id = track.resourceId ?: track.catalogId
         require(!id.isNullOrBlank())
@@ -455,12 +455,12 @@ internal class MusicKitStationPlayer(private val context: Context) {
     }
 
     private fun stationPage(epoch: Long, id: String, developer: String, user: String, positionMs: Long, storefront: String): String {
-        val country = storefront.trim().lowercase(java.util.Locale.ROOT).takeIf { it.matches(Regex("[a-z]{2}")) }
+        val country = storefront.trim().lowercase(java.util.Locale.ROOT).also { require(it.matches(Regex("[a-z]{2}"))) }
         val configuration = JSONObject().put("epoch", epoch).put("station", id)
             .put("developer", developer).put("user", user).put("position", positionMs / 1000.0)
             .put("build", BuildConfig.VERSION_NAME)
-            .put("storefront", country.orEmpty())
-            .put("storefrontNumericId", country?.let { storefrontNumericIds[it] }.orEmpty())
+            .put("storefront", country)
+            .put("storefrontNumericId", storefrontNumericIds[country].orEmpty())
             .put("spectrumActive", spectrumRequested)
             .put("metadataDiagnostics", BuildConfig.BUILD_TYPE == "benchmark").toString().replace("<", "\\u003c")
         return """
@@ -756,9 +756,8 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 if(!metadata || typeof metadata!=='object') {clearTimedMetadata();report();return;}
                 // The native caller has already resolved the authorized account's
                 // storefront. JS can still report its default US store at startup.
-                var configuredCountry=String(config.storefront || '').toLowerCase();
-                var country=/^[a-z]{2}$/.test(configuredCountry) ? configuredCountry : String(music.storefrontCountryCode || music.storefrontId || '').toLowerCase();
-                var numericStore=configuredCountry===country && /^[1-9][0-9]{2,9}$/.test(String(config.storefrontNumericId || '')) ? String(config.storefrontNumericId) : '';
+                var country=String(config.storefront || '').toLowerCase();
+                var numericStore=/^[1-9][0-9]{2,9}$/.test(String(config.storefrontNumericId || '')) ? String(config.storefrontNumericId) : '';
                 var ids=metadata.storefrontAdamIds || {}, id=ids[country.toUpperCase()] || ids[country] || (numericStore && ids[numericStore]);
                 var key=/^[a-z]{2}$/.test(country) && /^[1-9][0-9]{0,19}$/.test(String(id || '')) ? country+':'+id : null;
                 metadataDiagnostic(key ? 'metadata_exact_id' : 'metadata_missing_id',metadata,country,ids,!!key);
@@ -939,7 +938,8 @@ internal class MusicKitStationPlayer(private val context: Context) {
               document.addEventListener('musickitloaded',function(){
                 diagnostic('script_loaded');
                 try{
-                  Promise.resolve(MusicKit.configure({developerToken:config.developer, app:{name:'AM for TV',build:config.build}}))
+                  Promise.resolve(MusicKit.configure({developerToken:config.developer, storefrontId:config.storefront,
+                    app:{name:'AM for TV',build:config.build}}))
                   .then(function(instance){
                     music=instance || MusicKit.getInstance();
                     music.musicUserToken=config.user;

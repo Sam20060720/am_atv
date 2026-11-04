@@ -21,6 +21,19 @@ class CatalogFeedCacheTest {
     private fun cache(dir: File, now: () -> Long = { 1_000_000L }, limits: CatalogFeedCacheLimits = CatalogFeedCacheLimits()) =
         CatalogFeedCache(dir, { ContentCacheSettings() }, { 0L }, { true }, nowEpochMs = now, limits = limits)
 
+    @Test fun snapshotsFromTheOldRegionFallbackNamespaceAreRefreshed() = runBlocking {
+        val dir = directory(); val cache = cache(dir)
+        assertTrue(cache.write("account", "en-US", CatalogFeedKind.Browse, listOf(shelf()), 0))
+        val current = dir.listFiles()!!.single()
+        val oldDigest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("v1\u0000account\u0000en-US\u0000Browse".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        val old = JSONObject(current.readText()).put("digest", oldDigest)
+        current.delete()
+        File(dir, "$oldDigest.feed").writeText(old.toString())
+        assertNull(cache.read("account", "en-US", CatalogFeedKind.Browse))
+    }
+
     @Test fun publicShelfDestinationSurvivesTheDisplaySnapshotAndOldSnapshotsRemainReadable() = runBlocking {
         val cache = cache(directory())
         val route = song("6828493100").copy(catalogKind = dev.amatv.model.CatalogKind.Page,

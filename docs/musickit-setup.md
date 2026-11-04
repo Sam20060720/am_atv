@@ -12,13 +12,18 @@
      tools/export-developer-token.mjs /private/path/developer-token.jwt
    ```
 
-5. Set the credential file and storefront in the ignored `local.properties`:
+5. Set the credential file and anonymous browsing storefront in the ignored `local.properties`:
 
    ```properties
    sdk.dir=/absolute/path/to/android-sdk
    AM_DEVELOPER_TOKEN_FILE=/private/path/developer-token.jwt
    AM_STOREFRONT=tw
    ```
+
+   `AM_STOREFRONT` is only the signed-out browsing default
+   (`BuildConfig.APPLE_MUSIC_GUEST_STOREFRONT`). Signed-in catalog, lyrics, radio
+   and library management use the account's `/v1/me/storefront` result. A failed
+   account lookup is reported instead of silently changing the country.
 
 6. Run `tools/build-standalone.sh`, install the APK, and sign in on the TV.
 

@@ -71,13 +71,13 @@ B6完整單元測試 **862項通過**，最終mutation針對性測試另有 **41
 
 ## 本地測試版交付 — 2026-11-04
 
-- 分享用 APK：[AMATV-0.6.2-playback-fix-20261104.apk](../dist/AMATV-0.6.2-playback-fix-20261104.apk)，約22.6 MiB；Android 9以上，包含ARM32／ARM64／x86／x86_64。
-- 選用的ADB安裝套件：[APK＋對應baseline profiles](../dist/AMATV-0.6.2-playback-fix-20261104-install-kit.zip)。單獨APK也可正常側載。
+- 分享用 APK：[AMATV-0.6.2-region-fix-20261104.apk](../dist/AMATV-0.6.2-region-fix-20261104.apk)，約22.6 MiB；Android 9以上，包含ARM32／ARM64／x86／x86_64。
+- 選用的ADB安裝套件：[APK＋對應baseline profiles](../dist/AMATV-0.6.2-region-fix-20261104-install-kit.zip)。單獨APK也可正常側載。
 - 版本維持0.6.2／versionCode15。使用既有`standalone` variant，沿用本機既有開發簽章以保留更新相容性；繼承release的R8與資源縮減，除錯及cleartext關閉，沒有測試fixture／probe元件。
-- SHA-256：`58e68844af4c7fca4901cbd345f9a09409252846c3cbf625accb50ca6a2fcd40`。本次為播放啟動回歸修正版，已保留資料安裝至模擬器。
+- SHA-256：`d772cb6a30940870cedd5480a85fb7cb3b73da6e8f7ca3f07e0ffdbb6f4da213`。本次為帳號地區全面修正版，包含前次播放啟動修正，已保留資料安裝至模擬器。
 - 真正的播放錯誤維持清楚提示；一般準備／緩衝超過1.5秒才以淡色小字顯示。包含首頁卡片快取、搜尋樣式、冷載封面、即時準備動態素材，以及歌詞跳轉後回進度條的修正。
 
-本次確認正式建置、APK簽章與APK＋DM配對，並完成82項針對性單測及模擬器歌曲／切歌／電台啟動短測。先前909項單測屬64分區檢查，後續封面17項與緩衝提示8項屬各次針對性驗證，不能當成本次新跑的結果。實體TV首頁改善已由使用者確認，上下仍有偶發尖峰，未宣稱全頁穩定60fps。
+播放修正版完成82項針對性單測及模擬器歌曲／切歌／電台啟動短測；本次地區修正版另完成54項單測及兩份JS契約檢查、正式建置與APK＋DM配對。先前909項單測屬64分區檢查，後續封面17項與緩衝提示8項屬各次針對性驗證，不能當成本次新跑的結果。實體TV首頁改善已由使用者確認，上下仍有偶發尖峰，未宣稱全頁穩定60fps。
 
 實體TV保留先前已確認順暢的版本；[對應復原安裝包](../dist/AMATV-tv-card-cache-install-kit.zip)仍在。本次不操作電視。只做本地Git提交，沒有push、tag或公開發佈。
 
@@ -85,10 +85,16 @@ B6完整單元測試 **862項通過**，最終mutation針對性測試另有 **41
 
 已移除歷次測試的模擬器備份、舊APK／重複解壓安裝包、舊原始追蹤與畫面擷取、一次性解包／工具鏈及專案編譯快取。保留目前運作中的模擬器、必要來源復原檔、最新實體TV量測、修正摘要、正式宣傳影片及仍有用途的回歸測試。先前紀錄中的舊產物路徑為歷史位置，部分已清除；本節連結為目前交付位置。
 
-逐項清理清單保存在[清理紀錄](../work/repo-cleanup/20261104/README.md)；目前APK的建置、安裝與R8 mapping見[播放修正交付](../work/playback-regression/20261104/README.md)。來源與版本比較仍以本文件前述功能群為準，不能把被忽略的測試產物占用量當成Git程式差異。
+逐項清理清單保存在[清理紀錄](../work/repo-cleanup/20261104/README.md)；目前APK的建置、安裝與R8 mapping見[地區修正交付](../work/storefront-audit/20261104/README.md)。來源與版本比較仍以本文件前述功能群為準，不能把被忽略的測試產物占用量當成Git程式差異。
 
 ## 播放啟動回歸修正
 
 播放必要的歌曲／Library映射、storefront及credential讀取使用保留的2槽HTTP排程，沿用既有connection pool，避免被一般4槽首頁／素材請求阻塞。當前歌曲確實產生進度後才預載下一首；手動下一首若app occurrence、catalog ID、原生queue ID、憑證及generation均吻合，確認handoff後沿用該原生項目，避免清掉已備好的provider再prepare。確認不成立則完整準備同一目標。電台使用真帳號地區，取消1.5秒後誤用預設地區的fallback。
 
 82項針對性測試及正式建置通過。模擬器首次prepare、手動原生項目重用與Apple Music 1啟動均有短測；電台冷載此次仍約5.3秒，主要在官方腳本及串流準備。完整原因、界線及交付見[播放修正紀錄](../work/playback-regression/20261104/README.md)。
+
+## 帳號地區全面檢查
+
+移除已登入Catalog查詢失敗後回到build-time地區的共用fallback，並固定storefront請求的帳號token、拒絕換帳號後晚到的舊結果。電台不只metadata，現在連MusicKit configure都明確指定帳號storefront；歌詞與電台的地區參數改為必填。YouTube Music的固定TW改由目前播放目錄地區提供，公開內容／motion共用同一provider。舊feed快取改用新namespace，避免顯示舊版錯誤地區資料。
+
+BuildConfig預設地區已明確改名為`APPLE_MUSIC_GUEST_STOREFRONT`。保留未登入的可設定預設、匿名web bearer的US bootstrap、官方數字地區對照與語言選項；這些用途不決定已登入帳號的目錄地區。54項單測與兩份JS契約測試通過，未宣稱跨國真帳號播放驗收。完整盤點見[地區檢查紀錄](../work/storefront-audit/20261104/README.md)。

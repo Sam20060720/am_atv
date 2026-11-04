@@ -5,7 +5,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class YtmSeedSelectionTest {
-    private val client = YtmInnertubeClient()
+    private val client = YtmInnertubeClient(country = { "tw" })
 
     @Test fun skipsFirstSearchHitWhenItIsWrongArtistOrRecording() {
         val songs = listOf(

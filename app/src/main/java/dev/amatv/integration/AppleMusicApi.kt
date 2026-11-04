@@ -21,6 +21,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -100,6 +101,7 @@ class DeveloperTokenClient(
 class AppleMusicApi(
     private val storefront: String,
     private val developerTokens: DeveloperTokenClient,
+    private val httpCalls: Call.Factory? = null,
     private val userToken: () -> String?,
 ) {
     private data class UserStorefrontCache(val userToken: String, val storefront: String)
@@ -148,10 +150,15 @@ class AppleMusicApi(
                 AppText.text(R.string.services_sign_in_apple_music))
         userStorefrontCache?.takeIf { it.userToken == currentUserToken }?.let { return it.storefront }
         return userStorefrontMutex.withLock {
+            currentCoroutineContext().ensureActive()
+            if (userToken() != currentUserToken) throw CancellationException("Apple account changed during storefront resolution")
             userStorefrontCache?.takeIf { it.userToken == currentUserToken }?.let { return@withLock it.storefront }
-            val root = requestRoot(path = "/v1/me/storefront", needsUserToken = true, playback = true)
+            val root = requestRoot(path = "/v1/me/storefront", needsUserToken = true, playback = true,
+                requestUserToken = currentUserToken)
             val resolved = parseUserStorefrontId(root)
                 ?: error(AppText.text(R.string.services_user_storefront_missing))
+            currentCoroutineContext().ensureActive()
+            if (userToken() != currentUserToken) throw CancellationException("Apple account changed during storefront resolution")
             userStorefrontCache = UserStorefrontCache(currentUserToken, resolved)
             Log.i(TAG, "Apple user storefront=$resolved")
             resolved
@@ -161,7 +168,7 @@ class AppleMusicApi(
     suspend fun effectiveStorefront(): String {
         val currentUserToken = userToken()?.takeIf(String::isNotBlank)
         if (currentUserToken == null) return storefront
-        return runCatching { userStorefront() }.getOrNull() ?: storefront
+        return userStorefront()
     }
 
     suspend fun recommendationShelves(): List<ContentShelf> {
@@ -771,12 +778,13 @@ class AppleMusicApi(
         method: String = "GET",
         postBody: String? = null,
         playback: Boolean = false,
+        requestUserToken: String? = null,
     ): JSONObject = withContext(Dispatchers.IO) { withCatalogRequestDeadline {
         val endpoint = URI("https://api.music.apple.com$path")
         require(path.startsWith("/v1/") && endpoint.scheme == "https" && endpoint.host == "api.music.apple.com" &&
             endpoint.port == -1 && endpoint.userInfo == null && endpoint.fragment == null)
         require(method in setOf("GET", "POST", "PUT", "DELETE"))
-        val musicUserToken = userToken()
+        val musicUserToken = requestUserToken ?: userToken()
         if (needsUserToken) {
             if (musicUserToken.isNullOrBlank()) {
                 throw CatalogRequestException(CatalogFailureReason.Authorization,
@@ -792,7 +800,7 @@ class AppleMusicApi(
                 .header("Authorization", "Bearer $developerToken").header("Accept", "application/json")
                 .apply { if (!musicUserToken.isNullOrBlank()) header("Music-User-Token", musicUserToken) }
                 .method(method, requestBody).build()
-            return CatalogHttpTransport(if (playback) playbackCatalogHttpClient else catalogHttpClient).execute(request)
+            return CatalogHttpTransport(httpCalls ?: if (playback) playbackCatalogHttpClient else catalogHttpClient).execute(request)
         }
 
         val (status, body) = catalogRequestWithTokenRefresh(::execute)

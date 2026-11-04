@@ -174,7 +174,7 @@ class AppleTtmlParserTest {
         assertEquals("en-US", AppleLocaleUtil.getSystemLyricsLanguage(Locale.US))
 
         val client = AppleMusicLyricsClient(
-            storefront = "tw",
+            storefrontProvider = { "tw" },
             userToken = { "token" },
         )
         val documents = client.extractTtmlDocuments(JSONObject(

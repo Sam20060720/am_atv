@@ -5,7 +5,15 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class YtmRadioParsingTest {
-    private val client = YtmInnertubeClient()
+    private val client = YtmInnertubeClient(country = { "tw" })
+
+    @Test fun requestCountryTracksTheCurrentStorefrontInsteadOfAConstant() = kotlinx.coroutines.runBlocking {
+        var storefront = "jp"
+        val regional = YtmInnertubeClient(country = { storefront })
+        assertEquals("JP", regional.requestContext().getJSONObject("client").getString("gl"))
+        storefront = "us"
+        assertEquals("US", regional.requestContext().getJSONObject("client").getString("gl"))
+    }
     private fun song(id: String) = """{"playlistPanelVideoRenderer":{
       "videoId":"$id","title":{"simpleText":"Song $id"},
       "longBylineText":{"simpleText":"Artist"},"lengthText":{"simpleText":"3:00"}}}"""

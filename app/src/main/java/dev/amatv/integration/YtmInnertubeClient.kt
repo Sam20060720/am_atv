@@ -13,6 +13,7 @@ import java.net.URI
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.coroutines.coroutineContext
 import kotlin.math.abs
 
@@ -32,6 +33,7 @@ data class YtmShelf(
 data class YtmRadioPage(val songs: List<YtmSong>, val continuation: String?)
 
 class YtmInnertubeClient(
+    private val country: suspend () -> String,
     private val accessToken: suspend () -> String? = { null },
 ) {
     @Volatile private var visitorData: String? = null
@@ -155,14 +157,19 @@ class YtmInnertubeClient(
         }
     }
 
-    private suspend fun post(endpoint: String, payload: JSONObject): JSONObject {
-        val token = accessToken()
-        val body = JSONObject()
-            .put("context", JSONObject().put("client", JSONObject()
+    internal suspend fun requestContext(): JSONObject {
+        val region = country().trim().uppercase(Locale.ROOT)
+        require(region.matches(Regex("[A-Z]{2}")))
+        return JSONObject().put("client", JSONObject()
                 .put("clientName", "WEB_REMIX")
                 .put("clientVersion", clientVersion)
                 .put("hl", "en")
-                .put("gl", "TW")))
+                .put("gl", region))
+    }
+
+    private suspend fun post(endpoint: String, payload: JSONObject): JSONObject {
+        val token = accessToken()
+        val body = JSONObject().put("context", requestContext())
         payload.keys().forEachRemaining { key -> body.put(key, payload.get(key)) }
         val raw = withContext(io) {
             coroutineContext.ensureActive()

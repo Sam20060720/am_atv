@@ -120,7 +120,9 @@ internal class CatalogFeedCache(
     private fun expired(writtenAt: Long): Boolean = writtenAt <= 0L ||
         (nowEpochMs() >= writtenAt && nowEpochMs() - writtenAt > limits.maxAgeMillis)
     private fun key(scope: String, locale: String, kind: CatalogFeedKind): String = MessageDigest.getInstance("SHA-256")
-        .digest("v1\u0000$scope\u0000$locale\u0000${kind.name}".toByteArray(Charsets.UTF_8))
+        // Earlier snapshots could contain configured-region fallback data for
+        // an authenticated account. Refresh those instead of presenting them.
+        .digest("v2\u0000$scope\u0000$locale\u0000${kind.name}".toByteArray(Charsets.UTF_8))
         .joinToString("") { "%02x".format(it) }
     private fun ownedFiles(): List<File> = directory.listFiles()?.filter {
         it.isFile && it.name.matches(Regex("[a-f0-9]{64}\\.(feed|pending)"))

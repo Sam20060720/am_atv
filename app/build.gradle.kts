@@ -63,7 +63,7 @@ android {
         )
         buildConfigField(
             "String",
-            "APPLE_MUSIC_STOREFRONT",
+            "APPLE_MUSIC_GUEST_STOREFRONT",
             quotedBuildConfig(localSetting("AM_STOREFRONT", "tw")),
         )
         buildConfigField(
