@@ -53,6 +53,7 @@ internal fun CatalogRoomScreen(
     onOpen: (Track, List<Track>) -> Unit,
     onSignIn: () -> Unit = {},
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val contentActive = active && LocalFocusTargetsEnabled.current
     val state by browser.state.collectAsState()
     val profile = state.profile
@@ -114,7 +115,7 @@ internal fun CatalogRoomScreen(
             event.nativeKeyEvent.keyCode != KeyEvent.KEYCODE_DPAD_DOWN) enterSection = null
         false
     }) {
-        Text(title, color = Color.White, fontSize = 29.sp, lineHeight = 35.sp,
+        Text(title, color = Color.White, fontSize = if (classic) 25.sp else 29.sp, lineHeight = if (classic) 30.sp else 35.sp,
             fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
                 .automationId("catalog-room-title").semantics { heading() })
@@ -131,7 +132,7 @@ internal fun CatalogRoomScreen(
                     ?: stringResource(R.string.collection_section_number, index + 1),
                     { selectedSectionKey = key },
                     Modifier.background(if (chosen) Color.White.copy(alpha = 0.08f) else Color.Transparent,
-                        RoundedCornerShape(18.dp)).focusRequester(requester)
+                        RoundedCornerShape(if (classic) 8.dp else 18.dp)).focusRequester(requester)
                         .automationId("catalog-room-section-$index").semantics { selected = chosen }
                         .onFocusChanged { if (it.isFocused) entry?.requester = requester }
                         .focusProperties {

@@ -44,6 +44,13 @@ class CollectionSongNavigationTest {
         assertEquals(duringScroll, collectionSongHighlightTop(7.5f, 10, 536, -20, 118f), .001f)
     }
 
+    @Test fun classicSongOnlyListDoesNotReserveMetadataRows() {
+        val top = collectionSongHighlightTop(3.5f, 3, 90, -10, 65f, headerCount = 0)
+        assertEquals(132.5f, top, .001f)
+        assertEquals(top, collectionSongHighlightTop(3.5f, 4, 155, -10, 65f, headerCount = 0), .001f)
+        assertEquals(top, collectionSongHighlightTop(3.5f, 5, 90, -10, 65f), .001f)
+    }
+
     @Test fun returningToRetainedSongStillRequiresAPlacedFocusNode() {
         val cursor = CollectionSongNavigation(14)
         cursor.request(14)

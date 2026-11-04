@@ -189,6 +189,10 @@ fun AmAtvApp() {
     val lyricsLanguageTag = LocalConfiguration.current.locales[0].toLanguageTag()
     val scope = rememberCoroutineScope()
     val application = context.applicationContext as dev.amatv.AmAtvApplication
+    val interfacePreferences = remember(application) { InterfaceStylePreferences(application) }
+    val interfaceStyle by interfacePreferences.selected.collectAsState()
+    var interfaceStyleFocusPending by remember { mutableStateOf(false) }
+    var interfaceStyleFocusRequest by remember { mutableIntStateOf(0) }
     val runtime = remember(application) { application.playbackRuntime() }
     val services = runtime.services
     val preparation by runtime.preparation.collectAsState()
@@ -2126,6 +2130,7 @@ fun AmAtvApp() {
             contentColor = Color.White,
         ) {
             CompositionLocalProvider(
+                LocalInterfaceStyle provides interfaceStyle,
                 LocalFocusFrameController provides focusFrameController,
                 LocalArtworkMotionEnabled provides (artworkMotionEnabled && !lowPerformanceMode && catalogActionItem == null),
                 LocalEditorialArtworkLoader provides remember(services, contentAccountScope, contentLanguageTag, cacheSettings.revision) {
@@ -2162,6 +2167,7 @@ fun AmAtvApp() {
                     TvBrowseViewport {
                     BrowseShell(
                         services = services,
+                        interfaceStyleFocusPending = interfaceStyleFocusPending,
                         onBackExhausted = ::showExitConfirmation,
                         contextMenuVisible = catalogActionItem != null,
                         isContextMenuOpen = { catalogActionItem != null },
@@ -2269,6 +2275,20 @@ fun AmAtvApp() {
                             playbackPrefs.lowPerformanceMode = it
                         },
                         cacheSettingsContent = { navigationFocus ->
+                            val focusRequest = interfaceStyleFocusRequest
+                            val finishStyleFocusRequest = {
+                                if (focusRequest == interfaceStyleFocusRequest) interfaceStyleFocusPending = false
+                            }
+                            InterfaceStyleSettings(interfaceStyle, { selected ->
+                                if (selected != interfaceStyle) {
+                                    interfaceStyleFocusRequest++
+                                    interfaceStyleFocusPending = true
+                                    interfacePreferences.select(selected)
+                                }
+                            }, navigationFocus, interfaceStyleFocusPending,
+                                focusRequestId = focusRequest,
+                                onFocusRestored = finishStyleFocusRequest,
+                                onFocusRestoreFailed = finishStyleFocusRequest)
                             ArtworkMotionSettings(artworkMotionEnabled, services.artworkMotionPreferences::setEnabled, navigationFocus)
                             LibraryAdditionSettings(services.libraryAdditionPreferences, navigationFocus)
                             LanguageSettings(navigationFocus)

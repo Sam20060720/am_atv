@@ -69,6 +69,7 @@ internal fun CatalogResourceScreen(
         }
         return
     }
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val contentActive = active && LocalFocusTargetsEnabled.current
     val state by browser.state.collectAsState()
     val profile = state.profile
@@ -189,16 +190,16 @@ internal fun CatalogResourceScreen(
                     Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp).semantics { heading() }) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (!(profile?.artworkUrl ?: source.artworkUrl).isNullOrBlank()) MotionArtwork(profile?.item ?: source,
-                                Modifier.size(150.dp).coverShadow(false, 10.dp).coverHairline(10.dp),
+                                Modifier.size(if (classic) 168.dp else 150.dp).coverShadow(false, 10.dp).coverHairline(10.dp),
                                 animate = rememberBrowseMotionReady(contentActive), cornerRadius = 10.dp, onlyWhileVisible = true)
-                            Text(profile?.name ?: source.title, color = Color.White, fontSize = 29.sp, lineHeight = 35.sp, fontWeight = FontWeight.Bold,
+                            Text(profile?.name ?: source.title, color = Color.White, fontSize = if (classic) 25.sp else 29.sp, lineHeight = if (classic) 30.sp else 35.sp, fontWeight = FontWeight.Bold,
                                 modifier = Modifier.weight(1f))
                             if (folderItem != null && openActions != null) {
                                 FocusSurface({ selectedKey = "actions"; entry?.requester = folderActionsFocus; openActions(folderItem) }, Modifier.size(34.dp).focusRequester(folderActionsFocus).pageTopRevealTarget()
                                         .then(if (firstBodyKey == null) Modifier.focusRequester(firstFocus) else Modifier)
                                     .automationId("catalog-folder-actions").catalogMenuKey(folderItem)
                                     .onFocusChanged { if (it.isFocused) { selectedKey = "actions"; entry?.requester = folderActionsFocus; pageTop.request() } }
-                                    .focusProperties { left = menuFocus; up = menuFocus; right = FocusRequester.Cancel }, cornerRadius = 17.dp, focusedScale = 1.04f,
+                                    .focusProperties { left = menuFocus; up = menuFocus; right = FocusRequester.Cancel }, cornerRadius = if (classic) 8.dp else 17.dp, focusedScale = 1.04f,
                                     background = Color.White.copy(alpha = 0.06f), focusedBackground = Color.White.copy(alpha = 0.17f)) {
                                     Icon(Icons.Rounded.MoreHoriz, stringResource(R.string.catalog_more_actions),
                                         Modifier.size(18.dp).align(Alignment.Center), Color.White)

@@ -90,6 +90,7 @@ import dev.amatv.model.CatalogKind
 import dev.amatv.model.ContentShelf
 import dev.amatv.model.Destination
 import dev.amatv.model.Track
+import dev.amatv.ui.classic.ClassicBrowseVisuals
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
@@ -160,16 +161,47 @@ internal fun homeShelfInsightsLink(shelfId: String, title: String? = null): Home
     return recommendation?.let { HomeInsightsLink(ListeningInsightsSource.Recommendations, it, title) }
 }
 
-private fun ContentShelf.cardWidth() = when {
-    id == BrowseInlineSection.Genres.shelfId -> 190.dp
-    featured -> BrowseTokens.ShowcaseWidth
-    else -> BrowseTokens.CardWidth
+/** Geometry changes with the presentation; shelf identity and loading stay shared. */
+private class HomeShelfLayout(val classic: Boolean) {
+    val showcaseWidth = if (classic) ClassicBrowseVisuals.ShowcaseWidth else BrowseTokens.ShowcaseWidth
+    val showcaseHeight = if (classic) ClassicBrowseVisuals.ShowcaseHeight else BrowseTokens.ShowcaseHeight
+    val showcaseRadius = if (classic) ClassicBrowseVisuals.ShowcaseRadius else BrowseTokens.ShowcaseRadius
+    val cardWidth = if (classic) ClassicBrowseVisuals.CardWidth else BrowseTokens.CardWidth
+    val cardHeight = if (classic) ClassicBrowseVisuals.CardHeight else BrowseTokens.CardHeight
+    val cardRadius = if (classic) ClassicBrowseVisuals.CardRadius else BrowseTokens.CardRadius
+    val showcaseFocusScale = if (classic) ClassicBrowseVisuals.ShowcaseFocusScale else BrowseTokens.ShowcaseFocusScale
+    val cardFocusScale = if (classic) ClassicBrowseVisuals.CardFocusScale else BrowseTokens.CardFocusScale
+    val shelfGap = if (classic) 18.dp else BrowseTokens.ShelfGap
+    val headingSize = if (classic) 22.sp else BrowseTokens.HeadingSize
+    val headingLineHeight = if (classic) 26.sp else BrowseTokens.HeadingLineHeight
+    val headingStart = if (classic) 8.dp else BrowseTokens.RowHorizontalPadding
+
+    fun columnGap(featured: Boolean) = if (classic && !featured) 20.dp else BrowseTokens.ColumnGap
+    fun headingGap(featured: Boolean) = if (classic && featured) 12.dp else BrowseTokens.HeadingCardGap
+    fun focusOutset(featured: Boolean) = if (classic) {
+        val width = if (featured) showcaseWidth else cardWidth
+        val scale = if (featured) showcaseFocusScale else cardFocusScale
+        width * ((scale - 1f) / 2f) + CardVisuals.ShadowOutset
+    } else CardVisuals.focusOutset(featured)
 }
 
-private fun ContentShelf.rowHeight() = when {
+private val appleHomeShelfLayout = HomeShelfLayout(classic = false)
+private val classicHomeShelfLayout = HomeShelfLayout(classic = true)
+
+@Composable
+private fun homeShelfLayout() = if (LocalInterfaceStyle.current == InterfaceStyle.Classic)
+    classicHomeShelfLayout else appleHomeShelfLayout
+
+private fun ContentShelf.cardWidth(layout: HomeShelfLayout) = when {
+    id == BrowseInlineSection.Genres.shelfId -> 190.dp
+    featured -> layout.showcaseWidth
+    else -> layout.cardWidth
+}
+
+private fun ContentShelf.rowHeight(layout: HomeShelfLayout) = when {
     id == BrowseInlineSection.Genres.shelfId -> 76.dp + BrowseTokens.RowVerticalPadding * 2
-    featured -> BrowseTokens.ShowcaseRowHeight
-    else -> BrowseTokens.CardRowHeight
+    featured -> layout.showcaseHeight + BrowseTokens.RowVerticalPadding * 2
+    else -> layout.cardHeight + BrowseTokens.RowVerticalPadding * 2
 }
 
 /** Same text-first genre tile as the catalog root, inside the shared shelf. */
@@ -337,7 +369,11 @@ private fun AccountScreen(
     cacheSettingsContent: @Composable () -> Unit = {},
     onPhoneSignIn: (() -> Unit)? = null,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val connected = connectionState == MusicConnectionState.SignedIn
+    val surface = if (classic) Color.White.copy(alpha = 0.14f) else BrowseTokens.Surface
+    val controlHeight = if (classic) 46.dp else 48.dp
+    val controlRadius = if (classic) 23.dp else 12.dp
     val phoneFocus = firstContentFocusRequester ?: remember { FocusRequester() }
     val primaryFocus = if (onPhoneSignIn == null) phoneFocus else remember { FocusRequester() }
     val secondaryFocus = remember { FocusRequester() }
@@ -356,7 +392,7 @@ private fun AccountScreen(
             text = headingOverride
                 ?: if (connected) stringResource(R.string.browse_apple_connected) else stringResource(R.string.browse_apple_sign_in),
             color = Color.White,
-            fontSize = 30.sp,
+            fontSize = if (classic) 32.sp else 30.sp,
             lineHeight = 36.sp,
             fontWeight = FontWeight.Bold,
         )
@@ -364,8 +400,8 @@ private fun AccountScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(BrowseTokens.Surface)
+                    .clip(RoundedCornerShape(if (classic) 14.dp else 12.dp))
+                    .background(if (classic) Color.White.copy(alpha = 0.07f) else BrowseTokens.Surface)
                     .padding(horizontal = 18.dp, vertical = 14.dp),
             ) {
                 Text(
@@ -380,13 +416,13 @@ private fun AccountScreen(
         if (onPhoneSignIn != null && connectionState != MusicConnectionState.Demo) {
             FocusSurface(
                 onClick = onPhoneSignIn,
-                modifier = Modifier.width(280.dp).height(52.dp).focusRequester(phoneFocus)
+                modifier = Modifier.width(280.dp).height(if (classic) 54.dp else 52.dp).focusRequester(phoneFocus)
                     .automationId("account-phone-sign-in").focusProperties {
                         if (navigationFocusRequester != null) up = navigationFocusRequester
                         if (navigationFocusRequester != null) left = navigationFocusRequester
                         right = FocusRequester.Cancel; down = primaryFocus
                     },
-                cornerRadius = 12.dp, focusedScale = 1.025f,
+                cornerRadius = if (classic) 27.dp else 12.dp, focusedScale = if (classic) 1.03f else 1.025f,
                 background = Color.White.copy(alpha = .10f), focusedBackground = Color.White.copy(alpha = .90f),
                 padding = PaddingValues(horizontal = 20.dp),
             ) {
@@ -406,7 +442,7 @@ private fun AccountScreen(
                     onClick = if (connected) onRetry else onSignIn,
                     modifier = Modifier
                         .width(280.dp)
-                        .height(52.dp)
+                        .height(if (classic) 54.dp else 52.dp)
                         .focusRequester(primaryFocus)
                         .focusProperties {
                             if (onPhoneSignIn != null) up = phoneFocus
@@ -414,16 +450,16 @@ private fun AccountScreen(
                             if (navigationFocusRequester != null) left = navigationFocusRequester
                             right = secondaryFocus
                         },
-                    cornerRadius = 12.dp,
-                    focusedScale = 1.025f,
-                    background = Color.White.copy(alpha = 0.10f),
-                    focusedBackground = Color.White.copy(alpha = 0.90f),
+                    cornerRadius = if (classic) 27.dp else 12.dp,
+                    focusedScale = if (classic) 1.03f else 1.025f,
+                    background = Color.White.copy(alpha = if (classic) 0.90f else 0.10f),
+                    focusedBackground = Color.White.copy(alpha = if (classic) 1f else 0.90f),
                     padding = PaddingValues(horizontal = 20.dp),
                 ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             text = if (connected) stringResource(R.string.browse_refresh_apple) else stringResource(R.string.browse_sign_in_tv),
-                            color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
+                            color = if (classic) Color(0xFF111713) else focusSurfaceContentColor(Color.White, Color(0xFF171717)),
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -433,7 +469,7 @@ private fun AccountScreen(
                     onClick = if (connected) onSignOut else onRetry,
                     modifier = Modifier
                         .width(240.dp)
-                        .height(52.dp)
+                        .height(if (classic) 54.dp else 52.dp)
                         .focusRequester(secondaryFocus)
                         .focusProperties {
                             if (onPhoneSignIn != null) up = phoneFocus
@@ -441,16 +477,16 @@ private fun AccountScreen(
                             left = primaryFocus
                             right = FocusRequester.Cancel
                         },
-                    cornerRadius = 12.dp,
-                    focusedScale = 1.025f,
-                    background = BrowseTokens.Surface,
-                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                    cornerRadius = if (classic) 27.dp else 12.dp,
+                    focusedScale = if (classic) 1.03f else 1.025f,
+                    background = surface,
+                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
                     padding = PaddingValues(horizontal = 20.dp),
                 ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             text = if (connected) stringResource(R.string.browse_sign_out_tv) else stringResource(R.string.browse_retry_connection),
-                            color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
+                            color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)),
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -479,18 +515,18 @@ private fun AccountScreen(
             if (ytmPairingConfigured) {
                 FocusSurface(
                     onClick = if (ytmSignedIn) onYtmSignOut else onYtmSignIn,
-                    modifier = Modifier.width(280.dp).height(48.dp).focusProperties {
+                    modifier = Modifier.width(280.dp).height(controlHeight).focusProperties {
                         if (navigationFocusRequester != null) left = navigationFocusRequester
                         right = FocusRequester.Cancel
                     },
-                    cornerRadius = 12.dp,
-                    background = BrowseTokens.Surface,
-                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                    cornerRadius = controlRadius,
+                    background = surface,
+                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
                 ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             if (ytmSignedIn) stringResource(R.string.browse_ytm_sign_out) else stringResource(R.string.browse_ytm_pair),
-                            color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
+                            color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)),
                             fontSize = 16.sp,
                         )
                     }
@@ -516,35 +552,35 @@ private fun AccountScreen(
             ) {
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs - 100L).coerceAtLeast(-3000L)) },
-                    modifier = Modifier.width(96.dp).height(48.dp).focusRequester(offsetFocus[0]).focusProperties {
+                    modifier = Modifier.width(96.dp).height(controlHeight).focusRequester(offsetFocus[0]).focusProperties {
                         if (navigationFocusRequester != null) left = navigationFocusRequester
                         right = offsetFocus[1]
                     },
-                    cornerRadius = 12.dp,
-                    background = BrowseTokens.Surface,
-                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                    cornerRadius = controlRadius,
+                    background = surface,
+                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
                 ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, -100), color = focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.browse_offset_value, -100), color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs - 50L).coerceAtLeast(-3000L)) },
-                    modifier = Modifier.width(90.dp).height(48.dp).focusRequester(offsetFocus[1]).focusProperties {
+                    modifier = Modifier.width(90.dp).height(controlHeight).focusRequester(offsetFocus[1]).focusProperties {
                         left = offsetFocus[0]; right = offsetFocus[2]
                     },
-                    cornerRadius = 12.dp,
-                    background = BrowseTokens.Surface,
-                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                    cornerRadius = controlRadius,
+                    background = surface,
+                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
                 ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, -50), color = focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.browse_offset_value, -50), color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
                 Box(
                     modifier = Modifier
-                        .height(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .height(controlHeight)
+                        .clip(RoundedCornerShape(controlRadius))
                         .background(Color.White.copy(alpha = 0.06f))
                         .padding(horizontal = 20.dp),
                     contentAlignment = Alignment.Center,
@@ -562,29 +598,29 @@ private fun AccountScreen(
                 }
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs + 50L).coerceAtMost(3000L)) },
-                    modifier = Modifier.width(90.dp).height(48.dp).focusRequester(offsetFocus[2]).focusProperties {
+                    modifier = Modifier.width(90.dp).height(controlHeight).focusRequester(offsetFocus[2]).focusProperties {
                         left = offsetFocus[1]; right = offsetFocus[3]
                     },
-                    cornerRadius = 12.dp,
-                    background = BrowseTokens.Surface,
-                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                    cornerRadius = controlRadius,
+                    background = surface,
+                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
                 ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, 50), color = focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.browse_offset_value, 50), color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs + 100L).coerceAtMost(3000L)) },
-                    modifier = Modifier.width(96.dp).height(48.dp).focusRequester(offsetFocus[3]).focusProperties {
+                    modifier = Modifier.width(96.dp).height(controlHeight).focusRequester(offsetFocus[3]).focusProperties {
                         left = offsetFocus[2]
                         right = if (lyricOffsetMs != 0L) offsetFocus[4] else FocusRequester.Cancel
                     },
-                    cornerRadius = 12.dp,
-                    background = BrowseTokens.Surface,
-                    focusedBackground = Color.White.copy(alpha = 0.9f),
+                    cornerRadius = controlRadius,
+                    background = surface,
+                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
                 ) { focused ->
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, 100), color = focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.browse_offset_value, 100), color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
                     }
                 }
                 if (lyricOffsetMs != 0L) {
@@ -595,16 +631,16 @@ private fun AccountScreen(
                             runCatching { offsetFocus[3].requestFocus() }
                             onLyricOffsetChange(0L)
                         },
-                        modifier = Modifier.height(48.dp).focusRequester(offsetFocus[4]).focusProperties {
+                        modifier = Modifier.height(controlHeight).focusRequester(offsetFocus[4]).focusProperties {
                             left = offsetFocus[3]; right = FocusRequester.Cancel
                         },
-                        cornerRadius = 12.dp,
-                        background = BrowseTokens.Surface,
-                        focusedBackground = Color.White.copy(alpha = 0.9f),
+                        cornerRadius = controlRadius,
+                        background = surface,
+                        focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
                         padding = PaddingValues(horizontal = 16.dp),
                     ) { focused ->
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(stringResource(R.string.browse_reset), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.85f), Color(0xFF171717)), fontSize = 14.sp)
+                            Text(stringResource(R.string.browse_reset), color = if (classic) Color.White.copy(alpha = 0.85f) else focusSurfaceContentColor(Color.White.copy(alpha = 0.85f), Color(0xFF171717)), fontSize = 14.sp)
                         }
                     }
                 }
@@ -686,17 +722,19 @@ private fun AccountChoiceButton(
     onClick: () -> Unit,
     modifier: Modifier,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     FocusSurface(
         onClick = onClick,
-        modifier = Modifier.width(220.dp).height(48.dp).then(modifier),
-        cornerRadius = 12.dp,
-        background = if (selected) Color.White.copy(alpha = 0.18f) else BrowseTokens.Surface,
-        focusedBackground = Color.White.copy(alpha = 0.9f),
+        modifier = Modifier.width(220.dp).height(if (classic) 46.dp else 48.dp).then(modifier),
+        cornerRadius = if (classic) 23.dp else 12.dp,
+        background = if (classic) Color.White.copy(alpha = if (selected) 0.26f else 0.12f)
+            else if (selected) Color.White.copy(alpha = 0.18f) else BrowseTokens.Surface,
+        focusedBackground = Color.White.copy(alpha = if (classic) 0.38f else 0.9f),
     ) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
                 text = if (selected) stringResource(R.string.browse_selected_source, label) else label,
-                color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
+                color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)),
                 fontSize = 15.sp,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             )
@@ -740,6 +778,7 @@ private fun HomeShelves(
     onOpenInsights: ((HomeInsightsLink) -> Unit)? = null,
     onOpenStationGenres: (() -> Unit)? = null,
 ) {
+    val homeLayout = homeShelfLayout()
     if (shelves.isEmpty()) {
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1099,7 +1138,7 @@ private fun HomeShelves(
     fun shelfBounds(shelfIndex: Int): ShelfRowBounds {
         val row = rowStates[shelfIndex]
         val layout = row.layoutInfo
-        val outset = with(density) { CardVisuals.focusOutset(shelves[shelfIndex].featured).toPx() }
+        val outset = with(density) { homeLayout.focusOutset(shelves[shelfIndex].featured).toPx() }
         fun ShelfRowBounds.withDrawingFootprint() = copy(cards = cards.map {
             it.copy(left = it.left - outset, width = it.width + outset * 2f)
         })
@@ -1113,8 +1152,8 @@ private fun HomeShelves(
         val viewportWidth = columnState.layoutInfo.viewportSize.width.toFloat()
         return estimateShelfRowBounds(
             shelfSizes[shelfIndex], row.firstVisibleItemIndex, row.firstVisibleItemScrollOffset,
-            with(density) { shelf.cardWidth().toPx() },
-            with(density) { BrowseTokens.ColumnGap.toPx() },
+            with(density) { shelf.cardWidth(homeLayout).toPx() },
+            with(density) { homeLayout.columnGap(shelf.featured).toPx() },
             with(density) { BrowseTokens.RowHorizontalPadding.toPx() }.coerceAtLeast(outset + 1f), viewportWidth,
         ).withDrawingFootprint()
     }
@@ -1172,12 +1211,12 @@ private fun HomeShelves(
             // reaches the end first. Predict that reachable endpoint before the
             // incoming target can report its focus-frame bounds.
             val destinationOffset = if (visible != null) visible.offset - distance else {
-                val rowGap = with(density) { BrowseTokens.ShelfGap.toPx() }
+                val rowGap = with(density) { homeLayout.shelfGap.toPx() }
                 val trailingHeight = (targetShelf until shelves.size).sumOf { index ->
                     val measured = layout.visibleItemsInfo.firstOrNull { it.key == shelves[index].id }?.size?.toFloat()
                     (measured ?: with(density) {
-                        BrowseTokens.HeadingLineHeight.toPx() + BrowseTokens.HeadingCardGap.toPx() +
-                            shelves[index].rowHeight().toPx()
+                        homeLayout.headingLineHeight.toPx() + homeLayout.headingGap(shelves[index].featured).toPx() +
+                            shelves[index].rowHeight(homeLayout).toPx()
                     }).toDouble()
                 }.toFloat() + rowGap * (shelves.lastIndex - targetShelf)
                 maxOf(layout.viewportStartOffset.toFloat(),
@@ -1409,7 +1448,7 @@ private fun HomeShelves(
                     }
                 },
             contentPadding = PaddingValues(bottom = 64.dp),
-            verticalArrangement = Arrangement.spacedBy(BrowseTokens.ShelfGap),
+            verticalArrangement = Arrangement.spacedBy(homeLayout.shelfGap),
         ) {
             itemsIndexed(shelves, key = { _, shelf -> shelf.id }) { shelfIndex, shelf ->
                 Column(Modifier.automationId("home-row-$shelfIndex-count-${shelf.items.size}")) {
@@ -1463,7 +1502,7 @@ private fun HomeShelves(
                             }
                         }
                     }
-                    Spacer(Modifier.height(BrowseTokens.HeadingCardGap))
+                    Spacer(Modifier.height(homeLayout.headingGap(shelf.featured)))
                     val remainingVerticalScroll = remember(shelfIndex, columnState) {
                         derivedStateOf {
                             val offset = columnState.layoutInfo.visibleItemsInfo
@@ -1473,13 +1512,13 @@ private fun HomeShelves(
                     }
                     FocusTrackingRow(
                         state = rowStates[shelfIndex],
-                        focusVisualOutset = CardVisuals.focusOutset(shelf.featured),
+                        focusVisualOutset = homeLayout.focusOutset(shelf.featured),
                         verticalScrollOffset = remainingVerticalScroll,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(shelf.rowHeight())
+                            .height(shelf.rowHeight(homeLayout))
                             .focusGroup(),
-                        horizontalArrangement = Arrangement.spacedBy(BrowseTokens.ColumnGap),
+                        horizontalArrangement = Arrangement.spacedBy(homeLayout.columnGap(shelf.featured)),
                         contentPadding = PaddingValues(
                             horizontal = BrowseTokens.RowHorizontalPadding,
                             vertical = BrowseTokens.RowVerticalPadding,
@@ -1585,6 +1624,7 @@ private fun LibraryLoadMoreCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val homeLayout = homeShelfLayout()
     val label = stringResource(when {
         pagination.loading -> R.string.browse_loading
         pagination.failed -> R.string.browse_load_more_retry
@@ -1594,14 +1634,14 @@ private fun LibraryLoadMoreCard(
     FocusSurface(
         onClick = onClick,
         modifier = modifier
-            .width(if (compact) 190.dp else if (featured) BrowseTokens.ShowcaseWidth else BrowseTokens.CardWidth)
-            .height(if (compact) 76.dp else if (featured) BrowseTokens.ShowcaseHeight else BrowseTokens.CardHeight)
+            .width(if (compact) 190.dp else if (featured) homeLayout.showcaseWidth else homeLayout.cardWidth)
+            .height(if (compact) 76.dp else if (featured) homeLayout.showcaseHeight else homeLayout.cardHeight)
             .semantics { stateDescription = label },
-        cornerRadius = if (featured) BrowseTokens.ShowcaseRadius else BrowseTokens.CardRadius,
-        focusedScale = if (featured) BrowseTokens.ShowcaseFocusScale else BrowseTokens.CardFocusScale,
+        cornerRadius = if (featured) homeLayout.showcaseRadius else homeLayout.cardRadius,
+        focusedScale = if (featured) homeLayout.showcaseFocusScale else homeLayout.cardFocusScale,
         focusedLift = 2.dp,
-        background = BrowseTokens.Surface,
-        focusedBackground = Color(0xFF303033),
+        background = if (homeLayout.classic) Color.White.copy(alpha = 0.06f) else BrowseTokens.Surface,
+        focusedBackground = if (homeLayout.classic) Color.White.copy(alpha = 0.14f) else Color(0xFF303033),
         padding = PaddingValues(16.dp),
     ) {
         if (compact) Row(
@@ -1637,15 +1677,16 @@ private fun LibraryLoadMoreCard(
 
 @Composable
 private fun SectionHeading(text: String, modifier: Modifier = Modifier) {
+    val homeLayout = homeShelfLayout()
     Text(
         text = text,
-        color = Color.White.copy(alpha = 0.94f),
-        fontSize = BrowseTokens.HeadingSize,
-        lineHeight = BrowseTokens.HeadingLineHeight,
-        fontWeight = FontWeight.SemiBold,
+        color = Color.White.copy(alpha = if (homeLayout.classic) 0.66f else 0.94f),
+        fontSize = homeLayout.headingSize,
+        lineHeight = homeLayout.headingLineHeight,
+        fontWeight = if (homeLayout.classic) FontWeight.Bold else FontWeight.SemiBold,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
-        modifier = modifier.padding(start = BrowseTokens.RowHorizontalPadding),
+        modifier = modifier.padding(start = homeLayout.headingStart),
     )
 }
 
@@ -1698,6 +1739,7 @@ private fun HomeCardContent(
     shadow: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     Box(if (staged) Modifier.fillMaxSize().clearAndSetSemantics { } else Modifier.fillMaxSize()) {
         if (!staged || ready.value) {
             // Focus opacity invalidates this sibling's display list, not the
@@ -1706,9 +1748,9 @@ private fun HomeCardContent(
             val context = LocalContext.current
             // A warm poster is already visible in the shell: keep it immediate.
             // Only the first cold content grant needs a short presentation blend.
-            var revealed by remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
+            var revealed by remember(track.id, track.artworkUrl, track.motionPreviewUrl, classic) {
                 mutableStateOf(!staged || ArtworkImages.cachedImage(context, track.posterForAspect(
-                    if (featured && track.motionForAspect(BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value)
+                    if (!classic && featured && track.motionForAspect(BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value)
                             ?.aspectRatio?.let { it < .9f } == true)
                         BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value else 1f,
                 )) != null)
@@ -1742,6 +1784,10 @@ private fun CachedHomeCard(opacity: () -> Float, content: @Composable () -> Unit
 /** No font shaping or image request before the grant; cached covers remain visible. */
 @Composable
 internal fun HomeCardPlaceholder(track: Track, featured: Boolean, showLabels: Boolean = true) {
+    if (LocalInterfaceStyle.current == InterfaceStyle.Classic) {
+        ClassicHomeCardPlaceholder(track, featured, showLabels)
+        return
+    }
     val context = LocalContext.current
     val portrait = featured && track.motionForAspect(
         BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value,
@@ -1793,6 +1839,116 @@ internal fun HomeCardPlaceholder(track: Track, featured: Boolean, showLabels: Bo
     }
 }
 
+/** Original card proportions, with the same cached-poster fallback as Apple. */
+@Composable
+private fun ClassicHomeCardPlaceholder(track: Track, featured: Boolean, showLabels: Boolean) {
+    val context = LocalContext.current
+    val url = track.posterForAspect(1f)
+    val cached = remember(url) { ArtworkImages.cachedImage(context, url)?.asPainter(context) }
+    val coverHeight = if (featured) 184.dp else ClassicBrowseVisuals.CardWidth
+    Box(Modifier.fillMaxSize().clip(RoundedCornerShape(ClassicBrowseVisuals.CardRadius))) {
+        Canvas(Modifier.fillMaxSize()) {
+            val imageHeight = coverHeight.toPx()
+            if (featured) drawRect(track.palette.last().copy(alpha = 0.58f))
+            if (cached == null) drawRoundRect(
+                color = track.palette.first(), size = Size(size.width, imageHeight),
+                cornerRadius = if (featured) CornerRadius.Zero else CornerRadius(ClassicBrowseVisuals.CardRadius.toPx()),
+            )
+            if (!showLabels) return@Canvas
+            val titleWidth = size.width * 0.64f
+            val artistWidth = size.width * 0.42f
+            val titleY = imageHeight + (if (featured) 20.dp else 13.dp).toPx()
+            val titleX = if (featured) (size.width - titleWidth) / 2f else 0f
+            val artistX = if (featured) (size.width - artistWidth) / 2f else 0f
+            drawRoundRect(Color.White.copy(alpha = 0.12f), Offset(titleX, titleY),
+                Size(titleWidth, 8.dp.toPx()), CornerRadius(4.dp.toPx()))
+            drawRoundRect(Color.White.copy(alpha = 0.07f), Offset(artistX, titleY + 16.dp.toPx()),
+                Size(artistWidth, 6.dp.toPx()), CornerRadius(3.dp.toPx()))
+        }
+        if (cached != null) Image(
+            painter = cached, contentDescription = null,
+            contentScale = if (track.catalogKind == CatalogKind.Station) ContentScale.Fit else ContentScale.Crop,
+            modifier = Modifier.fillMaxWidth().height(coverHeight)
+                .clip(RoundedCornerShape(if (featured) 0.dp else ClassicBrowseVisuals.CardRadius)),
+        )
+    }
+}
+
+/** Classic editorial layout shares the mounting, actions and motion lifecycle. */
+@Composable
+private fun ClassicTopPick(
+    label: String,
+    track: Track,
+    onClick: () -> Unit,
+    focusModifier: Modifier,
+    warmup: HomeCardWarmup?,
+    mountPriority: () -> Int,
+) {
+    val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
+        listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
+    }
+    val contentReady = rememberHomeCardMount(warmup, mountKey, mountPriority)
+    val backdrop = LocalBrowseBackdropController.current
+    val actionMenu = catalogMenuFor(track)
+    val genericEyebrows = listOf(
+        stringResource(R.string.browse_kind_song), stringResource(R.string.browse_kind_album),
+        stringResource(R.string.browse_kind_playlist), "Song", "Album", "Playlist",
+    )
+    val distinctEyebrow = label.takeIf {
+        it.isNotBlank() && !it.equals(track.artist, ignoreCase = true) &&
+            genericEyebrows.none { generic -> it.equals(generic, ignoreCase = true) }
+    }.orEmpty()
+    Column(Modifier.width(ClassicBrowseVisuals.ShowcaseWidth).height(ClassicBrowseVisuals.ShowcaseHeight)) {
+        Box(Modifier.fillMaxWidth().height(24.dp), contentAlignment = Alignment.TopStart) {
+            if (contentReady.value) Text(distinctEyebrow,
+                color = Color.White.copy(alpha = 0.62f), fontSize = 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        FocusSurface(
+            onClick = onClick,
+            onLongClick = actionMenu?.let { open -> { open(track) } },
+            onLongClickLabel = stringResource(R.string.actions_menu),
+            deferIdleVisuals = warmup != null, stableGeometry = true,
+            modifier = focusModifier.catalogMenuKey(track)
+                .onFocusChanged { if (it.isFocused) backdrop?.select(track) }
+                .homeCardSemantics(track, contentReady, warmup != null)
+                .fillMaxWidth().height(256.dp),
+            cornerRadius = ClassicBrowseVisuals.ShowcaseRadius,
+            focusedScale = ClassicBrowseVisuals.ShowcaseFocusScale, focusedLift = ClassicBrowseVisuals.CardLift,
+            restingElevation = 0.dp, focusedElevation = 0.dp, showBorder = false,
+            background = Color.Transparent, focusedBackground = Color.Transparent,
+        ) { focused ->
+            HomeCardContent(contentReady, track, featured = true, staged = warmup != null,
+                shadow = { Box(Modifier.fillMaxSize().coverShadow(focused, ClassicBrowseVisuals.ShowcaseRadius, isolated = true)) }) {
+                Column(Modifier.fillMaxSize().clip(RoundedCornerShape(ClassicBrowseVisuals.CardRadius))
+                    .background(track.palette.last().copy(alpha = 0.58f))) {
+                    Box(Modifier.weight(1f)) {
+                        MotionArtwork(track, Modifier.fillMaxSize(),
+                            animate = rememberBrowseMotionReady(focused), cornerRadius = 0.dp,
+                            artworkAspectRatio = 1f)
+                    }
+                    Column(Modifier.fillMaxWidth().height(72.dp)
+                        .background(Brush.verticalGradient(listOf(
+                            Color.Black.copy(alpha = 0.08f), Color.Black.copy(alpha = 0.32f))))
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center) {
+                        Text(track.title, color = Color.White.copy(alpha = 0.96f),
+                            fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold,
+                            textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (track.artist.isNotBlank()) {
+                            Spacer(Modifier.height(2.dp))
+                            Text(track.artist, color = Color.White.copy(alpha = 0.72f),
+                                fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun TopPick(
     label: String,
@@ -1802,6 +1958,10 @@ private fun TopPick(
     warmup: HomeCardWarmup? = null,
     mountPriority: () -> Int = { 1 },
 ) {
+    if (LocalInterfaceStyle.current == InterfaceStyle.Classic) {
+        ClassicTopPick(label, track, onClick, focusModifier, warmup, mountPriority)
+        return
+    }
     val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
         listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
     }
@@ -1907,6 +2067,7 @@ private fun RecentCard(
     warmup: HomeCardWarmup? = null,
     mountPriority: () -> Int = { 1 },
 ) {
+    val homeLayout = homeShelfLayout()
     val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
         listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
     }
@@ -1920,10 +2081,10 @@ private fun RecentCard(
         deferIdleVisuals = warmup != null,
         stableGeometry = true,
         modifier = focusModifier.catalogMenuKey(track).onFocusChanged { if (it.isFocused) backdrop?.select(track) }.homeCardSemantics(track, contentReady, warmup != null)
-            .width(BrowseTokens.CardWidth).height(BrowseTokens.CardHeight),
-        cornerRadius = BrowseTokens.CardRadius,
-        focusedScale = BrowseTokens.CardFocusScale,
-        focusedLift = 1.dp,
+            .width(homeLayout.cardWidth).height(homeLayout.cardHeight),
+        cornerRadius = homeLayout.cardRadius,
+        focusedScale = homeLayout.cardFocusScale,
+        focusedLift = if (homeLayout.classic) ClassicBrowseVisuals.CardLift else 1.dp,
         restingElevation = 0.dp,
         focusedElevation = 0.dp,
         showBorder = false,
@@ -1931,35 +2092,35 @@ private fun RecentCard(
         focusedBackground = Color.Transparent,
     ) { focused ->
         HomeCardContent(contentReady, track, featured = false, staged = warmup != null,
-            shadow = { Box(Modifier.size(BrowseTokens.CardWidth).coverShadow(focused, BrowseTokens.CardRadius, isolated = true)) }) {
+            shadow = { Box(Modifier.size(homeLayout.cardWidth).coverShadow(focused, homeLayout.cardRadius, isolated = true)) }) {
             Column {
-                Box(Modifier.size(BrowseTokens.CardWidth)
-                    .coverHairline(BrowseTokens.CardRadius)) {
+                Box(Modifier.size(homeLayout.cardWidth)
+                    .coverHairline(homeLayout.cardRadius)) {
                     MotionArtwork(
                         track = track,
                         modifier = Modifier.fillMaxSize(),
                         animate = rememberBrowseMotionReady(focused),
-                        cornerRadius = BrowseTokens.CardRadius,
+                        cornerRadius = homeLayout.cardRadius,
                     )
                 }
                 Text(
                     text = track.title,
-                    color = Color.White.copy(alpha = 0.96f),
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp,
-                    fontWeight = FontWeight.Medium,
+                    color = Color.White.copy(alpha = if (homeLayout.classic) 0.92f else 0.96f),
+                    fontSize = if (homeLayout.classic) ClassicBrowseVisuals.CardTitleSize else 12.sp,
+                    lineHeight = if (homeLayout.classic) 20.sp else 16.sp,
+                    fontWeight = if (homeLayout.classic) FontWeight.SemiBold else FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 7.dp),
+                    modifier = Modifier.padding(top = if (homeLayout.classic) 9.dp else 7.dp),
                 )
                 Text(
                     text = track.artist,
-                    color = Color.White.copy(alpha = 0.58f),
-                    fontSize = 11.sp,
-                    lineHeight = 14.sp,
+                    color = Color.White.copy(alpha = if (homeLayout.classic) 0.56f else 0.58f),
+                    fontSize = if (homeLayout.classic) ClassicBrowseVisuals.CardSubtitleSize else 11.sp,
+                    lineHeight = if (homeLayout.classic) 18.sp else 14.sp,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(top = 2.dp),
+                    modifier = Modifier.padding(top = if (homeLayout.classic) 1.dp else 2.dp),
                 )
             }
         }

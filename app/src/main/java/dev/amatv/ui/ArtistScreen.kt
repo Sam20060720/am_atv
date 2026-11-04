@@ -38,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.amatv.ui.classic.ClassicBrowseVisuals
 import dev.amatv.R
 import dev.amatv.integration.CatalogPresentationCapabilities
 import dev.amatv.model.ArtistSection
@@ -65,6 +66,7 @@ internal fun ArtistScreen(
     onOpen: (Track, List<Track>) -> Unit,
     onSignIn: () -> Unit = {},
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val contentActive = active && LocalBrowseContentVisible.current && LocalFocusTargetsEnabled.current
     val list = rememberLazyListState()
     var contentHasFocus by remember { mutableStateOf(false) }
@@ -306,7 +308,7 @@ internal fun ArtistScreen(
                     Column(Modifier.weight(1f)
                         .automationId("artist-profile-${artist.resourceType}-${artist.resourceId ?: artist.id}"),
                         verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                        Text(artist.title, modifier = Modifier.automationId("artist-title"), color = Color.White, fontSize = 31.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold,
+                        Text(artist.title, modifier = Modifier.automationId("artist-title"), color = Color.White, fontSize = if (classic) 28.sp else 31.sp, lineHeight = if (classic) 34.sp else 36.sp, fontWeight = FontWeight.Bold,
                             maxLines = 2, overflow = TextOverflow.Ellipsis)
                         profile?.genreNames?.takeIf { it.isNotEmpty() }?.let {
                             Text(it.joinToString(" · "), color = Color.White.copy(alpha = 0.55f), fontSize = 12.sp, lineHeight = 17.sp)
@@ -431,8 +433,10 @@ internal fun CatalogShelf(
     prefetchParent: LazyListState? = null,
     prefetchParentKey: Any? = null,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val cardWidth = if (classic) ClassicBrowseVisuals.CardWidth else BrowseTokens.CardWidth
     val row = rememberLazyListState()
-    rememberArtworkPrefetch(page.items, row, active, coverSize = BrowseTokens.CardWidth,
+    rememberArtworkPrefetch(page.items, row, active, coverSize = cardWidth,
         parentViewport = prefetchParent, parentItemKey = prefetchParentKey)
     val entry = LocalContentFocusEntry.current
     val requesters = remember { mutableMapOf<String, FocusRequester>() }
@@ -487,7 +491,7 @@ internal fun CatalogShelf(
     Column(Modifier.fillMaxWidth().automationId("$automationPrefix-section-${sectionKey.lowercase()}")
         .semantics { collectionInfo = CollectionInfo(rowCount = 1, columnCount = page.items.size) }
         .then(cancelPending)) {
-        Text(title, color = Color.White.copy(alpha = 0.94f), fontSize = 18.sp, lineHeight = BrowseTokens.HeadingLineHeight,
+        Text(title, color = Color.White.copy(alpha = 0.94f), fontSize = if (classic) 21.sp else 18.sp, lineHeight = if (classic) 27.sp else BrowseTokens.HeadingLineHeight,
             fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 14.dp, bottom = 5.dp))
         if (page.items.isEmpty()) {
             if (selectedKey == statusKey) SideEffect { entry?.requester = entryFocus }
@@ -495,7 +499,7 @@ internal fun CatalogShelf(
                 ArtistTextAction(if (page.loading || !page.failed) stringResource(R.string.browse_tracks_loading) else catalogRecoveryLabel(page.failureReason),
                     { if (page.failed && !page.loading) performCatalogRecovery(page.failureReason,
                         { wantsStatusContent = true; onRetry() }, onSignIn) },
-                    Modifier.width(BrowseTokens.CardWidth + 42.dp).focusRequester(entryFocus)
+                    Modifier.width(cardWidth + 42.dp).focusRequester(entryFocus)
                         .onFocusChanged {
                             if (it.isFocused) { wantsStatusContent = true; onSelected(statusKey) }
                         }.focusProperties { left = menuFocus; right = FocusRequester.Cancel },
@@ -527,7 +531,7 @@ internal fun CatalogShelf(
                         { appendIndex = page.items.size; onRetry() }, onSignIn)
                     else { appendIndex = page.items.size; onMore() }
                 } },
-                    Modifier.width(BrowseTokens.CardWidth).height(BrowseTokens.CardWidth).focusRequester(footerFocus)
+                    Modifier.width(cardWidth).height(cardWidth).focusRequester(footerFocus)
                         .then(if (retainedEntry == "${sectionKey}:more") Modifier.focusRequester(entryFocus) else Modifier)
                         .onFocusChanged { if (it.isFocused) { retainedEntryKey = "${sectionKey}:more"; onSelected("${sectionKey}:more") } }
                         .focusProperties { right = FocusRequester.Cancel }, enabled = !page.loading, retainFocus = true)
@@ -539,26 +543,33 @@ internal fun CatalogShelf(
 @Composable
 internal fun ArtistCover(item: Track, modifier: Modifier, onClick: () -> Unit) {
     val artist = item.catalogKind == CatalogKind.Artist
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val cardWidth = if (classic) ClassicBrowseVisuals.CardWidth else BrowseTokens.CardWidth
+    val cardHeight = if (classic) ClassicBrowseVisuals.CardHeight else BrowseTokens.CardHeight
     val openActions = catalogMenuFor(item)
-    val radius = if (artist) 62.dp else BrowseTokens.CardRadius
-    FocusSurface(onClick, modifier.catalogMenuKey(item).width(BrowseTokens.CardWidth).height(BrowseTokens.CardHeight).pageTopRevealTarget(),
-        focusedScale = BrowseTokens.CardFocusScale, background = Color.Transparent, focusedBackground = Color.Transparent,
+    val radius = if (artist) cardWidth / 2 else if (classic) ClassicBrowseVisuals.CardRadius else BrowseTokens.CardRadius
+    FocusSurface(onClick, modifier.catalogMenuKey(item).width(cardWidth).height(cardHeight).pageTopRevealTarget(),
+        focusedScale = if (classic) ClassicBrowseVisuals.CardFocusScale else BrowseTokens.CardFocusScale,
+        focusedLift = if (classic) ClassicBrowseVisuals.CardLift else 0.dp, background = Color.Transparent, focusedBackground = Color.Transparent,
         onLongClick = openActions?.let { { it(item) } }) { focused ->
         Column(horizontalAlignment = if (artist) Alignment.CenterHorizontally else Alignment.Start) {
-            MotionArtwork(item, Modifier.size(BrowseTokens.CardWidth).coverShadow(focused, radius).coverHairline(radius),
+            MotionArtwork(item, Modifier.size(cardWidth).coverShadow(focused, radius).coverHairline(radius),
                 animate = rememberBrowseMotionReady(focused), cornerRadius = radius)
-            Text(item.title, color = Color.White.copy(alpha = 0.95f), fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
-            if (!artist) Text(item.artist, color = Color.White.copy(alpha = 0.55f), fontSize = 11.sp, lineHeight = 14.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            Text(item.title, color = Color.White.copy(alpha = 0.95f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
+                fontWeight = if (classic) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = if (classic) 9.dp else 7.dp))
+            if (!artist) Text(item.artist, color = Color.White.copy(alpha = 0.55f),
+                fontSize = if (classic) ClassicBrowseVisuals.CardSubtitleSize else 11.sp, lineHeight = if (classic) 17.sp else 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = if (classic) 1.dp else 2.dp))
         }
     }
 }
 
 @Composable
 internal fun ArtistTextAction(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, retainFocus: Boolean = false) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     FocusSurface({ if (enabled) onClick() }, modifier.heightIn(min = 36.dp).pageTopRevealTarget(), enabled = enabled || retainFocus,
-        interactionFeedbackEnabled = enabled, cornerRadius = 18.dp, focusedScale = 1.025f,
+        interactionFeedbackEnabled = enabled, cornerRadius = if (classic) 8.dp else 18.dp, focusedScale = 1.025f,
         background = Color.White.copy(alpha = if (enabled) 0.08f else 0.03f),
         focusedBackground = Color.White.copy(alpha = if (enabled) 0.85f else if (retainFocus) 0.10f else 0.03f),
         padding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)) {

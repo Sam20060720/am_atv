@@ -3,6 +3,9 @@ Ldev/amatv/ui/AtvAppKt;
 HSPLdev/amatv/MainActivity*;->**(**)**
 HSPLdev/amatv/ui/AtvAppKt*;->**(**)**
 HPLdev/amatv/ui/HomeScreenKt*;->**(**)**
+HPLdev/amatv/ui/CatalogBrowseHostKt*;->**(**)**
+HPLdev/amatv/ui/BrowseTabSession*;->**(**)**
+HPLdev/amatv/ui/classic/ClassicNavigationKt*;->**(**)**
 HPLdev/amatv/ui/FocusKt*;->**(**)**
 HPLdev/amatv/ui/ContentFocusEntry*;->**(**)**
 HPLdev/amatv/ui/DeferredFocusInteractionSource*;->**(**)**

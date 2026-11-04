@@ -71,6 +71,9 @@ internal fun CollectionScreen(
     onOpenArtist: (Track) -> Unit = {},
 ) {
     val collection = state.collection ?: return
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val songHeaderCount = if (classic) 0 else 2
+    val songRowHeight = if (classic) 64.dp else 58.dp
     val openActions = LocalCatalogActionMenu.current
     val moreFocus = remember { FocusRequester() }
     val listState = rememberLazyListState()
@@ -86,6 +89,7 @@ internal fun CollectionScreen(
     var focusJob by remember { mutableStateOf<Job?>(null) }
     val songNavigation = remember(collection.id) { CollectionSongNavigation(savedSongFocus.coerceAtLeast(0)) }
     var rightContentHasFocus by remember { mutableStateOf(false) }
+    var classicActionsHaveFocus by remember { mutableStateOf(false) }
     val songSelection = remember(collection.id) { Animatable(savedSongFocus.coerceAtLeast(0).toFloat()) }
     val selectionWasVisible = remember(collection.id) { booleanArrayOf(false) }
     val playFocus = firstFocus
@@ -118,15 +122,15 @@ internal fun CollectionScreen(
     // Play focus through loading/error. Only a currently owned Shuffle needs
     // a handoff before its error-state focusability is disabled. Capture that
     // ownership in composition; a sidebar/pill focus must never be reclaimed.
-    val moveFailedShuffleToRetry = initialEmptyError && active && rightContentHasFocus &&
+    val moveFailedShuffleToRetry = initialEmptyError && active && (rightContentHasFocus || classicActionsHaveFocus) &&
         savedSongFocus < 0 && savedControlFocus == "shuffle"
     SideEffect {
         if (moveFailedShuffleToRetry) runCatching { playFocus.requestFocus() }
     }
-    rememberArtworkPrefetch(state.tracks, listState, active, coverSize = 38.dp, itemIndexOffset = 2)
+    rememberArtworkPrefetch(state.tracks, listState, active, coverSize = if (classic) 42.dp else 38.dp, itemIndexOffset = songHeaderCount)
     val latestActive by rememberUpdatedState(active)
     val guard = with(LocalDensity.current) { 24.dp.toPx() }
-    val rowStep = with(LocalDensity.current) { 58.dp.toPx() }
+    val rowStep = with(LocalDensity.current) { songRowHeight.toPx() }
     val motionStyle = LocalFocusMotionStyle.current
     val selectionVisible = active && (rightContentHasFocus || songNavigation.pending) && savedSongFocus >= 0
     LaunchedEffect(savedSongFocus, selectionVisible, motionStyle) {
@@ -143,9 +147,9 @@ internal fun CollectionScreen(
     val pageTop = rememberPageTopReveal(listState, edgeClearance = 24.dp) {
         if (!active || !rightContentHasFocus) null
         else when {
-            savedSongFocus == 0 -> 2
-            savedSongFocus < 0 && savedControlFocus.startsWith("artist:") -> 0
-            savedSongFocus < 0 && savedControlFocus in setOf("play", "retry", "shuffle", "more") -> 1
+            savedSongFocus == 0 -> songHeaderCount
+            !classic && savedSongFocus < 0 && savedControlFocus.startsWith("artist:") -> 0
+            !classic && savedSongFocus < 0 && savedControlFocus in setOf("play", "retry", "shuffle", "more") -> 1
             else -> null
         }
     }
@@ -175,6 +179,10 @@ internal fun CollectionScreen(
         focusJob = null
         // Focus owns the reveal when the target is already placed. Scrolling
         // first would leave the selection pill attached to the previous song.
+        if (classic) {
+            if (latestActive) runCatching { actionEntryFocus.requestFocus() }
+            return
+        }
         if (latestActive && listState.layoutInfo.visibleItemsInfo.any { it.index == 1 } &&
             runCatching { actionEntryFocus.requestFocus() }.getOrDefault(false)) return
         focusJob = scope.launch {
@@ -191,7 +199,7 @@ internal fun CollectionScreen(
         val key = "artist:${artist.resourceType}:${artist.resourceId ?: artist.id}"
         focusJob?.cancel()
         focusJob = scope.launch {
-            listState.animateScrollToItem(0)
+            if (!classic) listState.animateScrollToItem(0)
             artistRowState.scrollToItem(index)
             repeat(3) {
                 withFrameNanos { }
@@ -218,7 +226,7 @@ internal fun CollectionScreen(
                 // final intent, but must not scroll the actual focused row far
                 // offscreen while waiting for an uncomposed target.
                 val next = songNavigation.nextStep()
-                val target = next + 2
+                val target = next + songHeaderCount
                 var acquired = false
                 if (runCatching { songFocus[next].requestFocus() }.getOrDefault(false)) {
                     songNavigation.focused(next)
@@ -226,7 +234,7 @@ internal fun CollectionScreen(
                 } else coroutineScope {
                     val scroll = launch {
                         val layout = listState.layoutInfo
-                        val anchor = layout.visibleItemsInfo.filter { it.index in 2 until state.tracks.size + 2 }
+                        val anchor = layout.visibleItemsInfo.filter { it.index in songHeaderCount until state.tracks.size + songHeaderCount }
                             .minByOrNull { kotlin.math.abs(it.index - target) }
                         if (anchor != null) {
                             // A lazy item also contains its trailing divider.
@@ -288,6 +296,133 @@ internal fun CollectionScreen(
         backdropController?.select(collection)
     }
 
+    val metadataContent: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth().automationId("collection-metadata")) {
+            Text(collection.title, fontSize = if (classic) 25.sp else 22.sp, lineHeight = if (classic) 29.sp else 27.sp,
+                color = Color.White, fontWeight = if (classic) FontWeight.Bold else FontWeight.SemiBold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().automationId("collection-title"))
+            if (state.artists.isEmpty()) Text(collection.artist, color = if (classic) Color(0xFFFF788B) else Color.White.copy(alpha = 0.74f), fontSize = if (classic) 16.sp else 14.sp, lineHeight = 18.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
+            if (state.artists.isNotEmpty()) LazyRow(
+                Modifier.fillMaxWidth().padding(top = 4.dp), state = artistRowState, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                itemsIndexed(state.artists, key = { _, artist -> "${artist.resourceType}:${artist.resourceId ?: artist.id}" }) { index, artist ->
+                    val artistKey = "artist:${artist.resourceType}:${artist.resourceId ?: artist.id}"
+                    val artistFocus = artistRequesters.getOrPut(artistKey) { FocusRequester() }
+                    if (savedSongFocus < 0 && savedControlFocus == artistKey) SideEffect { focusEntry?.requester = artistFocus }
+                    FocusSurface({
+                        savedSongFocus = -1; savedControlFocus = artistKey; lastArtistKey = artistKey; focusEntry?.requester = artistFocus
+                        onOpenArtist(artist)
+                    }, Modifier.height(30.dp).focusRequester(artistFocus).pageTopRevealTarget()
+                        .automationId("collection-artist-$index")
+                        .onFocusChanged { if (it.isFocused) { savedSongFocus = -1; savedControlFocus = artistKey; lastArtistKey = artistKey; pageTop.request() } }
+                        .focusProperties { if (index == 0) left = navigationFocus; if (index == state.artists.lastIndex) right = FocusRequester.Cancel; up = navigationFocus; down = actionEntryFocus },
+                        cornerRadius = 8.dp, focusedScale = 1f, background = Color.Transparent,
+                        focusedBackground = Color.White.copy(alpha = 0.13f), padding = PaddingValues(horizontal = 6.dp)) {
+                        Text(artist.title, color = if (classic) Color(0xFFFF788B) else Color.White.copy(alpha = 0.74f), fontSize = if (classic) 16.sp else 14.sp, lineHeight = 18.sp,
+                            modifier = Modifier.align(Alignment.Center), maxLines = 1)
+                    }
+                }
+            }
+            if (description != null) Text(description,
+                color = Color.White.copy(alpha = 0.65f), fontSize = 13.sp, lineHeight = 18.sp,
+                maxLines = if (classic) 2 else 3, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp).automationId("collection-description"))
+            Text(when {
+                state.loading -> stringResource(R.string.browse_tracks_loading)
+                state.preparing -> stringResource(R.string.collection_preparing_shuffle_count, state.tracks.size)
+                state.error != null && state.tracks.isEmpty() -> stringResource(R.string.browse_tracks_unavailable)
+                !state.complete -> stringResource(R.string.collection_loaded_count, state.tracks.size)
+                !durationComplete -> pluralStringResource(R.plurals.browse_song_count, state.tracks.size, state.tracks.size)
+                else -> stringResource(R.string.browse_collection_summary,
+                    pluralStringResource(R.plurals.browse_song_count, state.tracks.size, state.tracks.size),
+                    collectionDuration(duration))
+            }, color = Color.White.copy(alpha = 0.48f), fontSize = 12.sp, lineHeight = 17.sp,
+                modifier = Modifier.fillMaxWidth().padding(top = 7.dp, bottom = 18.dp))
+        }
+    }
+    val actionsContent: @Composable () -> Unit = {
+        Row(Modifier.fillMaxWidth().padding(bottom = 18.dp).automationId("collection-actions")
+            .then(if (classic) Modifier.onFocusChanged { classicActionsHaveFocus = it.hasFocus }.focusGroup() else Modifier)
+            .onPreviewKeyEvent { event ->
+                if (state.artists.isNotEmpty() && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                    event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                    moveToArtist(); true
+                } else false
+            },
+            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (showPlayControls) CollectionAction(
+                stringResource(when {
+                    initialEmptyError -> R.string.browse_reload
+                    state.preparing -> R.string.collection_cancel_preparation
+                    else -> R.string.browse_play
+                }),
+                if (state.preparing || initialEmptyError) null else Icons.Rounded.PlayArrow,
+                { when {
+                    initialEmptyError -> onRetry()
+                    state.preparing -> onCancelPreparation()
+                    else -> onPlay(0, false)
+                } },
+                enabled = initialEmptyError || ready || state.preparing, retainFocus = true, primary = true, cornerRadius = if (classic) 8.dp else 21.dp,
+                modifier = Modifier.automationId(if (initialEmptyError) "collection-retry" else "collection-play").then(if (classic) Modifier.weight(1f) else Modifier.width(132.dp)).height(42.dp)
+                    .focusRequester(playFocus)
+                    .onFocusChanged { if (it.isFocused) { savedSongFocus = -1; savedControlFocus = if (initialEmptyError) "retry" else "play"; pageTop.request() } }
+                    .onPreviewKeyEvent { event ->
+                        if (ready && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                            event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                            moveToSong(songNavigation.requestedIndex); true
+                        } else false
+                    }.focusProperties {
+                        left = navigationFocus
+                        right = when {
+                            ready -> shuffleFocus
+                            initialEmptyError && openActions != null -> moreFocus
+                            else -> FocusRequester.Cancel
+                        }
+                        down = FocusRequester.Cancel
+                        up = navigationFocus
+                    })
+            if (showPlayControls) CollectionAction(stringResource(R.string.browse_shuffle), Icons.Rounded.Shuffle,
+                { onPlay(0, true) }, enabled = ready, retainFocus = !initialEmptyError,
+                iconOnly = !classic, cornerRadius = if (classic) 8.dp else 21.dp,
+                modifier = Modifier.automationId("collection-shuffle").then(if (classic) Modifier.weight(1f).height(42.dp) else Modifier.size(42.dp)).focusRequester(shuffleFocus)
+                    .onFocusChanged { if (it.isFocused) { savedSongFocus = -1; savedControlFocus = "shuffle"; pageTop.request() } }
+                    .onPreviewKeyEvent { event ->
+                        if (ready && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                            (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+                                classic && openActions == null && event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+                            moveToSong(songNavigation.requestedIndex); true
+                        } else false
+                    }.focusProperties {
+                        left = playFocus; up = navigationFocus
+                        right = if (openActions != null) moreFocus else FocusRequester.Cancel; down = FocusRequester.Cancel
+                    })
+            if (openActions != null) CollectionAction(stringResource(R.string.catalog_more_actions), Icons.Rounded.MoreHoriz,
+                {
+                    savedSongFocus = -1; savedControlFocus = "more"; focusEntry?.requester = moreFocus
+                    openActions(collection)
+                }, iconOnly = true, cornerRadius = if (classic) 8.dp else 21.dp,
+                modifier = Modifier.automationId("collection-more").size(42.dp).focusRequester(moreFocus)
+                    .onFocusChanged { if (it.isFocused) { savedSongFocus = -1; savedControlFocus = "more"; pageTop.request() } }
+                    .then(if (!showPlayControls) Modifier.focusRequester(firstFocus) else Modifier)
+                    .onPreviewKeyEvent { event ->
+                        if (classic && ready && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                            event.nativeKeyEvent.keyCode in listOf(KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_DOWN)) {
+                            moveToSong(songNavigation.requestedIndex); true
+                        } else false
+                    }
+                    .catalogMenuKey(collection).focusProperties {
+                        left = when {
+                            initialEmptyError -> playFocus
+                            showPlayControls -> shuffleFocus
+                            else -> navigationFocus
+                        }
+                        up = navigationFocus; right = FocusRequester.Cancel
+                    })
+        }
+    }
+
     BoxWithConstraints(Modifier.fillMaxSize().automationId("collection-screen")
         .onPreviewKeyEvent { event ->
             // A delayed lazy placement must not route Center/Menu to the
@@ -299,13 +434,24 @@ internal fun CollectionScreen(
                     KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_MENU)) cancelPendingFocus()
             false
         }) {
-        val coverWidth = minOf(maxWidth * 0.43f, (maxHeight - 24.dp).coerceAtLeast(0.dp))
-        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            Box(Modifier.width(coverWidth).fillMaxHeight()
-                .automationId("collection-profile-${collection.resourceType}-${collection.resourceId ?: collection.catalogId ?: collection.id}"),
-                contentAlignment = Alignment.CenterStart) {
-                MotionArtwork(collection, Modifier.fillMaxWidth().aspectRatio(1f).automationId("collection-artwork").coverHairline(12.dp),
-                    animate = rememberBrowseMotionReady(LocalFocusTargetsEnabled.current), cornerRadius = 12.dp)
+        val coverWidth = if (classic) minOf(270.dp, maxWidth * .38f)
+            else minOf(maxWidth * 0.43f, (maxHeight - 24.dp).coerceAtLeast(0.dp))
+        val coverRadius = if (classic) 10.dp else 12.dp
+        Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(if (classic) 36.dp else 32.dp)) {
+            Column(Modifier.width(coverWidth).fillMaxHeight()
+                .automationId("collection-profile-${collection.resourceType}-${collection.resourceId ?: collection.catalogId ?: collection.id}")) {
+                Box(if (classic) Modifier.weight(1f).fillMaxWidth() else Modifier.fillMaxSize(),
+                    contentAlignment = if (classic) Alignment.Center else Alignment.CenterStart) {
+                    MotionArtwork(collection,
+                        (if (classic) Modifier.fillMaxHeight() else Modifier.fillMaxWidth()).aspectRatio(1f)
+                            .automationId("collection-artwork").coverHairline(coverRadius),
+                        animate = rememberBrowseMotionReady(LocalFocusTargetsEnabled.current), cornerRadius = coverRadius)
+                }
+                if (classic) {
+                    Spacer(Modifier.height(12.dp))
+                    metadataContent()
+                    actionsContent()
+                }
             }
             CompositionLocalProvider(LocalBringIntoViewSpec provides pageReveal, LocalPageTopReveal provides pageTop) {
                 LazyColumn(
@@ -316,134 +462,20 @@ internal fun CollectionScreen(
                         .drawBehind {
                             if (!selectionVisible) return@drawBehind
                             val layout = listState.layoutInfo
-                            val anchor = layout.visibleItemsInfo.firstOrNull { it.index in 2 until state.tracks.size + 2 }
+                            val anchor = layout.visibleItemsInfo.firstOrNull { it.index in songHeaderCount until state.tracks.size + songHeaderCount }
                                 ?: return@drawBehind
                             val top = collectionSongHighlightTop(songSelection.value, anchor.index, anchor.offset,
-                                layout.viewportStartOffset, anchor.size.toFloat())
+                                layout.viewportStartOffset, anchor.size.toFloat(), headerCount = songHeaderCount)
                             val inset = 10.dp.toPx()
                             drawRoundRect(Color.White.copy(alpha = .14f), topLeft = Offset(inset, top),
                                 size = Size((size.width - inset * 2f).coerceAtLeast(0f), rowStep),
-                                cornerRadius = CornerRadius(12.dp.toPx()))
+                                cornerRadius = CornerRadius((if (classic) 8.dp else 12.dp).toPx()))
                         },
                     contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 28.dp),
                 ) {
-                    item(key = "collection-metadata", contentType = "metadata") {
-                        Column(Modifier.fillMaxWidth().automationId("collection-metadata")) {
-                            Text(collection.title, fontSize = 22.sp, lineHeight = 27.sp,
-                                color = Color.White, fontWeight = FontWeight.SemiBold,
-                                maxLines = 2, overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth().automationId("collection-title"))
-                            if (state.artists.isEmpty()) Text(collection.artist, color = Color.White.copy(alpha = 0.74f), fontSize = 14.sp, lineHeight = 18.sp,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp))
-                            if (state.artists.isNotEmpty()) LazyRow(
-                                Modifier.fillMaxWidth().padding(top = 4.dp), state = artistRowState, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                                itemsIndexed(state.artists, key = { _, artist -> "${artist.resourceType}:${artist.resourceId ?: artist.id}" }) { index, artist ->
-                                    val artistKey = "artist:${artist.resourceType}:${artist.resourceId ?: artist.id}"
-                                    val artistFocus = artistRequesters.getOrPut(artistKey) { FocusRequester() }
-                                    if (savedSongFocus < 0 && savedControlFocus == artistKey) SideEffect { focusEntry?.requester = artistFocus }
-                                    FocusSurface({
-                                        savedSongFocus = -1; savedControlFocus = artistKey; lastArtistKey = artistKey; focusEntry?.requester = artistFocus
-                                        onOpenArtist(artist)
-                                    }, Modifier.height(30.dp).focusRequester(artistFocus).pageTopRevealTarget()
-                                        .automationId("collection-artist-$index")
-                                        .onFocusChanged { if (it.isFocused) { savedSongFocus = -1; savedControlFocus = artistKey; lastArtistKey = artistKey; pageTop.request() } }
-                                        .focusProperties { if (index == 0) left = navigationFocus; if (index == state.artists.lastIndex) right = FocusRequester.Cancel; up = navigationFocus; down = actionEntryFocus },
-                                        cornerRadius = 8.dp, focusedScale = 1f, background = Color.Transparent,
-                                        focusedBackground = Color.White.copy(alpha = 0.13f), padding = PaddingValues(horizontal = 6.dp)) {
-                                        Text(artist.title, color = Color.White.copy(alpha = 0.74f), fontSize = 14.sp, lineHeight = 18.sp,
-                                            modifier = Modifier.align(Alignment.Center), maxLines = 1)
-                                    }
-                                }
-                            }
-                            if (description != null) Text(description,
-                                color = Color.White.copy(alpha = 0.65f), fontSize = 13.sp, lineHeight = 18.sp,
-                                maxLines = 3, overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth().padding(top = 10.dp).automationId("collection-description"))
-                            Text(when {
-                                state.loading -> stringResource(R.string.browse_tracks_loading)
-                                state.preparing -> stringResource(R.string.collection_preparing_shuffle_count, state.tracks.size)
-                                state.error != null && state.tracks.isEmpty() -> stringResource(R.string.browse_tracks_unavailable)
-                                !state.complete -> stringResource(R.string.collection_loaded_count, state.tracks.size)
-                                !durationComplete -> pluralStringResource(R.plurals.browse_song_count, state.tracks.size, state.tracks.size)
-                                else -> stringResource(R.string.browse_collection_summary,
-                                    pluralStringResource(R.plurals.browse_song_count, state.tracks.size, state.tracks.size),
-                                    collectionDuration(duration))
-                            }, color = Color.White.copy(alpha = 0.48f), fontSize = 12.sp, lineHeight = 17.sp,
-                                modifier = Modifier.fillMaxWidth().padding(top = 7.dp, bottom = 18.dp))
-                        }
-                    }
-                    item(key = "collection-actions", contentType = "actions") {
-                        Row(Modifier.fillMaxWidth().padding(bottom = 18.dp).automationId("collection-actions")
-                            .onPreviewKeyEvent { event ->
-                                if (state.artists.isNotEmpty() && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
-                                    event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
-                                    moveToArtist(); true
-                                } else false
-                            },
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            if (showPlayControls) CollectionAction(
-                                stringResource(when {
-                                    initialEmptyError -> R.string.browse_reload
-                                    state.preparing -> R.string.collection_cancel_preparation
-                                    else -> R.string.browse_play
-                                }),
-                                if (state.preparing || initialEmptyError) null else Icons.Rounded.PlayArrow,
-                                { when {
-                                    initialEmptyError -> onRetry()
-                                    state.preparing -> onCancelPreparation()
-                                    else -> onPlay(0, false)
-                                } },
-                                enabled = initialEmptyError || ready || state.preparing, retainFocus = true, primary = true, cornerRadius = 21.dp,
-                                modifier = Modifier.automationId(if (initialEmptyError) "collection-retry" else "collection-play").width(132.dp).height(42.dp)
-                                    .focusRequester(playFocus)
-                                    .onFocusChanged { if (it.isFocused) { savedSongFocus = -1; savedControlFocus = if (initialEmptyError) "retry" else "play"; pageTop.request() } }
-                                    .onPreviewKeyEvent { event ->
-                                        if (ready && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
-                                            event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                                            moveToSong(songNavigation.requestedIndex); true
-                                        } else false
-                                    }.focusProperties {
-                                        left = navigationFocus
-                                        right = when {
-                                            ready -> shuffleFocus
-                                            initialEmptyError && openActions != null -> moreFocus
-                                            else -> FocusRequester.Cancel
-                                        }
-                                        down = FocusRequester.Cancel
-                                        up = navigationFocus
-                                    })
-                            if (showPlayControls) CollectionAction(stringResource(R.string.browse_shuffle), Icons.Rounded.Shuffle,
-                                { onPlay(0, true) }, enabled = ready, retainFocus = !initialEmptyError,
-                                iconOnly = true, cornerRadius = 21.dp,
-                                modifier = Modifier.automationId("collection-shuffle").size(42.dp).focusRequester(shuffleFocus)
-                                    .onFocusChanged { if (it.isFocused) { savedSongFocus = -1; savedControlFocus = "shuffle"; pageTop.request() } }
-                                    .onPreviewKeyEvent { event ->
-                                        if (ready && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
-                                            event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-                                            moveToSong(songNavigation.requestedIndex); true
-                                        } else false
-                                    }.focusProperties {
-                                        left = playFocus; up = navigationFocus
-                                        right = if (openActions != null) moreFocus else FocusRequester.Cancel; down = FocusRequester.Cancel
-                                    })
-                            if (openActions != null) CollectionAction(stringResource(R.string.catalog_more_actions), Icons.Rounded.MoreHoriz,
-                                {
-                                    savedSongFocus = -1; savedControlFocus = "more"; focusEntry?.requester = moreFocus
-                                    openActions(collection)
-                                }, iconOnly = true, cornerRadius = 21.dp,
-                                modifier = Modifier.automationId("collection-more").size(42.dp).focusRequester(moreFocus)
-                                    .onFocusChanged { if (it.isFocused) { savedSongFocus = -1; savedControlFocus = "more"; pageTop.request() } }
-                                    .then(if (!showPlayControls) Modifier.focusRequester(firstFocus) else Modifier)
-                                    .catalogMenuKey(collection).focusProperties {
-                                        left = when {
-                                            initialEmptyError -> playFocus
-                                            showPlayControls -> shuffleFocus
-                                            else -> navigationFocus
-                                        }
-                                        up = navigationFocus; right = FocusRequester.Cancel
-                                    })
-                        }
+                    if (!classic) {
+                        item(key = "collection-metadata", contentType = "metadata") { metadataContent() }
+                        item(key = "collection-actions", contentType = "actions") { actionsContent() }
                     }
                     when {
                         state.loading -> item(key = "collection-loading", contentType = "status") {
@@ -467,6 +499,7 @@ internal fun CollectionScreen(
                             val selected = song.catalogId == currentTrack.catalogId && song.catalogId != null
                             if (savedSongFocus == index) SideEffect { focusEntry?.requester = songFocus[index] }
                             CollectionSong(song, index, selected, isPlaying,
+                                showArtwork = !classic || collection.catalogKind == dev.amatv.model.CatalogKind.Playlist,
                                 modifier = Modifier.automationId("collection-song-$index").focusRequester(songFocus[index])
                                     .onFocusChanged { if (it.isFocused) { songNavigation.focused(index); savedSongFocus = index; savedControlFocus = ""; wantsContinuationFocus = false; if (index == 0) pageTop.request() } }
                                     .onPreviewKeyEvent { event ->
@@ -488,7 +521,10 @@ internal fun CollectionScreen(
                                             else -> false
                                         }
                                     }.focusProperties {
-                                        left = navigationFocus; right = FocusRequester.Cancel
+                                        left = if (classic) {
+                                            if (showPlayControls && !initialEmptyError) shuffleFocus else actionEntryFocus
+                                        } else navigationFocus
+                                        right = FocusRequester.Cancel
                                         if (index == state.tracks.lastIndex) down = if (state.next != null) continuationFocus else FocusRequester.Cancel
                                     }, onBeforeAction = { cancelPendingFocus() }, onClick = { onPlay(index, false) })
                         }
@@ -524,28 +560,31 @@ internal fun CollectionScreen(
 }
 
 @Composable
-private fun CollectionSong(song: Track, index: Int, selected: Boolean, isPlaying: Boolean, modifier: Modifier,
+private fun CollectionSong(song: Track, index: Int, selected: Boolean, isPlaying: Boolean, showArtwork: Boolean, modifier: Modifier,
     onBeforeAction: () -> Unit, onClick: () -> Unit) {
     val openActions = LocalCatalogActionMenu.current
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val resting = if (selected) Color.White.copy(alpha = 0.045f) else Color.Transparent
-    FocusSurface({ onBeforeAction(); onClick() }, modifier.catalogMenuKey(song).fillMaxWidth().height(58.dp).pageTopRevealTarget(), cornerRadius = 12.dp, focusedScale = 1f,
+    FocusSurface({ onBeforeAction(); onClick() }, modifier.catalogMenuKey(song).fillMaxWidth().height(if (classic) 64.dp else 58.dp).pageTopRevealTarget(), cornerRadius = if (classic) 8.dp else 12.dp, focusedScale = 1f,
         background = resting, focusedBackground = resting, padding = PaddingValues(horizontal = 12.dp),
         onLongClick = openActions?.let { { onBeforeAction(); it(song) } }) { focused ->
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
             Text(if (selected && isPlaying) "♫" else stringResource(R.string.browse_track_index, index + 1),
-                color = Color.White.copy(alpha = if (selected) 0.94f else 0.4f), fontSize = 12.sp, modifier = Modifier.width(22.dp))
-            MotionArtwork(song, Modifier.size(38.dp), animate = false, cornerRadius = 5.dp)
-            Spacer(Modifier.width(10.dp))
+                color = if (classic && selected) Color(0xFFFF788B) else Color.White.copy(alpha = if (selected) 0.94f else 0.4f), fontSize = if (classic) 13.sp else 12.sp, modifier = Modifier.width(if (classic) 30.dp else 22.dp))
+            if (showArtwork) {
+                MotionArtwork(song, Modifier.size(if (classic) 42.dp else 38.dp), animate = false, cornerRadius = 5.dp)
+                Spacer(Modifier.width(if (classic) 12.dp else 10.dp))
+            }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(song.title, fontSize = 16.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                    color = Color.White.copy(alpha = if (focused || selected) 1f else 0.9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    color = if (classic && selected) Color(0xFFFF91A0) else Color.White.copy(alpha = if (focused || selected) 1f else 0.9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(song.artist, fontSize = 12.sp, color = Color.White.copy(alpha = if (focused) 0.72f else 0.48f),
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Text(songDuration(song.durationMs), fontSize = 12.sp, color = Color.White.copy(alpha = 0.45f), modifier = Modifier.padding(start = 16.dp))
         }
     }
-    HorizontalDivider(Modifier.padding(start = 82.dp, end = 12.dp).height(1.dp), color = Color.White.copy(alpha = 0.045f))
+    HorizontalDivider(Modifier.padding(start = if (classic && !showArtwork) 42.dp else 82.dp, end = 12.dp).height(1.dp), color = Color.White.copy(alpha = if (classic) 0.07f else 0.045f))
 }
 
 /** Fade only this viewport; keep the fixed artwork and navigation fully opaque. */
@@ -574,18 +613,21 @@ internal fun CollectionAction(
     iconOnly: Boolean = false,
     cornerRadius: Dp = 12.dp,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     FocusSurface(
         onClick = { if (enabled) onClick() }, enabled = enabled || retainFocus, modifier = modifier.pageTopRevealTarget(),
-        cornerRadius = cornerRadius, focusedScale = if (enabled) 1.025f else 1f,
+        cornerRadius = if (classic) 8.dp else cornerRadius, focusedScale = if (enabled) 1.025f else 1f,
         focusedLift = 0.dp, focusedElevation = 0.dp, showBorder = false,
         interactionFeedbackEnabled = enabled,
         background = Color.White.copy(alpha = when {
             !enabled -> 0.04f
+            classic -> 0.12f
             primary -> 0.14f
             else -> 0.08f
         }),
         focusedBackground = Color.White.copy(alpha = when {
             !enabled -> 0.04f
+            classic -> 0.24f
             primary -> 0.90f
             else -> 0.24f
         }),
@@ -599,7 +641,7 @@ internal fun CollectionAction(
             verticalAlignment = Alignment.CenterVertically) {
             val color = if (!enabled) Color.White.copy(alpha = 0.35f) else focusSurfaceContentColor(
                 resting = Color.White.copy(alpha = 0.95f),
-                focused = if (primary) Color(0xFF171719) else Color.White.copy(alpha = 0.95f),
+                focused = if (primary && !classic) Color(0xFF171719) else Color.White.copy(alpha = 0.95f),
             )
             if (icon != null) {
                 Icon(icon, contentDescription = if (iconOnly) label else null, tint = color, modifier = Modifier.size(18.dp))

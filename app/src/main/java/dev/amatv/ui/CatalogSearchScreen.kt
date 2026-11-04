@@ -58,6 +58,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.amatv.ui.classic.ClassicBrowseVisuals
 import dev.amatv.R
 import dev.amatv.integration.CatalogPresentationCapabilities
 import dev.amatv.model.CatalogKind
@@ -96,6 +97,7 @@ internal fun CatalogSearchScreen(
     onSignIn: () -> Unit,
     retention: CatalogSearchRetention? = null,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val state by browser.state.collectAsState()
     val active = LocalFocusTargetsEnabled.current
     val retained = retention ?: remember { CatalogSearchRetention() }
@@ -170,7 +172,9 @@ internal fun CatalogSearchScreen(
     val grid = grids.getOrPut(key) { LazyGridState() }
     val songs = lists.getOrPut(key) { LazyListState() }
     val songRows = !showingRecent && state.type == CatalogSearchType.Songs
-    if (songRows) rememberArtworkPrefetch(items, songs, active, coverSize = 33.dp)
+    val horizontalResults = classic && !songRows
+    if (songRows) rememberArtworkPrefetch(items, songs, active, coverSize = if (classic) 42.dp else 33.dp)
+    else if (horizontalResults) rememberArtworkPrefetch(items, songs, active, coverSize = ClassicBrowseVisuals.CardWidth)
     else rememberArtworkPrefetch(items, grid, active)
     val requesters = remember(key) { mutableMapOf<String, FocusRequester>() }
     val savedKeys = retained.savedKeys
@@ -224,7 +228,7 @@ internal fun CatalogSearchScreen(
             }
             val position = index ?: items.indices.firstOrNull { rowKey(it, items[it]) == savedKeys[key] } ?: 0
             val target = position.coerceIn(items.indices)
-            if (songRows) {
+            if (songRows || horizontalResults) {
                 if (songs.layoutInfo.visibleItemsInfo.none { it.index == target }) songs.scrollToItem(target)
             } else if (grid.layoutInfo.visibleItemsInfo.none { it.index == target }) grid.scrollToItem(target)
             repeat(3) {
@@ -277,7 +281,7 @@ internal fun CatalogSearchScreen(
     fun requestFooter() {
         focusJob[0]?.cancel()
         focusJob[0] = scope.launch {
-            if (songRows) songs.scrollToItem(items.size) else grid.scrollToItem(items.size)
+            if (songRows || horizontalResults) songs.scrollToItem(items.size) else grid.scrollToItem(items.size)
             withFrameNanos { }
             runCatching { footer.requestFocus() }
         }
@@ -328,7 +332,7 @@ internal fun CatalogSearchScreen(
     LaunchedEffect(key, state.next, state.loading, state.failed, items.size, active) {
         if (!active || showingRecent || state.next == null || state.loading || state.failed || items.isEmpty()) return@LaunchedEffect
         snapshotFlow {
-            if (songRows) songs.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+            if (songRows || horizontalResults) songs.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
             else grid.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
         }.distinctUntilChanged().collect { last -> if (last >= (items.size - if (songRows) 5 else 8).coerceAtLeast(0)) browser.loadMore() }
     }
@@ -578,23 +582,29 @@ internal fun CatalogSearchScreen(
                                 if (!showingRecent && index < columns && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
                                     event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
                                     requestCategory(categories.indexOf(state.type).coerceAtLeast(0)); true
-                                } else if (hasFooter && index / columns == items.lastIndex / columns &&
+                                } else if (hasFooter && !horizontalResults && index / columns == items.lastIndex / columns &&
                                     event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
                                     requestFooter(); true
                                 } else false
                             }.focusProperties {
                                 if (index < columns) up = if (showingRecent) selectedScopeFocus else FocusRequester.Cancel
                                 if (index % columns == 0) left = menu
-                                if (index % columns == columns - 1 || index == items.lastIndex) right = FocusRequester.Cancel
-                                if (!hasFooter && index / columns == items.lastIndex / columns) down = FocusRequester.Cancel
+                                if (index % columns == columns - 1 || index == items.lastIndex) {
+                                    right = if (horizontalResults && hasFooter) footer else FocusRequester.Cancel
+                                }
+                                if (horizontalResults || !hasFooter && index / columns == items.lastIndex / columns) down = FocusRequester.Cancel
                             }
                     }
                     val onContinue: () -> Unit = {
                         appendEntry = items.size; if (state.failed) browser.retry() else browser.loadMore()
                     }
-                    val continuationModifier = Modifier.fillMaxWidth().focusRequester(footer)
+                    val continuationModifier = (if (horizontalResults) Modifier.width(ClassicBrowseVisuals.CardWidth).height(ClassicBrowseVisuals.CardHeight)
+                        else Modifier.fillMaxWidth()).focusRequester(footer)
                         .onPreviewKeyEvent { event ->
-                            if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                            if (horizontalResults && event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN &&
+                                event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                                requestResult(items.lastIndex); true
+                            } else if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_UP) {
                                 requestResult(); true
                             } else false
                         }.focusProperties { left = menu; right = FocusRequester.Cancel; down = FocusRequester.Cancel }
@@ -604,6 +614,17 @@ internal fun CatalogSearchScreen(
                             SearchSong(item, modifier(index, item, 1), onOpen = { cancelFocusIntent(); browser.recordSelection(); onOpen(item, items) })
                         }
                         if (hasFooter) item(key = "continuation") { SearchMore(state, onContinue, continuationModifier, onSignIn = onSignIn) }
+                    } else if (horizontalResults) FocusTrackingRow(state = songs,
+                        modifier = Modifier.fillMaxSize().automationId("search-result-row"),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                        itemsIndexed(items, key = { index, item -> rowKey(index, item) }) { index, item ->
+                            SearchCover(item, modifier(index, item, items.size),
+                                onOpen = { cancelFocusIntent(); browser.recordSelection(); onOpen(item, items) })
+                        }
+                        if (hasFooter) item(key = "continuation") {
+                            SearchMore(state, onContinue, continuationModifier, onSignIn = onSignIn)
+                        }
                     } else LazyVerticalGrid(columns = GridCells.Fixed(4), state = grid,
                         modifier = Modifier.fillMaxSize().automationId("search-result-grid"), contentPadding = PaddingValues(horizontal = 18.dp, vertical = 20.dp),
                         horizontalArrangement = Arrangement.spacedBy(18.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -636,12 +657,15 @@ private fun CatalogSearchType.searchLabel(): Int = when (this) {
 @Composable
 private fun SearchCover(item: Track, modifier: Modifier, onOpen: () -> Unit) {
     val artist = item.catalogKind == CatalogKind.Artist
-    val radius = if (artist) 100.dp else BrowseTokens.CardRadius
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val radius = if (artist) 100.dp else if (classic) ClassicBrowseVisuals.CardRadius else BrowseTokens.CardRadius
     val shape = if (artist) CircleShape else RoundedCornerShape(radius)
     val actions = catalogMenuFor(item)
     val backdrop = LocalBrowseBackdropController.current
-    FocusSurface(onOpen, modifier.catalogMenuKey(item).fillMaxWidth().onFocusChanged { if (it.isFocused) backdrop?.select(item) },
-        focusedScale = 1.035f, background = Color.Transparent, focusedBackground = Color.Transparent,
+    FocusSurface(onOpen, modifier.catalogMenuKey(item)
+        .then(if (classic) Modifier.width(ClassicBrowseVisuals.CardWidth).height(ClassicBrowseVisuals.CardHeight) else Modifier.fillMaxWidth())
+        .onFocusChanged { if (it.isFocused) backdrop?.select(item) },
+        focusedScale = 1.035f, focusedLift = if (classic) ClassicBrowseVisuals.CardLift else 0.dp, background = Color.Transparent, focusedBackground = Color.Transparent,
         onLongClick = actions?.let { { it(item) } }) { focused ->
         Column(horizontalAlignment = if (artist) Alignment.CenterHorizontally else Alignment.Start) {
             Box(Modifier.fillMaxWidth().aspectRatio(1f).coverShadow(focused, radius).coverHairline(radius)) {
@@ -650,38 +674,43 @@ private fun SearchCover(item: Track, modifier: Modifier, onOpen: () -> Unit) {
                         null, Modifier.size(34.dp), tint = Color.White.copy(alpha = 0.3f))
                 } else MotionArtwork(item, Modifier.fillMaxSize().clip(shape), animate = rememberBrowseMotionReady(focused), cornerRadius = radius)
             }
-            Text(item.title, color = Color.White.copy(alpha = 0.94f), fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Medium,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 7.dp))
-            if (!artist) Text(item.artist, color = Color.White.copy(alpha = 0.53f), fontSize = 11.sp, lineHeight = 14.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            Text(item.title, color = Color.White.copy(alpha = 0.94f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
+                fontWeight = if (classic) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = if (classic) 9.dp else 7.dp))
+            if (!artist) Text(item.artist, color = Color.White.copy(alpha = 0.53f),
+                fontSize = if (classic) ClassicBrowseVisuals.CardSubtitleSize else 11.sp, lineHeight = if (classic) 17.sp else 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = if (classic) 1.dp else 2.dp))
         }
     }
 }
 
 @Composable
 private fun SearchSong(item: Track, modifier: Modifier, onOpen: () -> Unit) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val focusedColor = if (classic) Color.White else Color(0xFF171717)
+    val artworkSize = if (classic) 42.dp else 33.dp
     val actions = catalogMenuFor(item)
     val backdrop = LocalBrowseBackdropController.current
-    FocusSurface(onOpen, modifier.onFocusChanged { if (it.isFocused) backdrop?.select(item) }.catalogMenuKey(item).fillMaxWidth().height(49.dp), cornerRadius = 9.dp, focusedScale = 1f,
-        background = Color.Transparent, focusedBackground = Color.White.copy(alpha = 0.85f), padding = PaddingValues(horizontal = 10.dp),
+    FocusSurface(onOpen, modifier.onFocusChanged { if (it.isFocused) backdrop?.select(item) }.catalogMenuKey(item).fillMaxWidth().height(if (classic) 64.dp else 49.dp), cornerRadius = if (classic) 8.dp else 9.dp, focusedScale = 1f,
+        background = Color.Transparent, focusedBackground = Color.White.copy(alpha = if (classic) 0.12f else 0.85f), padding = PaddingValues(horizontal = 10.dp),
         onLongClick = actions?.let { { it(item) } }) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-            if (item.artworkUrl.isNullOrBlank()) Icon(Icons.Rounded.Album, null, Modifier.size(33.dp), Color.White.copy(alpha = 0.3f))
-            else MotionArtwork(item, Modifier.size(33.dp), animate = false, cornerRadius = 4.dp)
+            if (item.artworkUrl.isNullOrBlank()) Icon(Icons.Rounded.Album, null, Modifier.size(artworkSize), Color.White.copy(alpha = 0.3f))
+            else MotionArtwork(item, Modifier.size(artworkSize), animate = false, cornerRadius = 4.dp)
             Column(Modifier.weight(1.15f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(item.title, Modifier.weight(1f, fill = false), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.94f), Color(0xFF171717)), fontSize = 13.sp,
-                        lineHeight = 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(item.title, Modifier.weight(1f, fill = false), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.94f), focusedColor), fontSize = if (classic) 16.sp else 13.sp,
+                        lineHeight = if (classic) 20.sp else 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (item.contentRating == "explicit") Text("E", Modifier.background(Color.White.copy(alpha = 0.20f), RoundedCornerShape(2.dp))
-                        .padding(horizontal = 2.dp), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.80f), Color(0xFF171717).copy(alpha = 0.75f)), fontSize = 8.sp, lineHeight = 10.sp,
+                        .padding(horizontal = 2.dp), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.80f), focusedColor.copy(alpha = 0.75f)), fontSize = 8.sp, lineHeight = 10.sp,
                         fontWeight = FontWeight.Bold)
                 }
-                Text(item.artist, color = focusSurfaceContentColor(Color.White.copy(alpha = 0.52f), Color(0xFF171717).copy(alpha = 0.65f)), fontSize = 11.sp, lineHeight = 14.sp,
+                Text(item.artist, color = focusSurfaceContentColor(Color.White.copy(alpha = 0.52f), focusedColor.copy(alpha = 0.65f)), fontSize = if (classic) 12.sp else 11.sp, lineHeight = 14.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Text(item.album, Modifier.weight(1f).padding(horizontal = 10.dp), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.52f), Color(0xFF171717).copy(alpha = 0.65f)),
+            Text(item.album, Modifier.weight(1f).padding(horizontal = 10.dp), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.52f), focusedColor.copy(alpha = 0.65f)),
                 fontSize = 11.sp, lineHeight = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (item.durationMs > 0L) Text(searchDuration(item.durationMs), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.4f), Color(0xFF171717).copy(alpha = 0.55f)), fontSize = 11.sp, lineHeight = 14.sp)
+            if (item.durationMs > 0L) Text(searchDuration(item.durationMs), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.4f), focusedColor.copy(alpha = 0.55f)), fontSize = 11.sp, lineHeight = 14.sp)
         }
     }
 }

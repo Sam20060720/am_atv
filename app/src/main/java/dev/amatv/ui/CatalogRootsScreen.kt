@@ -43,6 +43,7 @@ internal fun CatalogRootsScreen(
     onBack: () -> Unit,
     onOpen: (Track, List<Track>) -> Unit,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     if (browser.type == "station-genres" && !capabilities.canPlayStation) return
     BackHandler(enabled = active, onBack = onBack)
     val page by browser.state.collectAsState()
@@ -167,18 +168,18 @@ internal fun CatalogRootsScreen(
                                     index + columns >= items.size && hasFooter) {
                                     focusIndex(items.size); true
                                 } else false
-                            }, cornerRadius = 12.dp, focusedScale = 1.025f,
-                        background = Color.White.copy(alpha = 0.055f), focusedBackground = Color.White.copy(alpha = 0.86f),
+                            }, cornerRadius = if (classic) 10.dp else 12.dp, focusedScale = 1.025f,
+                        background = Color.White.copy(alpha = 0.055f), focusedBackground = Color.White.copy(alpha = if (classic) 0.14f else 0.86f),
                         padding = PaddingValues(horizontal = 17.dp, vertical = 18.dp),
                         onLongClick = catalogMenuFor(item)?.let { open -> {
                             selectedKey = key; entry?.requester = requester
                             open(item)
                         } }) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(item.title, color = focusSurfaceContentColor(Color.White.copy(alpha = 0.91f), Color(0xFF1B1B1F)),
+                            Text(item.title, color = focusSurfaceContentColor(Color.White.copy(alpha = 0.91f), (if (classic) Color.White else Color(0xFF1B1B1F))),
                                 fontSize = 17.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                             Icon(Icons.Rounded.ChevronRight, null, Modifier.size(17.dp),
-                                focusSurfaceContentColor(Color.White.copy(alpha = 0.35f), Color(0xFF1B1B1F).copy(alpha = 0.45f)))
+                                focusSurfaceContentColor(Color.White.copy(alpha = 0.35f), (if (classic) Color.White else Color(0xFF1B1B1F)).copy(alpha = 0.45f)))
                         }
                     }
                 }

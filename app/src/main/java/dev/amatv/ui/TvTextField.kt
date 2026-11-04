@@ -22,6 +22,7 @@ import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalTextStyle
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -41,7 +42,7 @@ import androidx.compose.ui.unit.sp
 
 internal enum class TvTextFieldSize { Compact, Search }
 
-/** One native text target; Search retains its transparent title-style presentation. */
+/** One native text target, with presentation selected independently of editing behavior. */
 @Composable
 internal fun TvTextField(
     value: String,
@@ -64,19 +65,34 @@ internal fun TvTextField(
     val focused = interactive && hasFocus
     val hovered = interactive && hasHover
     val search = size == TvTextFieldSize.Search
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val minimumHeight = if (classic) { if (search) 56.dp else 44.dp } else if (search) 42.5.dp else 33.dp
     val foreground = when {
         !interactive -> Color.White.copy(alpha = 0.4f)
+        classic -> Color.White
         search -> Color.White.copy(alpha = 0.9f)
         focused -> Color(0xFF1B1B1F)
         else -> Color.White.copy(alpha = 0.9f)
     }
-    val background = if (search) Color.Transparent else Color.White.copy(alpha = when {
+    val background = if (classic) Color.White.copy(alpha = when {
+        !interactive -> 0.03f
+        focused && !readOnly -> 0.14f
+        focused -> 0.08f
+        hovered -> 0.08f
+        else -> 0.05f
+    }) else if (search) Color.Transparent else Color.White.copy(alpha = when {
         !interactive -> 0.03f
         focused -> 0.85f
         hovered -> 0.18f
         else -> 0.08f
     })
-    val border = if (search) Color.Transparent else Color.White.copy(alpha = when {
+    val border = if (classic) Color.White.copy(alpha = when {
+        !interactive -> 0.10f
+        focused && !readOnly -> 1f
+        focused -> 0.82f
+        hovered -> 0.52f
+        else -> 0.22f
+    }) else if (search) Color.Transparent else Color.White.copy(alpha = when {
         !interactive -> 0.04f
         focused -> 0.92f
         hovered -> 0.4f
@@ -84,21 +100,21 @@ internal fun TvTextField(
     })
     val textStyle = LocalTextStyle.current.copy(
         color = foreground,
-        fontSize = if (search) 28.5.sp else 12.sp,
-        lineHeight = if (search) 34.sp else 17.sp,
-        fontWeight = if (search) FontWeight.Bold else FontWeight.Medium,
+        fontSize = if (classic) 16.sp else if (search) 28.5.sp else 12.sp,
+        lineHeight = if (classic) 24.sp else if (search) 34.sp else 17.sp,
+        fontWeight = if (classic) FontWeight.Normal else if (search) FontWeight.Bold else FontWeight.Medium,
     )
-    val shape = RoundedCornerShape(if (search) 21.25.dp else 16.5.dp)
+    val shape = if (classic) MaterialTheme.shapes.extraSmall else RoundedCornerShape(if (search) 21.25.dp else 16.5.dp)
     val selection = TextSelectionColors(
         handleColor = foreground,
-        backgroundColor = if (focused && !search) Color.Black.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.16f),
+        backgroundColor = if (focused && !search && !classic) Color.Black.copy(alpha = 0.16f) else Color.White.copy(alpha = 0.16f),
     )
     CompositionLocalProvider(LocalTextSelectionColors provides selection) {
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            modifier = modifier.heightIn(min = if (search) 42.5.dp else 33.dp)
-                .clip(shape).background(background).border(1.dp, border, shape)
+            modifier = modifier.heightIn(min = minimumHeight)
+                .clip(shape).background(background).border(if (classic && focused) 2.dp else 1.dp, border, shape)
                 .hoverable(interactionSource = interaction, enabled = interactive),
             enabled = interactive,
             readOnly = readOnly,
@@ -111,12 +127,13 @@ internal fun TvTextField(
             keyboardActions = keyboardActions,
             decorationBox = { innerTextField ->
                 Row(
-                    Modifier.fillMaxWidth().heightIn(min = if (search) 42.5.dp else 33.dp)
-                        .padding(horizontal = if (search) 0.dp else 12.dp, vertical = if (search) 0.dp else 8.dp),
+                    Modifier.fillMaxWidth().heightIn(min = minimumHeight)
+                        .padding(horizontal = if (classic) 16.dp else if (search) 0.dp else 12.dp,
+                            vertical = if (classic) 12.dp else if (search) 0.dp else 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    if (search) Icon(SearchInputIcon, null,
+                    if (search && !classic) Icon(SearchInputIcon, null,
                         Modifier.size(width = 35.dp, height = (35f * 100.399f / 122.037f).dp),
                         tint = Color.White.copy(alpha = if (interactive) 0.3f else 0.15f))
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
@@ -125,7 +142,8 @@ internal fun TvTextField(
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Box(contentAlignment = Alignment.CenterStart) {
                             if (value.isEmpty() && placeholder != null) Text(placeholder, style = textStyle,
-                                color = if (focused && !search) foreground.copy(alpha = 0.65f) else foreground,
+                                color = if (classic) Color.White.copy(alpha = if (focused) 0.52f else 0.38f)
+                                    else if (focused && !search) foreground.copy(alpha = 0.65f) else foreground,
                                 maxLines = if (singleLine) 1 else maxLines, overflow = TextOverflow.Ellipsis)
                             innerTextField()
                         }

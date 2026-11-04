@@ -29,4 +29,7 @@
     <string name="app_exit_background_playback">Music will continue playing in the background.</string>
     <string name="app_exit_stay">Stay</string>
     <string name="app_exit_confirm">Exit</string>
+    <string name="interface_style_title">Interface Style</string>
+    <string name="interface_style_apple">Apple Style</string>
+    <string name="interface_style_classic">Classic</string>
 </resources>

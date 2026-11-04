@@ -92,6 +92,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.amatv.ui.classic.ClassicBrowseVisuals
 import dev.amatv.R
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.ContentShelf
@@ -119,6 +120,7 @@ internal fun LibraryScreen(
     menuFocus: FocusRequester?,
     onLibrarySearch: () -> Unit = {},
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     var selected by rememberSaveable { mutableStateOf(LibrarySection.Recent) }
     var pendingEntry by remember { mutableStateOf<LibrarySection?>(null) }
     val sectionFocus = remember(firstFocus) {
@@ -241,11 +243,11 @@ internal fun LibraryScreen(
                     true
                 }
             },
-        horizontalArrangement = Arrangement.spacedBy(20.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (classic) 24.dp else 20.dp),
     ) {
-        Column(Modifier.width(148.dp).fillMaxHeight()) {
-            Text(stringResource(R.string.nav_library), color = Color.White, fontSize = 24.sp, lineHeight = 30.sp,
-                fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(start = 10.dp, bottom = 24.dp))
+        Column(Modifier.width(if (classic) 156.dp else 148.dp).fillMaxHeight()) {
+            Text(stringResource(R.string.nav_library), color = Color.White, fontSize = if (classic) 25.sp else 24.sp, lineHeight = 30.sp,
+                fontWeight = if (classic) FontWeight.Bold else FontWeight.SemiBold, modifier = Modifier.padding(start = 10.dp, bottom = 24.dp))
             LibrarySection.entries.forEachIndexed { index, section ->
                 val current = selected == section
                 FocusSurface(
@@ -283,7 +285,7 @@ internal fun LibraryScreen(
                                 else -> false
                             }
                         },
-                    cornerRadius = 19.5.dp, focusedScale = 1.015f,
+                    cornerRadius = if (classic) 8.dp else 19.5.dp, focusedScale = 1.015f,
                     background = if (current) Color.White.copy(alpha = 0.09f) else Color.Transparent,
                     focusedBackground = Color.White.copy(alpha = 0.84f),
                     padding = PaddingValues(horizontal = 13.dp),
@@ -375,11 +377,12 @@ private fun LibraryItems(
     automaticPaging: Boolean = true, screenActive: Boolean = true,
     @StringRes emptyMessage: Int = R.string.library_empty,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val active = LocalFocusTargetsEnabled.current && screenActive
     val gridState = rememberLazyGridState()
     val listState = rememberLazyListState()
-    if (songs) rememberArtworkPrefetch(tracks, listState, active, coverSize = 31.dp)
-    else rememberArtworkPrefetch(tracks, gridState, active)
+    if (songs) rememberArtworkPrefetch(tracks, listState, active, coverSize = if (classic) 42.dp else 31.dp)
+    else rememberArtworkPrefetch(tracks, gridState, active, coverSize = if (classic) ClassicBrowseVisuals.CardWidth else BrowseTokens.CardWidth)
     var savedItemKey by rememberSaveable { mutableStateOf<String?>(null) }
     var savedItemIndex by rememberSaveable { mutableIntStateOf(0) }
     var contentHasFocus by remember { mutableStateOf(false) }
@@ -491,7 +494,7 @@ private fun LibraryItems(
         }
         false
     }
-    val columns = 5
+    val columns = if (classic) 4 else 5
     val loadMore by rememberUpdatedState(onLoadMore)
     val guard = with(LocalDensity.current) { 18.dp.toPx() }
     val bringIntoView = remember(guard) { object : BringIntoViewSpec {
@@ -588,31 +591,33 @@ private fun libraryItemKey(item: Track): String = libraryResourceKey(item)
 @Composable
 private fun LibraryCover(track: Track, modifier: Modifier, onClick: () -> Unit) {
     val artist = track.catalogKind == CatalogKind.Artist
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val radius = if (classic) ClassicBrowseVisuals.CardRadius else 7.dp
     val backdrop = LocalBrowseBackdropController.current
     val actionMenu = catalogMenuFor(track)
     FocusSurface(onClick, modifier.catalogMenuKey(track).onFocusChanged { if (it.isFocused) backdrop?.select(track) }.fillMaxWidth(),
         onLongClick = actionMenu?.let { open -> { open(track) } }, onLongClickLabel = stringResource(R.string.actions_menu),
-        focusedScale = 1.025f, focusedLift = 0.dp, focusedElevation = 0.dp,
-        cornerRadius = if (artist) 64.dp else 7.dp, background = Color.Transparent, focusedBackground = Color.Transparent,
+        focusedScale = if (classic) ClassicBrowseVisuals.CardFocusScale else 1.025f, focusedLift = if (classic) ClassicBrowseVisuals.CardLift else 0.dp, focusedElevation = 0.dp,
+        cornerRadius = if (artist) 64.dp else radius, background = Color.Transparent, focusedBackground = Color.Transparent,
     ) { focused ->
         Column(horizontalAlignment = if (artist) Alignment.CenterHorizontally else Alignment.Start) {
-            val shape = if (artist) CircleShape else RoundedCornerShape(7.dp)
+            val shape = if (artist) CircleShape else RoundedCornerShape(radius)
             Box(Modifier.fillMaxWidth().aspectRatio(1f)
-                .coverShadow(focused, if (artist) 96.dp else 7.dp)
-                .coverHairline(if (artist) 96.dp else 7.dp)) {
+                .coverShadow(focused, if (artist) 96.dp else radius)
+                .coverHairline(if (artist) 96.dp else radius)) {
                 if (track.artworkUrl.isNullOrBlank()) {
                     Box(Modifier.fillMaxSize().clip(shape).background(Color.White.copy(alpha = 0.055f)), Alignment.Center) {
                         Icon(if (artist) Icons.Rounded.Person else if (track.resourceType == "library-playlist-folders") Icons.Rounded.Folder else Icons.Rounded.Album, null,
                             tint = Color.White.copy(alpha = 0.32f), modifier = Modifier.size(34.dp))
                     }
                 } else MotionArtwork(track, Modifier.fillMaxSize().clip(shape), animate = rememberBrowseMotionReady(focused),
-                    cornerRadius = if (artist) 96.dp else 7.dp)
+                    cornerRadius = if (artist) 96.dp else radius)
             }
-            Text(track.title, color = Color.White.copy(alpha = 0.92f), fontSize = 12.sp, lineHeight = 16.sp,
-                fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 7.dp))
-            if (!artist) Text(track.artist, color = Color.White.copy(alpha = 0.53f), fontSize = 11.sp, lineHeight = 14.sp,
-                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+            Text(track.title, color = Color.White.copy(alpha = 0.92f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
+                fontWeight = if (classic) FontWeight.SemiBold else FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = if (classic) 9.dp else 7.dp))
+            if (!artist) Text(track.artist, color = Color.White.copy(alpha = 0.53f), fontSize = if (classic) ClassicBrowseVisuals.CardSubtitleSize else 11.sp, lineHeight = if (classic) 17.sp else 14.sp,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = if (classic) 1.dp else 2.dp))
             else Spacer(Modifier.height(16.dp))
         }
     }
@@ -620,19 +625,21 @@ private fun LibraryCover(track: Track, modifier: Modifier, onClick: () -> Unit) 
 
 @Composable
 private fun LibrarySong(track: Track, modifier: Modifier, onClick: () -> Unit) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val artworkSize = if (classic) 42.dp else 31.dp
     val actionMenu = catalogMenuFor(track)
-    FocusSurface(onClick, modifier.catalogMenuKey(track).fillMaxWidth().height(48.dp), cornerRadius = 8.dp,
+    FocusSurface(onClick, modifier.catalogMenuKey(track).fillMaxWidth().height(if (classic) 64.dp else 48.dp), cornerRadius = 8.dp,
         onLongClick = actionMenu?.let { open -> { open(track) } }, onLongClickLabel = stringResource(R.string.actions_menu),
         focusedScale = 1f, background = Color.Transparent, focusedBackground = Color.White.copy(alpha = 0.12f),
         padding = PaddingValues(horizontal = 9.dp)) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (track.artworkUrl.isNullOrBlank()) Icon(Icons.Rounded.Album, null, Modifier.size(31.dp), Color.White.copy(alpha = 0.3f))
-            else MotionArtwork(track, Modifier.size(31.dp), animate = false, cornerRadius = 4.dp)
+            if (track.artworkUrl.isNullOrBlank()) Icon(Icons.Rounded.Album, null, Modifier.size(artworkSize), Color.White.copy(alpha = 0.3f))
+            else MotionArtwork(track, Modifier.size(artworkSize), animate = false, cornerRadius = 4.dp)
             Column(Modifier.weight(1f)) {
-                Text(track.title, color = Color.White.copy(alpha = 0.92f), fontSize = 13.sp, lineHeight = 17.sp, fontWeight = FontWeight.Medium,
+                Text(track.title, color = Color.White.copy(alpha = 0.92f), fontSize = if (classic) 16.sp else 13.sp, lineHeight = if (classic) 20.sp else 17.sp, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(track.artist, color = Color.White.copy(alpha = 0.52f), fontSize = 11.sp, lineHeight = 14.sp,
+                Text(track.artist, color = Color.White.copy(alpha = 0.52f), fontSize = if (classic) 12.sp else 11.sp, lineHeight = if (classic) 16.sp else 14.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (track.durationMs > 0L) {

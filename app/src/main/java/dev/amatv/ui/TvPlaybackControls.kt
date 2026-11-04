@@ -5,6 +5,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -12,10 +14,14 @@ import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
@@ -64,6 +70,14 @@ import kotlin.math.min
 /** Normalize only the control overlay. The artwork and lyric viewport retain their density. */
 @Composable
 internal fun TvPlaybackViewport(lowPerformanceMode: Boolean = false, content: @Composable () -> Unit) {
+    if (LocalInterfaceStyle.current == InterfaceStyle.Classic) {
+        // Classic controls use the original player density, like its artwork
+        // and lyric stage. Only their presentation changes, never player state.
+        CompositionLocalProvider(LocalFocusMotionStyle provides
+            if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Spring,
+        ) { content() }
+        return
+    }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         CompositionLocalProvider(
             LocalDensity provides Density(constraints.maxWidth / 960f, LocalDensity.current.fontScale),
@@ -72,6 +86,21 @@ internal fun TvPlaybackViewport(lowPerformanceMode: Boolean = false, content: @C
             LocalTelevisionFocusTimings provides TelevisionFocusTimings(75, 150),
         ) { TvTypography { content() } }
     }
+}
+
+@Composable
+internal fun PlaybackControlGroup(content: @Composable RowScope.() -> Unit) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val shape = RoundedCornerShape(24.dp)
+    Row(
+        modifier = if (classic) Modifier.clip(shape)
+            .background(Color.White.copy(alpha = .12f), shape)
+            .border(1.dp, Color.White.copy(alpha = .14f), shape).padding(4.dp)
+            else Modifier,
+        horizontalArrangement = Arrangement.spacedBy(if (classic) 0.dp else 12.5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
 }
 
 /** GlassPlayer RegularEmphasized.L: 66px frame, 8px focus growth, 75/150ms. */
@@ -89,6 +118,7 @@ internal fun TvPlaybackButton(
     onClick: () -> Unit,
     onBounds: ((Rect) -> Unit)? = null,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val interactive = enabled && LocalFocusTargetsEnabled.current
     val immediate = LocalFocusMotionStyle.current == FocusMotionStyle.Immediate
     val interaction = remember { TvPressInteractionSource() }
@@ -97,7 +127,7 @@ internal fun TvPlaybackButton(
     val inputFocused = focused && interactive
     val focus = animateFloatAsState(
         targetValue = if (inputFocused) 1f else 0f,
-        animationSpec = if (immediate) snap() else tween(if (inputFocused) 75 else 150),
+        animationSpec = if (immediate) snap() else tween(if (classic) 180 else if (inputFocused) 75 else 150),
         label = "tv-playback-button",
     )
     val hover = animateFloatAsState(
@@ -120,8 +150,10 @@ internal fun TvPlaybackButton(
             pressScale.animateTo(1f, tween(80))
         } else pressScale.animateTo(1f, tween(80))
     }
-    val shape = RoundedCornerShape(16.5.dp)
+    val shape = RoundedCornerShape(if (classic) 20.dp else 16.5.dp)
     val idleFill = when {
+        classic && selected -> Color.White.copy(alpha = .22f)
+        classic -> Color.Transparent
         !enabled -> Color(0xFF1E1E1E).copy(alpha = 0.16f)
         selected -> Color.White.copy(alpha = 0.12f)
         // GlassPlayer enabled.Idle.background, app.js 2311548:
@@ -135,12 +167,14 @@ internal fun TvPlaybackButton(
                 stateDescription = contentDescription
                 if (!enabled) disabled()
             }
-            .size(33.dp)
+            .size(width = if (classic) { if (controlId == "player-play-pause") 56.dp else 46.dp } else 33.dp,
+                height = if (classic) 40.dp else 33.dp)
             .focusProperties { canFocus = false }
             .hoverable(interactionSource = interaction, enabled = interactive)
             .clickable(interactionSource = interaction, indication = null, enabled = interactive, onClick = onClick)
             .graphicsLayer {
-                val scale = if (enabled) (1f + (37f / 33f - 1f) * focus.value) * pressScale.value else 1f
+                val growth = if (classic) .08f else 37f / 33f - 1f
+                val scale = if (enabled) (1f + growth * focus.value) * pressScale.value else 1f
                 scaleX = scale
                 scaleY = scale
                 this.shape = shape
@@ -149,10 +183,10 @@ internal fun TvPlaybackButton(
             .clip(shape)
             .drawBehind {
                 val resting = if (enabled) lerp(idleFill, Color.White.copy(alpha = 0.14f), hover.value) else idleFill
-                val fill = if (enabled) lerp(resting, Color.White.copy(alpha = 0.90f), focus.value) else idleFill
+                val fill = if (enabled) lerp(resting, Color.White.copy(alpha = if (classic) 1f else .90f), focus.value) else idleFill
                 val radius = CornerRadius(size.height / 2f)
                 drawRoundRect(fill, cornerRadius = radius)
-                drawRoundRect(
+                if (!classic) drawRoundRect(
                     Color.White.copy(alpha = if (enabled) 0.16f * (1f - focus.value) else 0.05f),
                     cornerRadius = radius, style = Stroke(0.5.dp.toPx()),
                 )
@@ -162,10 +196,11 @@ internal fun TvPlaybackButton(
         Icon(
             icon, contentDescription,
             tint = when {
-                !enabled -> Color.White.copy(alpha = 0.3f)
-                else -> lerp(Color.White.copy(alpha = 0.94f), Color(0xFF1E1E1E), focus.value)
+                !enabled -> Color.White.copy(alpha = if (classic) .25f else .3f)
+                else -> lerp(Color.White.copy(alpha = if (classic) .88f else .94f),
+                    if (classic) Color(0xFF18181A) else Color(0xFF1E1E1E), focus.value)
             },
-            modifier = Modifier.size(iconSize),
+            modifier = Modifier.size(if (classic) 24.dp else iconSize),
         )
     }
 }
@@ -178,6 +213,10 @@ internal fun TvPlaybackProgress(
     isFocused: Boolean,
     scrubPositionMs: Long?,
 ) {
+    if (LocalInterfaceStyle.current == InterfaceStyle.Classic) {
+        ClassicPlaybackProgress(positionState, durationMs, isFocused, scrubPositionMs)
+        return
+    }
     val second by remember(positionState, scrubPositionMs) {
         derivedStateOf { (scrubPositionMs ?: positionState.value) / 1_000L }
     }
@@ -244,6 +283,58 @@ internal fun TvPlaybackProgress(
                 elapsed.placeRelative(placement.elapsedX, 0)
                 if (placement.showRemaining) remaining.placeRelative(placement.remainingX, 0)
             }
+        }
+    }
+}
+
+/** Original grouped-player scrubber, backed by the current shared playhead. */
+@Composable
+private fun ClassicPlaybackProgress(
+    positionState: State<Long>,
+    durationMs: Long,
+    isFocused: Boolean,
+    scrubPositionMs: Long?,
+) {
+    val second by remember(positionState, scrubPositionMs) {
+        derivedStateOf { (scrubPositionMs ?: positionState.value) / 1_000L }
+    }
+    val immediate = LocalFocusMotionStyle.current == FocusMotionStyle.Immediate
+    val focus = animateFloatAsState(if (isFocused) 1f else 0f,
+        if (immediate) snap() else tween(220, easing = MotionTokens.KaraokeLineEasing), label = "classic-progress-focus")
+    val thumb = animateFloatAsState(
+        if (scrubPositionMs != null) 10f else if (isFocused) 8f else 0f,
+        if (immediate) snap() else tween(220, easing = MotionTokens.KaraokeLineEasing), label = "classic-progress-thumb")
+    val hasDuration = durationMs > 0L
+    val textAlpha = if (scrubPositionMs != null) 1f else if (isFocused) .95f else .60f
+    Column(Modifier.fillMaxWidth().automationId("player-progress").semantics { selected = isFocused }
+        .focusFrameTarget(isFocused, "player-progress", 12.dp).padding(vertical = 4.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(18.dp)) {
+            val h = (4f + 4f * focus.value).dp.toPx()
+            val y = (size.height - h) / 2f
+            val fraction = if (hasDuration)
+                ((scrubPositionMs ?: positionState.value).toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+            val played = size.width * fraction
+            val radius = CornerRadius(h / 2f)
+            drawRoundRect(Color.White.copy(alpha = .20f + .15f * focus.value),
+                topLeft = Offset(0f, y), size = Size(size.width, h), cornerRadius = radius)
+            if (played > 0f) drawRoundRect(Color.White, topLeft = Offset(0f, y),
+                size = Size(played, h), cornerRadius = radius)
+            val thumbPx = thumb.value.dp.toPx().coerceAtMost(size.width / 2f)
+            if (hasDuration && thumbPx > .5f) {
+                val center = Offset(played.coerceIn(thumbPx, size.width - thumbPx), size.height / 2f)
+                drawCircle(Color.Black.copy(alpha = if (scrubPositionMs != null) .50f else .35f),
+                    radius = thumbPx + 3f, center = center)
+                drawCircle(Color.White, radius = thumbPx, center = center)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(formatPlaybackTime(second * 1_000L), Modifier.automationId("player-progress-elapsed"),
+                color = Color.White.copy(alpha = textAlpha), fontSize = 13.sp,
+                fontWeight = if (scrubPositionMs != null) FontWeight.Bold else FontWeight.Medium)
+            Text(if (hasDuration) "−${formatPlaybackTime((durationMs - second * 1_000L).coerceAtLeast(0L))}" else "",
+                Modifier.automationId("player-progress-remaining"), color = Color.White.copy(alpha = textAlpha),
+                fontSize = 13.sp, fontWeight = if (scrubPositionMs != null) FontWeight.Bold else FontWeight.Medium)
         }
     }
 }

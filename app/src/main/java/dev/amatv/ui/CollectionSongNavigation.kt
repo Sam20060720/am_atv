@@ -52,4 +52,5 @@ internal fun collectionSongHighlightTop(
     anchorOffset: Int,
     viewportStartOffset: Int,
     rowHeight: Float,
-): Float = anchorOffset - viewportStartOffset + (animatedSongIndex + 2f - anchorLazyIndex) * rowHeight
+    headerCount: Int = 2,
+): Float = anchorOffset - viewportStartOffset + (animatedSongIndex + headerCount - anchorLazyIndex) * rowHeight

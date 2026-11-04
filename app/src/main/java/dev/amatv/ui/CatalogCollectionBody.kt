@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import dev.amatv.ui.classic.ClassicBrowseVisuals
 import dev.amatv.R
 import dev.amatv.integration.CatalogFailureReason
 import dev.amatv.model.CatalogKind
@@ -76,6 +77,8 @@ internal fun CatalogCollectionBody(
     groups: List<ListeningRecommendation> = emptyList(),
     onOpenGroup: (ListeningRecommendation) -> Unit = {},
 ) = key(contentKey) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    val cardWidth = if (classic) ClassicBrowseVisuals.CardWidth else BrowseTokens.CardWidth
     val contentActive = active && LocalFocusTargetsEnabled.current
     val latestActive by rememberUpdatedState(contentActive)
     val grid = rememberLazyGridState()
@@ -99,7 +102,7 @@ internal fun CatalogCollectionBody(
     val rows = groups.size + (items.size + columns - 1) / columns + if (hasFooter || bodyKeys.isEmpty()) 1 else 0
     val latestMore by rememberUpdatedState(onMore)
     val latestItems by rememberUpdatedState(items)
-    rememberArtworkPrefetch(items, grid, contentActive, if (songs) 34.dp else BrowseTokens.CardWidth,
+    rememberArtworkPrefetch(items, grid, contentActive, if (songs) { if (classic) 42.dp else 34.dp } else cardWidth,
         itemIndexOffset = groups.size)
 
     LaunchedEffect(contentActive) {
@@ -160,7 +163,7 @@ internal fun CatalogCollectionBody(
     Box(modifier.fillMaxSize().automationId("catalog-collection-body")
         .semantics { collectionInfo = CollectionInfo(rows, columns) }) {
     LazyVerticalGrid(
-        columns = if (songs) GridCells.Fixed(1) else GridCells.Adaptive(BrowseTokens.CardWidth),
+        columns = if (songs) GridCells.Fixed(1) else GridCells.Adaptive(cardWidth),
         state = grid,
         modifier = Modifier.fillMaxSize()
             .onFocusChanged { bodyHasFocus = it.hasFocus }.focusGroup()
@@ -230,19 +233,20 @@ internal fun CatalogCollectionBody(
 
 @Composable
 private fun CollectionSongRow(track: Track, modifier: Modifier, onClick: () -> Unit) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val actionMenu = catalogMenuFor(track)
-    FocusSurface(onClick, modifier.catalogMenuKey(track).fillMaxWidth().height(52.dp),
+    FocusSurface(onClick, modifier.catalogMenuKey(track).fillMaxWidth().height(if (classic) 64.dp else 52.dp),
         cornerRadius = 8.dp, focusedScale = 1f,
         onLongClick = actionMenu?.let { open -> { open(track) } },
         onLongClickLabel = stringResource(R.string.actions_menu), background = Color.Transparent,
         focusedBackground = Color.White.copy(alpha = .12f), padding = PaddingValues(horizontal = 9.dp)) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MotionArtwork(track, Modifier.size(34.dp), animate = false, cornerRadius = 4.dp)
+            MotionArtwork(track, Modifier.size(if (classic) 42.dp else 34.dp), animate = false, cornerRadius = 4.dp)
             Column(Modifier.weight(1f)) {
-                Text(track.title, color = Color.White.copy(alpha = .94f), fontSize = 14.sp, lineHeight = 18.sp,
+                Text(track.title, color = Color.White.copy(alpha = .94f), fontSize = if (classic) 16.sp else 14.sp, lineHeight = if (classic) 20.sp else 18.sp,
                     fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(track.artist, color = Color.White.copy(alpha = .54f), fontSize = 11.sp, lineHeight = 15.sp,
+                Text(track.artist, color = Color.White.copy(alpha = .54f), fontSize = if (classic) 12.sp else 11.sp, lineHeight = if (classic) 16.sp else 15.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             if (track.album.isNotBlank()) Text(track.album, color = Color.White.copy(alpha = .5f),

@@ -226,6 +226,7 @@ fun PlayerScreen(
     canSeek: Boolean = true,
     feedbackInput: PlaybackFeedbackInput? = null,
 ) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val seekEnabled = canSeek && track.durationMs > 0L
     val queueForwardStep = if (LocalLayoutDirection.current == LayoutDirection.Rtl) -1 else 1
     val openCatalogActions = LocalCatalogActionMenu.current
@@ -871,8 +872,12 @@ fun PlayerScreen(
         }
         chromeTransition.AnimatedVisibility(
             visible = { it.controlsVisible },
-            enter = fadeIn(tween(300, easing = LinearEasing)),
-            exit = fadeOut(tween(300, easing = LinearEasing)),
+            enter = if (classic && !lowPerformanceMode) fadeIn(tween(280, easing = MotionTokens.KaraokeLineEasing)) +
+                slideInVertically(tween(320, easing = MotionTokens.KaraokeLineEasing)) { it / 4 }
+                else fadeIn(tween(300, easing = LinearEasing)),
+            exit = if (classic && !lowPerformanceMode) fadeOut(tween(360, easing = MotionTokens.KaraokeGradientExitEasing)) +
+                slideOutVertically(tween(380, easing = MotionTokens.KaraokeLineEasing)) { it / 4 }
+                else fadeOut(tween(300, easing = LinearEasing)),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             TvPlaybackViewport(lowPerformanceMode) {
@@ -881,7 +886,10 @@ fun PlayerScreen(
                         .background(Brush.verticalGradient(
                             listOf(Color.Transparent, Color.Black.copy(alpha = 0.52f)),
                         ))
-                        .padding(start = 40.dp, end = 40.dp, bottom = 25.dp, top = 30.dp),
+                        .padding(start = if (classic) 88.dp else 40.dp,
+                            end = if (classic) 84.dp else 40.dp,
+                            bottom = if (classic) 26.dp else 25.dp,
+                            top = if (classic) 36.dp else 30.dp),
                 ) {
                     TvPlaybackProgress(
                         positionState = playbackPosition,
@@ -889,12 +897,12 @@ fun PlayerScreen(
                         isFocused = seekEnabled && navigationZone == PlayerNavigationZone.ProgressBar,
                         scrubPositionMs = if (isScrubbing) scrubPositionMs else null,
                     )
-                    Spacer(Modifier.height(8.5.dp))
+                    Spacer(Modifier.height(if (classic) 8.dp else 8.5.dp))
                     Row(
                         Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        PlaybackControlGroup {
                             TvPlaybackButton(
                                 controlId = "player-previous", icon = Icons.Rounded.SkipPrevious,
                                 contentDescription = stringResource(R.string.player_previous_track),
@@ -906,7 +914,9 @@ fun PlayerScreen(
                             )
                             TvPlaybackButton(
                                 controlId = "player-play-pause",
-                                icon = if (playWhenReady) TvPlaybackIcons.Pause else TvPlaybackIcons.Play,
+                                icon = if (classic) {
+                                    if (playWhenReady) Icons.Rounded.Pause else Icons.Rounded.PlayArrow
+                                } else if (playWhenReady) TvPlaybackIcons.Pause else TvPlaybackIcons.Play,
                                 iconSize = 32.dp,
                                 contentDescription = stringResource(if (playWhenReady) R.string.player_pause else R.string.player_play),
                                 focused = navigationZone == PlayerNavigationZone.Controls && focusedControl == PlayerControl.PlayPause,
@@ -924,7 +934,7 @@ fun PlayerScreen(
                                 onClick = { activateControl(PlayerControl.Next) },
                             )
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        PlaybackControlGroup {
                             if (supportsLyrics) {
                                 TvPlaybackButton(
                                     controlId = "player-lyrics-display", icon = Icons.Rounded.Translate,

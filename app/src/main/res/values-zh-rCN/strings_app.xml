@@ -29,4 +29,7 @@
     <string name="app_exit_background_playback">音乐会继续在后台播放。</string>
     <string name="app_exit_stay">继续使用</string>
     <string name="app_exit_confirm">退出</string>
+    <string name="interface_style_title">界面样式</string>
+    <string name="interface_style_apple">Apple 风格</string>
+    <string name="interface_style_classic">经典界面</string>
 </resources>
