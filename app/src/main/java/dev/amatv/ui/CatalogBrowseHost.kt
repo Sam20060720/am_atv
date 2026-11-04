@@ -155,12 +155,15 @@ internal fun BrowseShell(
         }
     }
     var enterContentAfterNavigation by remember { mutableStateOf(false) }
-    var contentEntryPending by remember(destination) { mutableStateOf(false) }
     var contentEntryEpoch by remember { mutableLongStateOf(0L) }
     var playerReturnPending by remember { mutableStateOf(!isBrowseVisible) }
     val focusManager = LocalFocusManager.current
     val tabSessions = remember(services, connectionState) { mutableMapOf<Destination, BrowseTabSession>() }
     val tab = tabSessions.getOrPut(destination) { BrowseTabSession(scope, services, capabilities, destination) }
+    // Own initial Home entry before native auto-focus can land on navigation.
+    // Replacing a tab's targets during an account transition needs the same
+    // intent; explicit remote navigation can still cancel it synchronously.
+    var contentEntryPending by remember(destination, tab) { mutableStateOf(destination == Destination.Home) }
     DisposableEffect(tabSessions) { onDispose { tabSessions.values.forEach(BrowseTabSession::close) } }
     val deckOpacity = remember { Animatable(1f) }
     var switchingTab by remember { mutableStateOf(false) }
@@ -443,7 +446,7 @@ internal fun BrowseShell(
     BackHandler(enabled = isBrowseVisible && !switchingTab && detail != null && !navigationExpanded && !contextMenuVisible) {
         if (isContextMenuOpen()) onDismissPendingContextMenu() else closeDetail()
     }
-    LaunchedEffect(destination, isBrowseVisible, detail?.key, collectionState.loading, collectionState.error, returnToContent, auxiliaryPage, contextMenuVisible, modalExitToken, switchingTab, windowFocused, interfaceStyle, interfaceStyleFocusPending) {
+    LaunchedEffect(destination, tab, currentContentHasFocus, isBrowseVisible, detail?.key, collectionState.loading, collectionState.error, returnToContent, auxiliaryPage, contextMenuVisible, modalExitToken, switchingTab, windowFocused, interfaceStyle, interfaceStyleFocusPending) {
         if (!isBrowseVisible || !windowFocused || contextMenuVisible || switchingTab || resetRootPending ||
             settingsFocusPending || observedInterfaceStyle != interfaceStyle) return@LaunchedEffect
         val entry = when {
