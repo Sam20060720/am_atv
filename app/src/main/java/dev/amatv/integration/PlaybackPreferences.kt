@@ -170,11 +170,10 @@ class PlaybackPreferences(context: Context) : QueuePreferences {
             preferences.edit().putString(KEY_LYRIC_TRANSLATION_LANGUAGE, value).apply()
         }
 
-    /** English/Latin is the useful default for romanized pronunciation. */
+    /** Defaults to English/Latin; an explicitly stored blank follows the app language. */
     var lyricPronunciationLanguageTag: String
         get() = preferences.getString(KEY_LYRIC_PRONUNCIATION_LANGUAGE, "en-US")
             .orEmpty()
-            .ifBlank { "en-US" }
         set(value) {
             preferences.edit().putString(KEY_LYRIC_PRONUNCIATION_LANGUAGE, value).apply()
         }

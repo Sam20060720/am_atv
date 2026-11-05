@@ -19,9 +19,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.dropShadow
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.pointerInput
@@ -228,3 +233,19 @@ internal fun CatalogSheetSeparator() {
     Box(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp)
         .height(.5.dp).background(Color.White.copy(alpha = .10f)))
 }
+
+/** Shared list-edge fades; keep the menu's header and outer shadow unaffected. */
+internal fun Modifier.catalogMenuFades(top: Boolean, bottom: Boolean): Modifier =
+    if (!top && !bottom) this else graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+        .drawWithCache {
+            val topFade = 11.dp.toPx().coerceAtMost(size.height / 2f)
+            val bottomFade = 10.dp.toPx().coerceAtMost(size.height / 2f)
+            val upper = Brush.verticalGradient(listOf(Color.Transparent, Color.Black), endY = topFade)
+            val lower = Brush.verticalGradient(listOf(Color.Black, Color.Transparent), startY = size.height - bottomFade, endY = size.height)
+            onDrawWithContent {
+                drawContent()
+                if (top) drawRect(upper, size = androidx.compose.ui.geometry.Size(size.width, topFade), blendMode = BlendMode.DstIn)
+                if (bottom) drawRect(lower, topLeft = Offset(0f, size.height - bottomFade),
+                    size = androidx.compose.ui.geometry.Size(size.width, bottomFade), blendMode = BlendMode.DstIn)
+            }
+        }

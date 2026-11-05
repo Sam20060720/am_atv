@@ -344,13 +344,14 @@ fun AmAtvApp() {
         mutableStateOf(playbackPrefs.lyricPronunciationLanguageTag)
     }
     val effectiveLyricsLanguageTag = lyricTranslationLanguageTag.ifBlank { lyricsLanguageTag }
+    val effectivePronunciationLanguageTag = lyricPronunciationLanguageTag.ifBlank { lyricsLanguageTag }
     val lyricsLocalization = remember(
-        effectiveLyricsLanguageTag, lyricPronunciationLanguageTag,
+        effectiveLyricsLanguageTag, effectivePronunciationLanguageTag,
         lyricTranslationEnabled, lyricPronunciationEnabled,
     ) {
         LyricsLocalizationRequest(
             languageTag = effectiveLyricsLanguageTag,
-            pronunciationLanguageTag = lyricPronunciationLanguageTag,
+            pronunciationLanguageTag = effectivePronunciationLanguageTag,
             includeTranslations = lyricTranslationEnabled,
             includePronunciations = lyricPronunciationEnabled,
         )

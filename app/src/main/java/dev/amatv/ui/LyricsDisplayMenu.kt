@@ -6,11 +6,10 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -34,10 +33,10 @@ import dev.amatv.R
 import java.util.Locale
 import kotlin.math.roundToInt
 
-private enum class LyricsLanguagePicker { Translation, Pronunciation, LargerText }
+private enum class LyricsLanguagePicker { Translation, Pronunciation }
 
-private val TranslationLanguageTags = listOf(
-    "", "zh-TW", "zh-CN", "en-US", "ja-JP", "ko-KR", "es-ES", "fr-FR", "de-DE",
+private val LyricsLanguageTags = listOf(
+    "zh-TW", "zh-CN", "en-US", "ja-JP", "ko-KR", "es-ES", "fr-FR", "de-DE",
 )
 
 /** Lyrics preferences use the same panel, rows and window-local focus as catalog actions. */
@@ -49,7 +48,6 @@ internal fun LyricsDisplaySettingsDialog(
     onBackHandlerChanged: ((() -> Unit)?) -> Unit = {},
     translationEnabled: Boolean,
     pronunciationEnabled: Boolean,
-    pronunciationLarger: Boolean,
     translationAvailable: Boolean,
     pronunciationAvailable: Boolean,
     translationLanguageTag: String,
@@ -59,7 +57,6 @@ internal fun LyricsDisplaySettingsDialog(
     enhancementsFailed: Boolean,
     onTranslationChange: (Boolean) -> Unit,
     onPronunciationChange: (Boolean) -> Unit,
-    onPronunciationLargerChange: (Boolean) -> Unit,
     onTranslationLanguageChange: (String) -> Unit,
     onPronunciationLanguageChange: (String) -> Unit,
     onDismiss: () -> Unit,
@@ -70,26 +67,25 @@ internal fun LyricsDisplaySettingsDialog(
     // The intended pane changes synchronously, before the shared fade swaps
     // rendered content. Back during that fade therefore pops rather than closes.
     var requestedPicker by remember { mutableStateOf<LyricsLanguagePicker?>(null) }
-    var returnRow by remember { mutableStateOf("close") }
-    var pendingFocus by remember { mutableStateOf<String?>("close") }
+    var returnRow by remember { mutableStateOf("translation") }
+    var pendingFocus by remember { mutableStateOf<String?>("translation") }
     var focusedRow by remember { mutableStateOf<String?>(null) }
     var lastFocusedRow by remember(picker) { mutableStateOf<String?>(null) }
     var backHeld by remember { mutableStateOf(false) }
+    var leftHeld by remember { mutableStateOf(false) }
     val inputGate = remember { CatalogModalInputGate() }
     val mainScroll = rememberLazyListState()
     val pickerScroll = remember(picker) { LazyListState() }
     val appLocale = remember(appLanguageTag) {
         Locale.forLanguageTag(appLanguageTag).takeUnless { it.language.isBlank() } ?: Locale.getDefault()
     }
-    fun languageName(tag: String): String = Locale.forLanguageTag(tag).getDisplayName(appLocale)
-        .replaceFirstChar { if (it.isLowerCase()) it.titlecase(appLocale) else it.toString() }
     fun openPicker(next: LyricsLanguagePicker, origin: String) {
         if (motion.closing || motion.transitioning) return
         returnRow = origin
         requestedPicker = next
         motion.navigate(goingBack = false) {
             picker = next
-            pendingFocus = "option-0"
+            pendingFocus = "off"
             focusedRow = null
         }
     }
@@ -97,6 +93,7 @@ internal fun LyricsDisplaySettingsDialog(
         if (motion.closing) return
         inputGate.dialogBackDismissed()
         backHeld = false
+        leftHeld = false
         if (requestedPicker != null) {
             requestedPicker = null
             motion.navigate(goingBack = true, replaceTransition = true,
@@ -142,18 +139,18 @@ internal fun LyricsDisplaySettingsDialog(
             val windowFocused = LocalWindowInfo.current.isWindowFocused
             val active = menuSize.width > 0 && menuSize.height > 0 && windowFocused &&
                 motion.entranceComplete && !motion.closing && !motion.transitioning
-            val pronunciationOptions = remember(appLanguageTag) { listOf("en-US", appLanguageTag).distinct() }
-            val entryIds = when (picker) {
-                null -> listOf("close", "translation", "translation-language", "pronunciation", "pronunciation-language", "larger")
-                LyricsLanguagePicker.Translation -> listOf("back") + TranslationLanguageTags.indices.map { "option-$it" }
-                LyricsLanguagePicker.Pronunciation -> listOf("back") + pronunciationOptions.indices.map { "option-$it" }
-                LyricsLanguagePicker.LargerText -> listOf("back", "option-0", "option-1")
+            val languageOptions = remember(appLanguageTag) {
+                (LyricsLanguageTags + appLanguageTag).filter(String::isNotBlank).distinct()
             }
-            val requesters = remember(entryIds) {
-                entryIds.associateWith { FocusRequester() }
+            val entryIds = if (picker == null) listOf("translation", "pronunciation")
+                else listOf("off", "follow") + languageOptions.map { "language-$it" }
+            // The fixed header participates in navigation, but it is not a lazy
+            // item. Only entryIds may be used to calculate a scroll position.
+            val navigationIds = if (picker == null) entryIds else listOf("back") + entryIds
+            val requesters = remember(navigationIds) {
+                navigationIds.associateWith { FocusRequester() }
             }
             val scroll = if (picker == null) mainScroll else pickerScroll
-            val navigationIds = entryIds
             val ready = active && focusedRow != null && pendingFocus == null
             val latestReady by rememberUpdatedState(ready)
             LaunchedEffect(picker, pendingFocus, focusedRow, active) {
@@ -183,17 +180,21 @@ internal fun LyricsDisplaySettingsDialog(
                         if (pendingFocus == id) pendingFocus = null
                     } else if (focusedRow == id) focusedRow = null
                 }
-            fun rowModifier(id: String, index: Int): Modifier = target(id).focusProperties {
-                up = entryIds.getOrNull(index - 1)?.let(requesters::getValue) ?: FocusRequester.Cancel
-                down = entryIds.getOrNull(index + 1)?.let(requesters::getValue) ?: FocusRequester.Cancel
+            fun rowModifier(id: String): Modifier = target(id).focusProperties {
+                val index = navigationIds.indexOf(id)
+                up = navigationIds.getOrNull(index - 1)?.let(requesters::getValue) ?: FocusRequester.Cancel
+                down = navigationIds.getOrNull(index + 1)?.let(requesters::getValue) ?: FocusRequester.Cancel
                 left = FocusRequester.Cancel
                 right = FocusRequester.Cancel
             }
             CompositionLocalProvider(
                 LocalFocusTargetsEnabled provides active,
                 LocalContentFocusEntry provides null,
+                LocalBrowseMotionEnabled provides false,
                 LocalCatalogMenuCanActivate provides { latestReady },
                 LocalCatalogMenuAnchorReporter provides null,
+                LocalTelevisionFocusTimings provides TelevisionFocusTimings(100, 200),
+                LocalFocusMotionStyle provides if (motion.motionEnabled) FocusMotionStyle.Television else FocusMotionStyle.Immediate,
             ) {
                 TvMenuFocusScope(visibility = focusVisibility, active = active) {
                     Box(Modifier.fillMaxSize().automationId("lyrics-display-menu")
@@ -211,6 +212,14 @@ internal fun LyricsDisplaySettingsDialog(
                                     val index = navigationIds.indexOf(current).coerceAtLeast(0)
                                     val target = navigationIds[(index + step).coerceIn(navigationIds.indices)]
                                     if (target != current) pendingFocus = target
+                                }
+                                true
+                            } else if (key.keyCode == KeyEvent.KEYCODE_DPAD_LEFT && requestedPicker != null) {
+                                if (key.action == KeyEvent.ACTION_DOWN && key.repeatCount == 0) leftHeld = ready
+                                if (key.action == KeyEvent.ACTION_UP) {
+                                    val owned = leftHeld
+                                    leftHeld = false
+                                    if (owned && ready && !key.isCanceled) back()
                                 }
                                 true
                             } else if (key.keyCode in listOf(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_MEDIA_PLAY,
@@ -242,81 +251,84 @@ internal fun LyricsDisplaySettingsDialog(
                             .automationId("lyrics-menu-panel")
                             .focusGroup().pointerInput(Unit) { detectTapGestures { } },
                             material = material, motionEnabled = motion.motionEnabled) {
-                            LazyColumn(state = scroll,
-                                modifier = Modifier.fillMaxWidth().tvMenuPane(motion),
-                                verticalArrangement = Arrangement.spacedBy(metrics.rowSpacing),
-                                contentPadding = PaddingValues(metrics.viewportPadding)) {
-                                itemsIndexed(entryIds, key = { _, id -> id }) { index, id ->
-                                    val row = rowModifier(id, index)
-                                    when (id) {
-                                        "close" -> CatalogSheetRow(
-                                            stringResource(R.string.player_lyrics_menu_close),
-                                            row.automationId("lyrics-menu-close"), icon = Icons.Rounded.Close,
-                                            singleLine = true, onClick = ::back)
-                                        "back" -> CatalogSheetRow(
-                                            stringResource(R.string.player_lyrics_language_back),
-                                            row.automationId("lyrics-menu-back"), icon = Icons.AutoMirrored.Rounded.ArrowBack,
-                                            singleLine = true, onClick = ::back)
-                                        else -> when (picker) {
-                                            null -> when (id) {
-                                                "translation" -> CatalogSheetRow(
-                                                    stringResource(R.string.player_lyrics_translation),
-                                                    row.automationId("lyrics-menu-translation"), selected = translationEnabled,
-                                                    icon = Icons.Rounded.Translate, singleLine = true,
-                                                    value = stringResource(toggleStatus(translationEnabled, translationAvailable,
-                                                        enhancementsReady, enhancementsFailed)),
-                                                    onClick = { onTranslationChange(!translationEnabled) })
-                                                "translation-language" -> CatalogSheetRow(
-                                                    stringResource(R.string.player_lyrics_translate_to),
-                                                    row.automationId("lyrics-menu-translation-language"), submenu = true, singleLine = true,
-                                                    value = if (translationLanguageTag.isBlank()) stringResource(R.string.player_lyrics_menu_follow_app)
-                                                        else lyricsLanguageValue(translationLanguageTag, appLocale),
-                                                    onClick = { openPicker(LyricsLanguagePicker.Translation, id) })
-                                                "pronunciation" -> CatalogSheetRow(
-                                                    stringResource(R.string.player_lyrics_pronunciation),
-                                                    row.automationId("lyrics-menu-pronunciation"), selected = pronunciationEnabled, singleLine = true,
-                                                    value = stringResource(toggleStatus(pronunciationEnabled, pronunciationAvailable,
-                                                        enhancementsReady, enhancementsFailed)),
-                                                    onClick = { onPronunciationChange(!pronunciationEnabled) })
-                                                "pronunciation-language" -> CatalogSheetRow(
-                                                    stringResource(R.string.player_lyrics_pronunciation_script),
-                                                    row.automationId("lyrics-menu-pronunciation-language"), submenu = true, singleLine = true,
-                                                    value = stringResource(if (pronunciationLanguageTag == "en-US") R.string.player_lyrics_menu_latin
-                                                        else R.string.player_lyrics_menu_follow_app),
-                                                    onClick = { openPicker(LyricsLanguagePicker.Pronunciation, id) })
-                                                "larger" -> CatalogSheetRow(
-                                                    stringResource(R.string.player_lyrics_larger_text),
-                                                    row.automationId("lyrics-larger-text"), submenu = true, singleLine = true,
-                                                    value = stringResource(if (pronunciationLarger) R.string.player_lyrics_menu_pronunciation_short
-                                                        else R.string.player_lyrics),
-                                                    onClick = { openPicker(LyricsLanguagePicker.LargerText, id) })
+                            Column(Modifier.tvMenuPane(motion)) {
+                                picker?.let { current ->
+                                    CatalogSheetRow(
+                                        stringResource(if (current == LyricsLanguagePicker.Translation)
+                                            R.string.player_lyrics_translation else R.string.player_lyrics_pronunciation),
+                                        rowModifier("back").automationId("lyrics-menu-back"),
+                                        icon = Icons.AutoMirrored.Rounded.ArrowBack,
+                                        singleLine = true, onClick = ::back)
+                                    CatalogSheetSeparator()
+                                }
+                                LazyColumn(state = scroll,
+                                    modifier = Modifier.requiredWidth(metrics.width).weight(1f, fill = false)
+                                        .catalogMenuFades(scroll.canScrollBackward, scroll.canScrollForward),
+                                    verticalArrangement = Arrangement.spacedBy(metrics.rowSpacing),
+                                    contentPadding = PaddingValues(horizontal = metrics.padding, vertical = metrics.viewportPadding)) {
+                                    items(entryIds, key = { it }) { id ->
+                                        val row = rowModifier(id)
+                                        val currentPicker = picker
+                                        if (currentPicker == null) {
+                                            val translation = id == "translation"
+                                            val enabled = if (translation) translationEnabled else pronunciationEnabled
+                                            val available = if (translation) translationAvailable else pronunciationAvailable
+                                            val tag = if (translation) translationLanguageTag else pronunciationLanguageTag
+                                            val status = enhancementStatus(enabled, available, enhancementsReady, enhancementsFailed)
+                                            val value = when {
+                                                status != null -> stringResource(status)
+                                                tag.isBlank() -> stringResource(R.string.player_lyrics_menu_follow_app)
+                                                !translation && tag == "en-US" -> stringResource(R.string.player_lyrics_menu_latin)
+                                                else -> lyricsLanguageValue(tag, appLocale)
                                             }
-                                            LyricsLanguagePicker.Translation -> {
-                                                val tag = TranslationLanguageTags[id.removePrefix("option-").toInt()]
-                                                CatalogSheetRow(
-                                                    if (tag.isBlank()) stringResource(R.string.player_lyrics_menu_follow_app)
-                                                        else languageName(tag),
-                                                    row.automationId("lyrics-translation-language-${tag.ifBlank { "app" }}"),
-                                                    selected = tag == translationLanguageTag, singleLine = true,
-                                                    onClick = { onTranslationLanguageChange(tag); back() })
+                                            CatalogSheetRow(
+                                                stringResource(if (translation) R.string.player_lyrics_translation
+                                                    else R.string.player_lyrics_pronunciation),
+                                                row.automationId("lyrics-menu-$id"),
+                                                icon = if (translation) Icons.Rounded.Translate else null,
+                                                submenu = true, singleLine = true, value = value,
+                                                onClick = { openPicker(if (translation) LyricsLanguagePicker.Translation
+                                                    else LyricsLanguagePicker.Pronunciation, id) })
+                                        } else {
+                                            val translation = currentPicker == LyricsLanguagePicker.Translation
+                                            val enabled = if (translation) translationEnabled else pronunciationEnabled
+                                            val tag = if (translation) translationLanguageTag else pronunciationLanguageTag
+                                            val optionTag = id.removePrefix("language-")
+                                            val selected = when (id) {
+                                                "off" -> !enabled
+                                                "follow" -> enabled && tag.isBlank()
+                                                else -> enabled && tag == optionTag
                                             }
-                                            LyricsLanguagePicker.Pronunciation -> {
-                                                val tag = pronunciationOptions[id.removePrefix("option-").toInt()]
-                                                CatalogSheetRow(
-                                                    if (tag == "en-US") stringResource(R.string.player_lyrics_pronunciation_latin)
-                                                        else stringResource(R.string.player_lyrics_pronunciation_app_script_format, languageName(tag)),
-                                                    row.automationId("lyrics-pronunciation-language-$tag"),
-                                                    selected = tag == pronunciationLanguageTag, singleLine = true,
-                                                    onClick = { onPronunciationLanguageChange(tag); back() })
+                                            val label = when (id) {
+                                                "off" -> stringResource(R.string.player_lyrics_display_off)
+                                                "follow" -> stringResource(R.string.player_lyrics_menu_follow_app)
+                                                else -> if (!translation && optionTag == "en-US")
+                                                    stringResource(R.string.player_lyrics_menu_latin)
+                                                    else lyricsLanguageValue(optionTag, appLocale)
                                             }
-                                            LyricsLanguagePicker.LargerText -> {
-                                                val larger = id == "option-1"
-                                                CatalogSheetRow(stringResource(if (larger) R.string.player_lyrics_larger_pronunciation
-                                                        else R.string.player_lyrics_larger_lyrics),
-                                                    row.automationId(if (larger) "lyrics-larger-pronunciation" else "lyrics-larger-lyrics"),
-                                                    selected = larger == pronunciationLarger, singleLine = true,
-                                                    onClick = { onPronunciationLargerChange(larger); back() })
+                                            val prefix = if (translation) "translation" else "pronunciation"
+                                            val optionId = when (id) {
+                                                "off" -> "lyrics-$prefix-off"
+                                                "follow" -> "lyrics-$prefix-language-app"
+                                                else -> "lyrics-$prefix-language-$optionTag"
                                             }
+                                            CatalogSheetRow(label, row.automationId(optionId),
+                                                selected = selected, singleLine = true, onClick = {
+                                                    if (id == "off") {
+                                                        if (translation) onTranslationChange(false)
+                                                        else onPronunciationChange(false)
+                                                    } else {
+                                                        val nextTag = if (id == "follow") "" else optionTag
+                                                        if (translation) {
+                                                            onTranslationLanguageChange(nextTag)
+                                                            onTranslationChange(true)
+                                                        } else {
+                                                            onPronunciationLanguageChange(nextTag)
+                                                            onPronunciationChange(true)
+                                                        }
+                                                    }
+                                                    back()
+                                                })
                                         }
                                     }
                                 }
@@ -329,13 +341,13 @@ internal fun LyricsDisplaySettingsDialog(
     }
 }
 
-/** Compact main-menu values preserve load state without a second line of help text. */
-private fun toggleStatus(enabled: Boolean, available: Boolean, ready: Boolean, failed: Boolean): Int = when {
+/** Keep transient availability separate from the selected language preference. */
+private fun enhancementStatus(enabled: Boolean, available: Boolean, ready: Boolean, failed: Boolean): Int? = when {
     !enabled -> R.string.player_lyrics_display_off
     failed -> R.string.player_lyrics_menu_failed
     !ready -> R.string.player_loading
     !available -> R.string.player_lyrics_menu_unavailable
-    else -> R.string.player_lyrics_display_on
+    else -> null
 }
 
 @Composable

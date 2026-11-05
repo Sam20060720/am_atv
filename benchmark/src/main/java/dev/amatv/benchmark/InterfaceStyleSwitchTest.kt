@@ -82,18 +82,18 @@ class InterfaceStyleSwitchTest {
                         if (to > from) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT, 55) }
                     safeMenuCenter(instrumentation, ui, "player-lyrics-display", virtual = true)
                     ui.awaitId("lyrics-display-menu", 3_000)
-                    captureMenuEdges(ui, "lyrics-menu-", "lyrics", directory, cases, "lyrics-larger-text")
-                    ui.focus("lyrics-menu-translation-language") // Submenu source setup; no preference activation.
-                    safeMenuCenter(instrumentation, ui, "lyrics-menu-translation-language")
+                    captureMenuEdges(ui, "lyrics-menu-", "lyrics", directory, cases, "lyrics-menu-pronunciation")
+                    ui.focus("lyrics-menu-translation") // Submenu source setup; no preference activation.
+                    safeMenuCenter(instrumentation, ui, "lyrics-menu-translation")
                     ui.awaitId("lyrics-menu-back", 3_000)
                     ui.await("Language submenu did not own focus", 2_000) {
-                        ui.snapshot().focused.any { it.startsWith("lyrics-translation-language-") }
+                        ui.snapshot().focused.any { it.startsWith("lyrics-translation-") }
                     }
                     check(ui.device.takeScreenshot(File(directory, "lyrics-language-pane.png")))
                     cases.put(JSONObject().put("case", "lyrics-language-pane").put("state", ui.snapshot().json(true)))
                     ui.key(KeyEvent.KEYCODE_BACK, 0)
                     ui.await("Language Back did not restore its actual row", 3_000) {
-                        "lyrics-menu-translation-language" in ui.snapshot().focused
+                        "lyrics-menu-translation" in ui.snapshot().focused
                     }
                     ui.key(KeyEvent.KEYCODE_BACK, 0); ui.awaitGone("lyrics-display-menu")
                     ui.await("Lyrics menu Back did not restore its virtual player control", 3_000) {
@@ -128,7 +128,7 @@ class InterfaceStyleSwitchTest {
     }
 
     private fun safeMenuCenter(instrumentation: Instrumentation, ui: RenderingSurveyUi, id: String, virtual: Boolean = false) {
-        check(id in setOf("player-lyrics-display", "lyrics-menu-translation-language"))
+        check(id in setOf("player-lyrics-display", "lyrics-menu-translation"))
         ui.await("Allowed menu source does not own Center: $id", 2_000) {
             val state = ui.snapshot()
             if (virtual) "player-screen" in state.focused && id in state.selected else id in state.focused

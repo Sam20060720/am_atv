@@ -6,17 +6,8 @@
     <string name="player_next_track">下一首</string>
     <string name="player_lyrics">歌词</string>
     <string name="player_lyrics_display_settings">歌词显示</string>
-    <string name="player_lyrics_translate_to">翻译成</string>
-    <string name="player_lyrics_pronunciation_script">发音文字</string>
-    <string name="player_lyrics_pronunciation_latin">拉丁字母（罗马音）</string>
-    <string name="player_lyrics_pronunciation_app_script_format">App 文字（%1$s）</string>
-    <string name="player_lyrics_language_back">返回</string>
     <string name="player_lyrics_translation">翻译</string>
     <string name="player_lyrics_pronunciation">发音</string>
-    <string name="player_lyrics_larger_text">较大文字</string>
-    <string name="player_lyrics_larger_lyrics">放大歌词</string>
-    <string name="player_lyrics_larger_pronunciation">放大发音</string>
-    <string name="player_lyrics_display_on">开启</string>
     <string name="player_lyrics_display_off">关闭</string>
     <string name="player_queue">播放队列</string>
     <string name="player_radio">电台</string>
@@ -48,10 +39,8 @@
     <string name="actions_sleep_timer_minutes">%1$d 分钟</string>
     <string name="actions_sleep_timer_track_end">当前曲目结束时</string>
     <string name="actions_sleep_timer_context_end">本专辑／播放列表结束时</string>
-    <string name="player_lyrics_menu_close">关闭</string>
-    <string name="player_lyrics_menu_follow_app">跟随 App</string>
+    <string name="player_lyrics_menu_follow_app">跟随</string>
     <string name="player_lyrics_menu_latin">拉丁字母</string>
     <string name="player_lyrics_menu_failed">加载失败</string>
     <string name="player_lyrics_menu_unavailable">未提供</string>
-    <string name="player_lyrics_menu_pronunciation_short">发音</string>
 </resources>

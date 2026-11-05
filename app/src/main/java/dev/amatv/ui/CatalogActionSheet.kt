@@ -27,15 +27,9 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
-import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -1316,19 +1310,3 @@ private fun catalogActionIcon(id: String): ImageVector = when (id) {
     "refresh" -> Icons.Rounded.Refresh
     else -> if (id.startsWith("check-playlist-")) Icons.Rounded.PlaylistPlay else Icons.Rounded.QueueMusic
 }
-
-/** Compact offscreen texture only; keep the page's captions/shadows unaffected. */
-private fun Modifier.catalogMenuFades(top: Boolean, bottom: Boolean): Modifier =
-    if (!top && !bottom) this else graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-        .drawWithCache {
-            val topFade = 11.dp.toPx().coerceAtMost(size.height / 2f)
-            val bottomFade = 10.dp.toPx().coerceAtMost(size.height / 2f)
-            val upper = Brush.verticalGradient(listOf(Color.Transparent, Color.Black), endY = topFade)
-            val lower = Brush.verticalGradient(listOf(Color.Black, Color.Transparent), startY = size.height - bottomFade, endY = size.height)
-            onDrawWithContent {
-                drawContent()
-                if (top) drawRect(upper, size = androidx.compose.ui.geometry.Size(size.width, topFade), blendMode = BlendMode.DstIn)
-                if (bottom) drawRect(lower, topLeft = Offset(0f, size.height - bottomFade),
-                    size = androidx.compose.ui.geometry.Size(size.width, bottomFade), blendMode = BlendMode.DstIn)
-            }
-        }
