@@ -48,6 +48,8 @@ data class PlaybackSnapshot(
     val appQueueEntryId: Long? = null,
     /** This request has naturally advanced within its bounded native rail. */
     val nativeQueueHandoff: Boolean = false,
+    /** Same-generation terminal rejection; must reconcile before occurrence filtering. */
+    val nativeQueueRejected: Boolean = false,
 )
 
 /**
@@ -312,7 +314,7 @@ class MusicKitBridge(private val context: Context) {
     fun seekTo(positionMs: Long) {
         val value = checkNotNull(controller) { AppText.text(R.string.services_playback_not_prepared) }
         postPlaybackAction("seekToPosition") {
-            playbackIntent.requestSeek()
+            playbackIntent.requestSeek(positionMs)
             endedCatalogId = null
             nativeEndWaitSince = null
             nativeEndWaitQueueId = null
@@ -545,8 +547,10 @@ class MusicKitBridge(private val context: Context) {
         val generation = prepareGeneration.get()
         val readAndDeliver: () -> Unit = readAndDeliver@{
             snapshotScheduled = false
-            if (generation != prepareGeneration.get() || generation != activeGeneration) return@readAndDeliver
-            val snapshot = controller?.let { readSnapshot(it, generation) } ?: return@readAndDeliver
+            val snapshot = synchronized(this) {
+                if (generation != prepareGeneration.get() || generation != activeGeneration) null
+                else controller?.let { readSnapshot(it, generation) }
+            } ?: return@readAndDeliver
             mainHandler.post {
                 if (generation == prepareGeneration.get()) playbackListener?.invoke(snapshot)
             }
@@ -703,6 +707,7 @@ class MusicKitBridge(private val context: Context) {
             canSeek = currentController.callOrNull("canSeek") as? Boolean ?: false,
             appQueueEntryId = nativeRail.entryForNativeId(nativeId)?.entryId,
             nativeQueueHandoff = nativeRail.handedOff,
+            nativeQueueRejected = adoption?.rejected == true,
         )
     }
 
@@ -858,14 +863,16 @@ class MusicKitBridge(private val context: Context) {
                 action()
                 dispatchSnapshot()
             } catch (error: Throwable) {
-                if (generation != prepareGeneration.get()) return@post
-                val cause = (error as? InvocationTargetException)?.targetException ?: error
-                pendingPlaybackError = describePlaybackError(cause)
-                pendingFailureKind = if (requestedTrack?.catalogKind in setOf(CatalogKind.MusicVideo, CatalogKind.Station)) {
-                    PlaybackFailureKind.TrackUnavailable
-                } else classifyNativeFailure(cause)
-                Log.e(TAG, "MusicKit $name failed (${cause.javaClass.simpleName})")
-                dispatchSnapshot()
+                synchronized(this) {
+                    if (generation != prepareGeneration.get()) return@synchronized
+                    val cause = (error as? InvocationTargetException)?.targetException ?: error
+                    pendingPlaybackError = describePlaybackError(cause)
+                    pendingFailureKind = if (requestedTrack?.catalogKind in setOf(CatalogKind.MusicVideo, CatalogKind.Station)) {
+                        PlaybackFailureKind.TrackUnavailable
+                    } else classifyNativeFailure(cause)
+                    Log.e(TAG, "MusicKit $name failed (${cause.javaClass.simpleName})")
+                    dispatchSnapshot()
+                }
             }
         }
     }

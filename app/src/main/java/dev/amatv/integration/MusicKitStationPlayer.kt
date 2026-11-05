@@ -42,6 +42,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
     @Volatile private var latest: PlaybackSnapshot? = null
     private var listener: ((PlaybackSnapshot) -> Unit)? = null
     @Volatile private var webView: WebView? = null
+    private var backgroundHost: StationBackgroundHost? = null
     private var ready = false
     private var failedEpoch = -1L
     private var timeout: Runnable? = null
@@ -174,35 +175,44 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 view.stopLoading()
                 view.loadDataWithBaseURL(ORIGIN, stationPage(epoch, id, developerToken, userToken,
                     positionMs.coerceAtLeast(0L), storefront), "text/html", "UTF-8", null)
-                timeout = Runnable {
-                    if (epoch == generation.get() && (!ready || (desiredPlaying && !observedPlaying))) {
-                        Log.w(TAG, "Station startup timeout generation=$epoch ready=$ready desiredPlaying=$desiredPlaying")
-                        fail(epoch, PlaybackFailureKind.Network)
-                    }
-                }.also { main.postDelayed(it, PREPARE_TIMEOUT_MS) }
-            } catch (_: Exception) { fail(epoch, PlaybackFailureKind.Unexpected) }
+                armStartupDeadline(epoch)
+            } catch (failure: Exception) {
+                fail(epoch, if (failure is java.io.IOException) PlaybackFailureKind.Network else PlaybackFailureKind.Unexpected)
+            }
         }
         return epoch
     }
 
-    /** Reparent on configuration changes; callers clear the MutableContextWrapper on detach. */
+    /** Retained playback always has a window, including retry after Activity finish. */
     fun attachHost(owner: Activity?) {
         val attach = {
             webView?.let { view ->
                 val parent = view.parent as? ViewGroup
-                val target = owner?.takeUnless { it.isFinishing || it.isDestroyed }?.window?.decorView as? ViewGroup
+                val target = try { hostContainer(owner) } catch (_: java.io.IOException) {
+                    fail(generation.get(), PlaybackFailureKind.Network)
+                    return@let
+                }
                 if (parent !== target) {
                     parent?.removeView(view)
-                    target?.addView(view, ViewGroup.LayoutParams(1, 1))
+                    target.addView(view, ViewGroup.LayoutParams(1, 1))
                 }
+                if (owner != null && target !== backgroundHost?.container) releaseBackgroundHost()
             }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) attach() else main.post { attach() }
     }
 
-    fun play() { desiredPlaying = true; command("play") }
+    fun play() {
+        desiredPlaying = true
+        val epoch = generation.get()
+        main.post {
+            if (epoch == generation.get() && epoch != failedEpoch && desiredPlaying) armStartupDeadline(epoch)
+        }
+        command("play")
+    }
     fun pause() {
         desiredPlaying = false
+        main.post { if (!desiredPlaying) { timeout?.let(main::removeCallbacks); timeout = null } }
         spectrumFrame = SpectrumFrame(generation.get(), 0L, AudioSpectrum(), SpectrumCaptureState.Disabled)
         command("pause")
     }
@@ -254,11 +264,31 @@ internal class MusicKitStationPlayer(private val context: Context) {
         return candidate as? Activity
     }
 
+    private fun hostContainer(owner: Activity? = activity()): ViewGroup =
+        (owner?.takeUnless { it.isFinishing || it.isDestroyed }?.window?.decorView as? ViewGroup)
+            ?: (backgroundHost ?: StationBackgroundHost.create(context.applicationContext)
+                .also { backgroundHost = it }).container
+
+    private fun releaseBackgroundHost() {
+        backgroundHost?.close()
+        backgroundHost = null
+    }
+
+    private fun armStartupDeadline(epoch: Long) {
+        timeout?.let(main::removeCallbacks)
+        observedPlaying = false
+        timeout = Runnable {
+            if (epoch == generation.get() && (!ready || (desiredPlaying && !observedPlaying))) {
+                Log.w(TAG, "Station startup timeout generation=$epoch ready=$ready desiredPlaying=$desiredPlaying")
+                fail(epoch, PlaybackFailureKind.Network)
+            }
+        }.also { main.postDelayed(it, PREPARE_TIMEOUT_MS) }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun createView(): WebView {
         check(Looper.myLooper() == Looper.getMainLooper())
-        val owner = checkNotNull(activity())
-        check(!owner.isFinishing && !owner.isDestroyed)
+        val host = hostContainer()
         // The mutable wrapper is rebound to the app when its UI detaches, so
         // the retained media element cannot hold a destroyed Activity context.
         return WebView(context).apply {
@@ -358,7 +388,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
             }
             // Attached and VISIBLE keeps WebView's media lifecycle valid. It owns
             // no pixels, TV focus, or accessibility nodes; music controls stay native.
-            (owner.window.decorView as ViewGroup).addView(this, ViewGroup.LayoutParams(1, 1))
+            host.addView(this, ViewGroup.LayoutParams(1, 1))
         }
     }
 
@@ -385,7 +415,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
             return
         }
         latest = snapshot
-        if (snapshot.isPlaying) {
+        if (snapshot.isPlaying && snapshot.isPrepared && data.optBoolean("desired", false)) {
             observedPlaying = true
             timeout?.let(main::removeCallbacks)
             timeout = null
@@ -456,6 +486,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
             view.destroy()
         }
         webView = null
+        releaseBackgroundHost()
     }
 
     private fun stationPage(epoch: Long, id: String, developer: String, user: String, positionMs: Long, storefront: String): String {
@@ -479,6 +510,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
               var resumePosition=config.position;
               var stopPromise=null, stoppedForVersion=-1, lastObservedPlaying=false;
               var timedMetadata=null, timedCatalog=null, timedCatalogKey=null, metadataVersion=0, metadataFetch=null, metadataActive=false;
+              var freshStreamItem=null;
               var metadataCache=Object.create(null), metadataCacheKeys=[];
               function send(data){ data.epoch=config.epoch; $BRIDGE.report(JSON.stringify(data)); }
               function finite(value){ return typeof value==='number' && isFinite(value) && value>=0 ? value : 0; }
@@ -572,18 +604,22 @@ internal class MusicKitStationPlayer(private val context: Context) {
                   var sum=0;for(var i=0;i<spectrumWave.length;i++)sum+=spectrumWave[i]*spectrumWave[i];
                   var rms=Math.sqrt(sum/spectrumWave.length);
                   spectrumGate=rms>Math.pow(10,(spectrumGate ? -64 : -58)/20);
-                  var powers=[0,0,0], counts=[0,0,0], hzPerBin=context.sampleRate/analyser.fftSize;
+                  var powers=[0,0,0], hzPerBin=context.sampleRate/analyser.fftSize;
                   for(var bin=1;bin<spectrumBins.length;bin++){
                     var hz=bin*hzPerBin, band=hz>=40 && hz<250 ? 0 : hz>=250 && hz<2000 ? 1 : hz>=2000 && hz<=10000 ? 2 : -1;
                     if(band<0)continue;
                     var db=spectrumBins[bin];if(isFinite(db))powers[band]+=Math.pow(10,db/10);
-                    counts[band]++;
                   }
                   var now=typeof performance!=='undefined' ? performance.now() : Date.now();
                   var dt=Math.max(1,Math.min(250,spectrumLast ? now-spectrumLast : 50));spectrumLast=now;
                   var available=false;
                   for(var band=0;band<3;band++){
-                    var amplitude=Math.sqrt(powers[band]/Math.max(1,counts[band]));
+                    // AnalyserNode returns a 1/N FFT after a Blackman window.
+                    // Integrate the band's energy: averaging over every bin
+                    // dilutes mid/treble simply because their bands are wider.
+                    // Restore negative-frequency energy and window mean-square
+                    // (0.42^2 + 0.5^2/2 + 0.08^2/2), yielding actual PCM RMS.
+                    var amplitude=Math.sqrt(2*powers[band]/0.3046);
                     var target=spectrumGate ? Math.max(0,Math.min(1,Math.log(1+64*amplitude)/Math.log(65))) : 0;
                     if(target>0.001)available=true;
                     var decay=band===0 ? 115 : band===1 ? 100 : 75;
@@ -753,8 +789,35 @@ internal class MusicKitStationPlayer(private val context: Context) {
               }
               function clearTimedMetadata(resetCache){
                 ++metadataVersion;timedMetadata=null;timedCatalog=null;timedCatalogKey=null;
+                freshStreamItem=null;
                 if(metadataFetch){metadataFetch.abort();metadataFetch=null;}
                 if(resetCache){metadataCache=Object.create(null);metadataCacheKeys=[];}
+              }
+              function currentSongItem(item){
+                var a=item && item.attributes || {};
+                return item && !item.isLiveRadioStation && (item.type==='song' || item.type==='songs') &&
+                  /^[1-9][0-9]{0,19}$/.test(String(item.id || '')) && typeof a.name==='string' && a.name.trim() ? item : null;
+              }
+              function metadataMatchesItem(metadata,item){
+                if(!metadata || !item) return false;
+                var country=String(config.storefront || '').toLowerCase(), ids=metadata.storefrontAdamIds || {};
+                var id=ids[country.toUpperCase()] || ids[country] || ids[String(config.storefrontNumericId || '')];
+                if(id && String(id)===String(item.id)) return true;
+                var a=item.attributes || {}, title=String(metadata.title || '').trim(), artist=String(metadata.performer || '').trim();
+                return !!title && !!artist && title===String(a.name || '').trim() && artist===String(a.artistName || '').trim();
+              }
+              function receiveNowPlayingItem(event){
+                if(!music || terminal || !metadataActive) return;
+                var current=music.nowPlayingItem;
+                var item=event && Object.prototype.hasOwnProperty.call(event,'item') ? event.item : current;
+                // A late callback cannot replace the SDK's newer current item.
+                if(item && (!current || String(item.id)!==String(current.id) || item.type!==current.type)) return;
+                var next=currentSongItem(item);
+                if(!metadataMatchesItem(timedMetadata,next)) clearTimedMetadata();
+                // Only an actual current-item notification owns this fallback.
+                // Polling a retained SDK item after Stop/Play is never fresh.
+                freshStreamItem=next;
+                report();
               }
               function receiveTimedMetadata(event){
                 if(!music || terminal || !metadataActive) return;
@@ -770,8 +833,10 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 // Repeated ID3 updates for one song must not temporarily clear
                 // its cover or restart an in-flight exact-ID lookup. A genuine
                 // new song still clears the previous song's art immediately.
+                var previousItem=freshStreamItem;
                 if(!key || key!==timedCatalogKey) clearTimedMetadata();
                 timedMetadata=metadata;timedCatalogKey=key;
+                freshStreamItem=metadataMatchesItem(metadata,previousItem) ? previousItem : null;
                 if(key && metadataCache[key]) timedCatalog=metadataCache[key];
                 report();
                 if(!key || timedCatalog || metadataFetch) return;
@@ -839,15 +904,16 @@ internal class MusicKitStationPlayer(private val context: Context) {
                     catch(error){fail(error);return;}
                   }
                 }
-                // During a fresh live connection the SDK item can still carry
-                // the previous programme. Only this stream's new ID3 is current;
-                // empty fields let native presentation use the source station.
+                // Live streams may publish either ID3 or a new song MediaItem.
+                // Ignore an old polled item; use only a current-item notification
+                // received during this connection, cleared again on Stop/Play.
                 var presentation=live ? timedMetadata ? {
                   name:timedMetadata.title || timedCatalog && timedCatalog.name || '',
                   artistName:timedMetadata.performer || timedCatalog && timedCatalog.artistName || '',
                   albumName:timedMetadata.album || timedCatalog && timedCatalog.albumName || '',
-                  artwork:timedCatalog && timedCatalog.artwork
-                } : {} : a;
+                  artwork:timedCatalog && timedCatalog.artwork || freshStreamItem &&
+                    (freshStreamItem.attributes.artwork || freshStreamItem.artwork)
+                } : freshStreamItem ? freshStreamItem.attributes : {} : a;
                 try{drm=music.browserSupportsVideoDrm;}catch(ignored){}
                 send({event:event || 'state', prepared:prepared, hasItem:!!item,state:state,
                   queueCount:queue ? queue.length : 0,drmSupported:typeof drm==='boolean' ? drm : null,desired:desired,
@@ -864,9 +930,11 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 var error=event && (event.error || event.detail && (event.detail.error || event.detail)) || event;
                 diagnostic('failure');terminal=true; desired=false;clearTimedMetadata();destroySpectrum();
                 if(music) Promise.resolve(music.stop()).catch(function(){});
-                var code=Number(error && (error.status || error.statusCode || error.code));
+                var code=Number(error && (error.status || error.statusCode || error.code ||
+                  error.data && (error.data.status || error.data.statusCode)));
                 var name=error && error.name || '';
                 var network=code===408 || code===429 || code>=500 && code<=599 || name==='NetworkError' ||
+                  name==='NETWORK_ERROR' || error && (error.reason==='NETWORK_ERROR' || error.type==='NETWORK_ERROR') ||
                   name==='MediaError' && code===2 || typeof navigator!=='undefined' && navigator.onLine===false;
                 send({event:'error',reason:code===401 || code===403 ? 'authorization' : code===404 ? 'unavailable' : network ? 'network' : 'playback',
                   code:typeof code==='number' && isFinite(code) ? code : 0,name:error && error.name || '',
@@ -960,7 +1028,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
                     diagnostic('configured');
                     ['playbackStateDidChange','queueItemsDidChange','playbackDurationDidChange','metadataDidChange']
                       .forEach(function(event){music.addEventListener(event,function(){report();});});
-                    music.addEventListener('nowPlayingItemDidChange',function(){clearTimedMetadata();report();});
+                    music.addEventListener('nowPlayingItemDidChange',receiveNowPlayingItem);
                     music.addEventListener('timedMetadataDidChange',receiveTimedMetadata);
                     music.addEventListener('mediaPlaybackError',fail);
                     // The global DRM capability is not required by unencrypted

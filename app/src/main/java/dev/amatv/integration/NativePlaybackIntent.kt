@@ -41,6 +41,7 @@ internal class NativePlaybackIntent {
     private var wantsPlay = false
     private var playRecoveryAllowed = false
     private var recoveryPlayingPosition: Long? = null
+    private var lastReadyPosition: Long? = null
     private var startedAt = 0L
     private var seekAt = 0L
     private var seekAttempts = 0
@@ -53,6 +54,8 @@ internal class NativePlaybackIntent {
     private var lastPlayingPosition = 0L
     private var lastPlayingDuration = 0L
     private var completionCandidateAt: Long? = null
+    private var lastObservedAt = 0L
+    private var resumeReadinessBudget = false
 
     /** Preparation alone is not evidence that the selected stream has started. */
     val hasStartedPlayback: Boolean get() = phase == Phase.Ready && wantsPlay && !playRecoveryAllowed
@@ -62,8 +65,11 @@ internal class NativePlaybackIntent {
         startPosition = positionMs.coerceAtLeast(0L)
         wantsPlay = playWhenReady
         playRecoveryAllowed = playWhenReady
-        recoveryPlayingPosition = null
+        recoveryPlayingPosition = startPosition
+        lastReadyPosition = null
         startedAt = nowMs
+        lastObservedAt = nowMs
+        resumeReadinessBudget = false
         phase = Phase.Loading
         seekAt = 0L
         seekAttempts = 0
@@ -83,9 +89,10 @@ internal class NativePlaybackIntent {
     }
 
     fun requestPlaying(value: Boolean) {
+        if (value && !wantsPlay) resumeReadinessBudget = true
         wantsPlay = value
         playRecoveryAllowed = value
-        recoveryPlayingPosition = null
+        recoveryPlayingPosition = if (value) lastReadyPosition ?: startPosition else null
         if (!value) {
             bufferingSince = null
             resetCompletionEvidence()
@@ -98,9 +105,14 @@ internal class NativePlaybackIntent {
     }
 
     /** A user seek must never be mistaken for the SDK clearing a completed item. */
-    fun requestSeek() {
+    fun requestSeek(positionMs: Long? = null) {
         completed = false
-        recoveryPlayingPosition = null
+        playRecoveryAllowed = wantsPlay
+        recoveryPlayingPosition = positionMs?.coerceAtLeast(0L)
+        lastReadyPosition = recoveryPlayingPosition
+        idleSince = null
+        playAttempts = 0
+        lastPlayAt = Long.MIN_VALUE
         resetCompletionEvidence()
     }
 
@@ -111,6 +123,15 @@ internal class NativePlaybackIntent {
     }
 
     fun observe(probe: NativePlaybackProbe): NativePlaybackDecision {
+        if (!wantsPlay || resumeReadinessBudget) {
+            // Explicit pause suspends readiness, including a seek awaiting ACK.
+            // Resume starts a fresh bounded budget at the first new observation.
+            val pausedFor = (probe.nowMs - lastObservedAt).coerceAtLeast(0L)
+            startedAt = if (resumeReadinessBudget) probe.nowMs else startedAt + pausedFor
+            if (phase == Phase.Seeking) seekAt = if (resumeReadinessBudget) probe.nowMs else seekAt + pausedFor
+            resumeReadinessBudget = false
+        }
+        lastObservedAt = probe.nowMs
         fun result(commands: List<NativePlaybackCommand> = emptyList()) = NativePlaybackDecision(
             prepared = phase == Phase.Ready,
             playing = phase == Phase.Ready && wantsPlay && probe.playing && !probe.buffering,
@@ -152,9 +173,9 @@ internal class NativePlaybackIntent {
         completionCandidateAt = null
         if (!probe.hasCurrentItem || probe.catalogId != catalogId) {
             resetCompletionEvidence()
-            return if (probe.nowMs - startedAt > 60_000L) fail(PlaybackFailureKind.Network) else result()
+            return if (wantsPlay && probe.nowMs - startedAt > 60_000L) fail(PlaybackFailureKind.Network) else result()
         }
-        if (phase != Phase.Ready && probe.nowMs - startedAt > 60_000L) {
+        if (wantsPlay && phase != Phase.Ready && probe.nowMs - startedAt > 60_000L) {
             return fail(if (phase == Phase.Seeking) PlaybackFailureKind.PositionRestore else PlaybackFailureKind.Network)
         }
         if (probe.buffering) {
@@ -174,7 +195,7 @@ internal class NativePlaybackIntent {
             lastPlayAt = Long.MIN_VALUE
             idleSince = null
             playRecoveryAllowed = true
-            recoveryPlayingPosition = null
+            recoveryPlayingPosition = probe.positionMs
         }
         bufferingSince = null
         if (phase == Phase.Loading && (probe.canSeek || (startPosition <= POSITION_TOLERANCE_MS && !probe.playing && !probe.buffering))) {
@@ -195,11 +216,12 @@ internal class NativePlaybackIntent {
                 seekAt = probe.nowMs
                 seekAttempts++
                 return result(listOf(NativePlaybackCommand.Seek(startPosition)))
-            } else if (probe.nowMs - seekAt >= 10_000L) {
+            } else if (wantsPlay && probe.nowMs - seekAt >= 10_000L) {
                 return fail(PlaybackFailureKind.PositionRestore)
             } else return result()
         }
         if (phase != Phase.Ready) return result()
+        lastReadyPosition = probe.positionMs
         if (!wantsPlay) {
             idleSince = null
             return result(if (probe.playing) listOf(NativePlaybackCommand.Pause) else emptyList())
@@ -215,6 +237,12 @@ internal class NativePlaybackIntent {
                 playAttempts = 0
                 idleSince = null
                 playRecoveryAllowed = false
+            } else {
+                // Evaluate actual progress before expiring the deadline: sparse
+                // valid observations may span most of a song. An unchanged
+                // cursor with only the SDK Playing flag still expires.
+                val recoveryStart = idleSince ?: probe.nowMs.also { idleSince = it }
+                if (probe.nowMs - recoveryStart >= 45_000L) return fail(PlaybackFailureKind.Network)
             }
             return result()
         }
@@ -226,12 +254,12 @@ internal class NativePlaybackIntent {
             return result()
         }
         val idleStart = idleSince ?: probe.nowMs.also { idleSince = it }
+        if (probe.nowMs - idleStart >= 45_000L) return fail(PlaybackFailureKind.Network)
         if (playAttempts < 3 && (lastPlayAt == Long.MIN_VALUE || probe.nowMs - lastPlayAt >= 3_000L)) {
             lastPlayAt = probe.nowMs
             playAttempts++
             return result(listOf(NativePlaybackCommand.Play))
         }
-        if (probe.nowMs - idleStart >= 45_000L) return fail(PlaybackFailureKind.Network)
         return result()
     }
 

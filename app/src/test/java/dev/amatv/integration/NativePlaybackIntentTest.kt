@@ -4,6 +4,54 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NativePlaybackIntentTest {
+    @Test fun pauseAndImmediatePlayAfterASeekUseTheNewTargetAsRecoveryBaseline() {
+        val intent = NativePlaybackIntent()
+        intent.begin("song", 0, true, 0)
+        intent.observe(probe(now = 100))
+        intent.observe(probe(now = 500, position = 1_000, playing = true))
+        intent.requestSeek(50_000)
+        intent.requestPlaying(false)
+        intent.requestPlaying(true)
+        intent.observe(probe(now = 1_000, position = 50_000, playing = true))
+        assertFalse(intent.hasStartedPlayback)
+        intent.observe(probe(now = 1_500, position = 50_300, playing = true))
+        assertTrue(intent.hasStartedPlayback)
+        assertTrue(intent.observe(probe(now = 50_000, position = 50_300)).commands.isEmpty())
+    }
+
+    @Test fun playingFlagWithAnUnmovingResumedCursorStillExhaustsRecoveryDeadline() {
+        val intent = NativePlaybackIntent()
+        intent.begin("song", 67_000, true, 0)
+        intent.observe(probe(now = 100, position = 67_000, playing = true))
+        val stuck = intent.observe(probe(now = 45_101, position = 67_000, playing = true))
+        assertEquals(PlaybackFailureKind.Network, stuck.failure)
+        assertEquals(listOf(NativePlaybackCommand.Pause), stuck.commands)
+    }
+
+    @Test fun explicitPauseSuspendsLoadingAndResumeGetsANewBoundedReadinessBudget() {
+        val intent = NativePlaybackIntent()
+        intent.begin("song", 0, true, 0)
+        intent.requestPlaying(false)
+        val noItem = probe(now = 120_000).copy(hasCurrentItem = false)
+        assertNull(intent.observe(noItem).failure)
+        intent.requestPlaying(true)
+        assertNull(intent.observe(noItem.copy(nowMs = 150_000)).failure)
+        assertEquals(PlaybackFailureKind.Network, intent.observe(noItem.copy(nowMs = 210_001)).failure)
+    }
+
+    @Test fun explicitPauseAlsoSuspendsAnOutstandingRestoreSeekDeadline() {
+        val intent = NativePlaybackIntent()
+        intent.begin("song", 67_000, true, 0)
+        intent.observe(probe(now = 100))
+        intent.requestPlaying(false)
+        assertNull(intent.observe(probe(now = 120_000)).failure)
+        intent.requestPlaying(true)
+        assertNull(intent.observe(probe(now = 150_000)).failure)
+        assertNull(intent.observe(probe(now = 153_000)).failure)
+        assertNull(intent.observe(probe(now = 156_000)).failure)
+        assertEquals(PlaybackFailureKind.PositionRestore, intent.observe(probe(now = 166_001)).failure)
+    }
+
     @Test fun lookaheadWaitsForActualProgressAndStopsDuringUserPauseOrBufferRecovery() {
         val intent = NativePlaybackIntent()
         intent.begin("song", 45_000L, true, 0L)

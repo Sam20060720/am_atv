@@ -48,6 +48,44 @@ class QueueEditingAndContinuationTest {
         emptyList(), emptyList(), catalogId = id, catalogKind = CatalogKind.Song)
     @After fun close() = scope.cancel()
 
+    @Test fun enablingInfinityClearsRepeatInBothStateAndPreferences() {
+        controller.playContext(listOf(song("one"), song("two")), 0)
+        controller.setRepeat(PlaybackRepeatMode.One)
+        controller.setInfinite(true)
+        assertEquals(PlaybackRepeatMode.Off, controller.state.value.repeat)
+        assertEquals(PlaybackRepeatMode.Off, preferences.repeatMode)
+        assertTrue(controller.state.value.infinite)
+    }
+
+    @Test fun aQueuedNativeSnapshotCannotSkipANewlyInsertedAdjacentOccurrence() {
+        controller.playContext(listOf(song("current"), song("next"), song("later")), 0)
+        val originalNext = controller.state.value.upNext.first()
+        assertTrue(controller.moveUpcoming(controller.state.value.upNext.last().entryId, 0))
+        val edited = controller.state.value
+        assertFalse(controller.adoptNativeCurrent(originalNext.entryId))
+        assertEquals(edited, controller.state.value)
+        assertTrue(controller.adoptNativeCurrent(edited.upNext.first().entryId))
+    }
+
+    @Test fun providerIdentityInvalidationKeepsExplicitQueueAndDropsPrivateRecommendationsAndCursor() {
+        preferences.autoplaySource = AutoplaySource.YouTubeMusic
+        val tracks = listOf(song("past"), song("current"), song("explicit"), song("old-private"))
+        controller.restoreFromSession(PlaybackSession(tracks, 1, 0, false, Destination.NowPlaying,
+            Destination.Home, radioActive = true, radioSeed = tracks[1], radioContinuation = "old-cursor", radioSeedVideoId = "old-seed",
+            autoplaySource = AutoplaySource.YouTubeMusic, autoplayEntryIndices = setOf(3),
+            queueEntryIds = listOf(1L, 2L, 3L, 4L)))
+        val before = controller.state.value
+        assertEquals(1, before.autoplay.size)
+        controller.invalidateRecommendationAuthorization()
+        val after = controller.state.value
+        assertEquals(before.history, after.history)
+        assertEquals(before.current, after.current)
+        assertEquals(before.upNext, after.upNext)
+        assertTrue(after.autoplay.isEmpty())
+        assertNull(after.ytmContinuation)
+        assertNull(after.ytmSeedVideoId)
+    }
+
     @Test fun removeOnlyTheChosenDuplicateAndDoNotRestartOrAlterCurrentHistory() {
         controller.playContext(listOf(song("past"), song("current"), song("repeat"), song("repeat")), 1)
         val before = controller.state.value

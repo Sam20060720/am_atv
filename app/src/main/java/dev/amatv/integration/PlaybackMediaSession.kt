@@ -19,6 +19,7 @@ class PlaybackMediaSession(private val context: Context) {
         val next: () -> Unit,
         val previous: () -> Unit,
         val seekTo: (Long) -> Unit,
+        val seekRelative: (Long) -> Unit = {},
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -70,6 +71,8 @@ class PlaybackMediaSession(private val context: Context) {
             }
             override fun onSkipToNext() { callbacks?.next?.invoke() }
             override fun onSkipToPrevious() { callbacks?.previous?.invoke() }
+            override fun onRewind() { callbacks?.seekRelative?.invoke(-10_000L) }
+            override fun onFastForward() { callbacks?.seekRelative?.invoke(10_000L) }
             override fun onSeekTo(pos: Long) {
                 val target = pos.coerceAtLeast(0L).let {
                     if (durationMs > 0L) it.coerceAtMost(durationMs) else it
@@ -144,7 +147,8 @@ class PlaybackMediaSession(private val context: Context) {
         }
         var actions = PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or
             PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_STOP
-        if (durationMs > 0L) actions = actions or PlaybackState.ACTION_SEEK_TO
+        if (snapshot.canSeek && durationMs > 0L) actions = actions or PlaybackState.ACTION_SEEK_TO or
+            PlaybackState.ACTION_REWIND or PlaybackState.ACTION_FAST_FORWARD
         if (canSkipNext) actions = actions or PlaybackState.ACTION_SKIP_TO_NEXT
         if (canSkipPrevious) actions = actions or PlaybackState.ACTION_SKIP_TO_PREVIOUS
         val position = snapshot.positionMs.coerceAtLeast(0L).let {

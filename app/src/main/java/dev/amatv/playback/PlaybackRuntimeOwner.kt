@@ -105,6 +105,9 @@ class PlaybackRuntimeOwner(
     private var collectionJob: Job? = null
     private var collectionGeneration = 0L
     private val continuationResume = ContextContinuationResumeIntent()
+    private val continuationNext = ContextContinuationNextIntent()
+    private val metadataCursor = PlaybackMetadataCursor()
+    private var observedQueueWait: Pair<Long, Long>? = null
     private val sleepTimerController = PlaybackSleepTimer(SystemClock::elapsedRealtime)
     val sleepTimer: StateFlow<PlaybackSleepTimerState> = sleepTimerController.state
     private var sleepTimerJob: Job? = null
@@ -115,6 +118,7 @@ class PlaybackRuntimeOwner(
         retryAttempts = 0
         stationHealth.reset()
         failureTracker.reset()
+        continuationNext.cancel()
         val consumer = ui?.second
         mutableSnapshot.value = null
         if (consumer != null) consumer.onTrack(track) else prepareCurrent()
@@ -143,10 +147,24 @@ class PlaybackRuntimeOwner(
             next = { onMain { ui?.second?.system?.next?.invoke() ?: skipDetached(1) } },
             previous = { onMain { ui?.second?.system?.previous?.invoke() ?: skipDetached(-1) } },
             seekTo = { position -> onMain { ui?.second?.system?.seekTo?.invoke(position) ?: seekDetached(position) } },
+            seekRelative = { delta -> onMain { seekRelative(delta) } },
         ))
         scope.launch {
             queue.state.collect { state ->
                 stopSleepTimerOnEntryChange()
+                continuationNext.cancelIfReplaced(state.sessionId, state.current?.entryId)
+                val currentOwner = state.current?.let { state.sessionId to it.entryId }
+                if (state.awaitingNext) observedQueueWait = currentOwner
+                else if (observedQueueWait == currentOwner && currentOwner != null) {
+                    // Empty/failure completion clears awaitingNext in the queue.
+                    // Settle that exact waiting occurrence once, including a
+                    // detached natural end whose callback was already consumed.
+                    observedQueueWait = null
+                    mutableDesiredPlay.value = false
+                    services.pause()
+                    saveSession(synchronous = true)
+                    updateRetention()
+                } else if (observedQueueWait != currentOwner) observedQueueWait = null
                 if (collectionSessionId != null && (state.sessionId != collectionSessionId || !state.contextContinuationPending)) {
                     clearContinuation(cancelResume = state.sessionId != collectionSessionId)
                 }
@@ -182,19 +200,19 @@ class PlaybackRuntimeOwner(
         checkMain()
         if (ui?.first != token || isReleased) return
         ui = null
-        services.setPlaybackListener(null)
-        services.setSystemPlaybackCallbacks(null)
         services.attachPlaybackHost(null)
         services.setSpectrumActive(false)
         saveSession(synchronous = true)
         updateRetention()
     }
 
-    fun setDesiredPlayIntent(playing: Boolean) = onMain {
+    fun setDesiredPlayIntent(playing: Boolean, preservePendingNext: Boolean = false) = onMain {
+        if (playing && services.isCatalogConfigured && queue.state.value.current == null) return@onMain
         val wasPlaying = mutableDesiredPlay.value
         mutableDesiredPlay.value = playing
         if (!playing) {
             continuationResume.cancel()
+            if (!preservePendingNext) continuationNext.cancel()
             cancelPreparation()
             retryAttempts = 0
             stationHealth.reset()
@@ -243,6 +261,15 @@ class PlaybackRuntimeOwner(
         }
 
     val canSleepAtContextEnd: Boolean get() = sleepTimerController.canSelectContextEnd(queue.state.value)
+
+    /** Demo end events use the same occurrence-bound timer policy as native audio. */
+    fun consumeSimulatedPlaybackEnd(): Boolean {
+        checkMain()
+        val state = queue.state.value
+        if (!sleepTimerController.consumePlaybackEnd(state, state.current?.entryId)) return false
+        pauseForSleepTimer()
+        return true
+    }
 
     /** The same gate is used by UI preparation and detached playback, including SDK handoff. */
     fun nativeUpcoming(state: QueueState = queue.state.value): List<NativeQueueEntry> =
@@ -308,6 +335,70 @@ class PlaybackRuntimeOwner(
         return true
     }
 
+    val hasPendingNextIntent: Boolean get() = continuationNext.failed &&
+        continuationNext.matches(queue.state.value.sessionId, queue.state.value.current?.entryId)
+
+    /** Explicit Play retries an unsuccessful manual Next instead of the old anchor. */
+    fun retryPendingNext(): Boolean {
+        checkMain()
+        if (!hasPendingNextIntent) return false
+        val state = queue.state.value
+        if (collection == null || collectionSessionId != state.sessionId || !state.contextContinuationPending) {
+            continuationNext.cancel()
+            return false
+        }
+        queue.retryContextTail(state.sessionId)
+        mutableDesiredPlay.value = true
+        services.pauseForReplacement()
+        ensureCollectionLoading()
+        updateRetention()
+        return true
+    }
+
+    /** Data loading is allowed for Next even while its audio intent stays paused. */
+    fun requestNext(): QueueEntry? {
+        checkMain()
+        val before = queue.state.value
+        continuationResume.cancel()
+        before.current?.let { continuationNext.request(before.sessionId, it.entryId) }
+        val next = queue.advanceNext()
+        val after = queue.state.value
+        if (next == null && after.contextContinuationPending) {
+            observedQueueWait = after.current?.let { after.sessionId to it.entryId }
+            if (after.contextContinuationFailed) {
+                continuationNext.fail(after.sessionId, after.current?.entryId)
+                queue.retryContextTail(after.sessionId)
+                queue.advanceNext()
+            }
+            services.pauseForReplacement()
+            ensureCollectionLoading()
+        } else if (next == null && after.awaitingNext) {
+            observedQueueWait = after.current?.let { after.sessionId to it.entryId }
+            services.pauseForReplacement()
+        } else {
+            continuationNext.cancel()
+            if (next == null) pauseDetached()
+        }
+        return next
+    }
+
+    fun cancelPendingNext() {
+        checkMain()
+        continuationNext.cancel()
+        continuationResume.cancel()
+    }
+
+    /** Queue hydration must retain its cursor before any engine snapshot exists. */
+    fun restoreMetadataCursor(session: PlaybackSession): Boolean {
+        checkMain()
+        val live = queue.state.value
+        val current = live.current ?: return false
+        if (session.persistenceId != live.persistenceId ||
+            session.queueEntryIds.getOrNull(session.currentIndex)?.let { it != current.entryId } == true) return false
+        metadataCursor.remember(live.sessionId, current.entryId, session.positionMs)
+        return true
+    }
+
     /** After disk hydration only. Restore metadata/cursor without requesting playback. */
     fun restorePendingCollection(session: PlaybackSession): Boolean {
         checkMain()
@@ -328,13 +419,16 @@ class PlaybackRuntimeOwner(
     }
 
     fun currentPositionMs(): Long {
-        val current = queue.state.value.current ?: return 0L
+        val state = queue.state.value
+        val current = state.current ?: return 0L
+        val saved = metadataCursor.position(state.sessionId, current.entryId)
         val value = snapshot.value ?: return preparation.value.request?.takeIf {
-            it.sessionId == queue.state.value.sessionId && it.entryId == current.entryId
-        }?.positionMs ?: 0L
-        if (value.appQueueEntryId != null && value.appQueueEntryId != current.entryId) return 0L
+            it.sessionId == state.sessionId && it.entryId == current.entryId
+        }?.positionMs ?: saved ?: 0L
+        if (value.errorMessage != null) return saved ?: value.positionMs.coerceAtLeast(0L)
+        if (value.appQueueEntryId != null && value.appQueueEntryId != current.entryId) return saved ?: 0L
         if (value.currentTrack?.catalogKind != current.track.catalogKind ||
-            value.currentTrack?.catalogId != current.track.catalogId) return 0L
+            value.currentTrack?.catalogId != current.track.catalogId) return saved ?: 0L
         val progress = if (value.isPlaying) (SystemClock.elapsedRealtime() - value.capturedAtElapsedRealtimeMs).coerceAtLeast(0) else 0L
         return (value.positionMs + progress).coerceAtLeast(0).let {
             if (value.durationMs > 0) it.coerceAtMost(value.durationMs) else it
@@ -348,6 +442,9 @@ class PlaybackRuntimeOwner(
         clearContinuation()
         mutableDesiredPlay.value = false
         mutableSnapshot.value = null
+        metadataCursor.clear()
+        continuationNext.cancel()
+        observedQueueWait = null
         handledEnd = null
         retryAttempts = 0
         failureTracker.reset()
@@ -355,40 +452,90 @@ class PlaybackRuntimeOwner(
         updateRetention()
     }
 
+    /** Reauthentication resumes this logical queue without orphaning its cursor. */
+    fun resetForAuthorizationResume() = onMain {
+        val state = queue.state.value
+        state.current?.let { metadataCursor.remember(state.sessionId, it.entryId, currentPositionMs()) }
+        // Restart an interrupted read from its last committed checkpoint, while
+        // retaining the continuation object and occurrence-bound retry intent.
+        collectionGeneration++
+        collectionJob?.cancel()
+        collectionJob = null
+        cancelPreparation(clearReady = true)
+        mutableSnapshot.value = null
+        mutableDesiredPlay.value = false
+        handledEnd = null
+        retryAttempts = 0
+        failureTracker.reset()
+        stationHealth.reset()
+        if (state.contextContinuationPending && (collection == null || collectionSessionId != state.sessionId)) {
+            queue.failContextTail(state.sessionId)
+            continuationNext.cancel()
+            continuationResume.cancel()
+        }
+        updateRetention()
+    }
+
     private fun receive(value: PlaybackSnapshot) {
         if (isReleased || value.requestGeneration == 0L || value.requestGeneration != playbackGeneration) return
         val queued = queue.state.value.current
-        if (!value.nativeQueueHandoff && queued != null &&
-            ((value.appQueueEntryId != null && value.appQueueEntryId != queued.entryId) ||
-                value.currentTrack?.catalogKind != queued.track.catalogKind ||
-                value.currentTrack?.catalogId != queued.track.catalogId)) return
+        val action = nativeSnapshotAction(queue.state.value, value)
+        val incomingHandoff = action == NativeSnapshotAction.AdoptAdjacent
+        if (action == NativeSnapshotAction.ReprepareCurrent) {
+            // This is terminal evidence from our current native request, even
+            // when its rejected occurrence differs from the selected app item.
+            // Reprepare the app selection before any stale item reaches UI/system.
+            val position = currentPositionMs()
+            services.pauseForReplacement()
+            if (mutableDesiredPlay.value) beginPreparation(position)
+            else {
+                cancelPreparation(clearReady = true)
+                mutableSnapshot.value = null
+            }
+            saveSession(synchronous = true)
+            return
+        }
+        if (action == NativeSnapshotAction.Ignore) return
         val entryId = value.appQueueEntryId ?: queued?.entryId
         val sleepTimerEnded = value.isEnded && sleepTimerController.consumePlaybackEnd(queue.state.value, entryId) ||
             value.nativeQueueHandoff && sleepTimerController.consumeNativeHandoff(queue.state.value, entryId)
         if (sleepTimerEnded) {
             pauseForSleepTimer()
-            val paused = value.copy(isPlaying = false, isBuffering = false)
+            val paused = if (incomingHandoff && queued != null) value.copy(
+                currentTrack = queued.track, appQueueEntryId = queued.entryId,
+                positionMs = currentPositionMs(), isPlaying = false, isBuffering = false,
+                nativeQueueHandoff = false,
+            ) else value.copy(isPlaying = false, isBuffering = false)
             mutableSnapshot.value = paused
             publishSnapshot(paused)
             ui?.second?.onSnapshot?.invoke(paused)
             updateRetention()
             return
         }
-        if (value.appQueueEntryId != null && value.appQueueEntryId != queued?.entryId && value.nativeQueueHandoff) {
-            if (queue.adoptNativeCurrent(value.appQueueEntryId)) syncNativeRail()
+        if (incomingHandoff && !queue.adoptNativeCurrent(checkNotNull(value.appQueueEntryId))) return
+        val live = queue.state.value
+        val resumePosition = currentPositionMs()
+        if (value.errorMessage == null && value.isPrepared) live.current?.let {
+            metadataCursor.remember(live.sessionId, it.entryId, value.positionMs)
         }
         mutableSnapshot.value = value
-        val live = queue.state.value
-        if (value.currentTrack?.catalogKind == CatalogKind.Station) {
-            if (stationHealth.onSnapshot(value.positionMs, SystemClock.elapsedRealtime(), value.isPlaying,
-                    value.isPrepared && value.errorMessage == null)) retryAttempts = 0
-        } else if (value.isPrepared && value.isPlaying && value.errorMessage == null && value.positionMs > 250L) retryAttempts = 0
+        if (value.nativeQueueHandoff) syncNativeRail()
+        // A resumed absolute cursor is not evidence of this attempt's progress.
+        // Both engines restore their retry budget only after sustained health.
+        if (stationHealth.onSnapshot(value.positionMs, SystemClock.elapsedRealtime(), value.isPlaying,
+                value.isPrepared && value.errorMessage == null)) retryAttempts = 0
         if (value.isPrepared && value.isPlaying && value.errorMessage == null && value.positionMs > 250L) {
             live.current?.let { queue.markCurrentPlaybackStarted(it.entryId) }
         }
         if (failureTracker.shouldHandle(value.requestGeneration, value.errorMessage != null)) {
             failPreparation(value.failureKind ?: PlaybackFailureKind.Unexpected,
-                checkNotNull(value.errorMessage), currentPositionMs(), value.isLiveStream, value.requestGeneration)
+                checkNotNull(value.errorMessage), resumePosition, value.isLiveStream, value.requestGeneration)
+            // Retrying/skipping can synchronously select a new occurrence. The
+            // failed old snapshot must not undo that selection or its mask.
+            if (hasPendingPrepare || queue.state.value.current?.entryId != live.current?.entryId) {
+                updateRetention()
+                return
+            }
         }
         val published = publishSnapshot(value)
         val consumer = ui?.second
@@ -401,7 +548,11 @@ class PlaybackRuntimeOwner(
                 if (live.current?.track?.catalogKind == CatalogKind.Station) pauseDetached()
                 else if (mutableDesiredPlay.value) {
                     val next = queue.advanceNext(manual = false)
-                    if (next == null && !queue.state.value.awaitingNext) pauseDetached()
+                    if (next == null && queue.state.value.awaitingNext) {
+                        observedQueueWait = live.current?.let { live.sessionId to it.entryId }
+                        services.pauseForReplacement()
+                        ensureCollectionLoading()
+                    } else if (next == null) pauseDetached()
                 }
             }
         } else if (!value.isEnded) handledEnd = null
@@ -439,6 +590,7 @@ class PlaybackRuntimeOwner(
             current.track, positionMs.coerceAtLeast(0L),
             snapshot.value?.isLiveStream ?: preparation.value.request?.isLiveStream
                 ?: (current.track.catalogKind == CatalogKind.Station))
+        metadataCursor.remember(state.sessionId, current.entryId, request.positionMs)
         prepareJob?.cancel()
         mutablePreparation.value = PreparationState(
             phase = if (retryDelayMs > 0L) PreparationPhase.Retrying else PreparationPhase.Preparing,
@@ -513,6 +665,16 @@ class PlaybackRuntimeOwner(
         val state = queue.state.value
         val current = state.current ?: return
         val station = current.track.catalogKind == CatalogKind.Station
+        if (!station && kind == PlaybackFailureKind.TrackUnavailable && mutableDesiredPlay.value) {
+            val next = queue.skipFailedCurrent(current.entryId)
+            if (next != null) return
+            if (queue.state.value.awaitingNext) {
+                observedQueueWait = state.sessionId to current.entryId
+                services.pauseForReplacement()
+                ensureCollectionLoading()
+                return
+            }
+        }
         val stationPlan = if (station) StationReconnectPolicy.plan(current.track.catalogId,
             prepareSerial, retryAttempts, kind, mutableDesiredPlay.value, isLiveStream, positionMs) else null
         val retryDelay = stationPlan?.delayMs ?: 3_000L.takeIf {
@@ -532,7 +694,14 @@ class PlaybackRuntimeOwner(
     }
 
     private fun playDetached() {
+        if (queue.state.value.current == null) return
         setDesiredPlayIntent(true)
+        if (retryPendingNext()) return
+        if (queue.state.value.awaitingNext) {
+            services.pauseForReplacement()
+            ensureCollectionLoading()
+            return
+        }
         val current = snapshot.value
         val live = queue.state.value
         val endedAnchor = current?.isEnded == true &&
@@ -561,11 +730,31 @@ class PlaybackRuntimeOwner(
             val value = snapshot.value ?: return
             if (direction > 0 && value.canSkipNext) services.skipToNext()
             else if (direction < 0 && value.canSkipPrevious) services.skipToPrevious()
-        } else if (direction > 0) queue.advanceNext() else queue.advancePrevious(currentPositionMs())
+        } else if (direction > 0) requestNext() else {
+            cancelPendingNext()
+            queue.advancePrevious(currentPositionMs())
+        }
     }
 
     private fun seekDetached(position: Long) {
-        if (snapshot.value?.canSeek == true) services.seekTo(position.coerceAtLeast(0))
+        if (snapshot.value?.canSeek == true) {
+            val state = queue.state.value
+            val target = position.coerceAtLeast(0).let { if ((snapshot.value?.durationMs ?: 0L) > 0L)
+                it.coerceAtMost(checkNotNull(snapshot.value).durationMs) else it }
+            state.current?.let { metadataCursor.remember(state.sessionId, it.entryId, target) }
+            services.seekTo(target)
+        }
+    }
+
+    fun seekRelative(deltaMs: Long) {
+        checkMain()
+        seekDetached((currentPositionMs() + deltaMs).coerceAtLeast(0L))
+    }
+
+    /** Absolute UI/system seeks also replace the metadata-only recovery cursor. */
+    fun seekTo(positionMs: Long) {
+        checkMain()
+        seekDetached(positionMs)
     }
 
     private fun syncNativeRail() {
@@ -607,9 +796,10 @@ class PlaybackRuntimeOwner(
                     }
                     val hasUpcoming = live.upNext.isNotEmpty() || live.autoplay.isNotEmpty()
                     val wasWaiting = continuationResume.isPending
+                    val manualNext = continuationNext.consumeIfReady(session, live.current?.entryId, hasUpcoming, page.complete)
                     if (continuationResume.consumeIfReady(session, live.current?.entryId,
-                            hasUpcoming, page.complete, mutableDesiredPlay.value)) {
-                        queue.advanceNext(manual = false)
+                            hasUpcoming, page.complete, mutableDesiredPlay.value) || manualNext) {
+                        queue.advanceNext(manual = manualNext)
                     } else if (wasWaiting && page.complete && !hasUpcoming && !continuationResume.isPending) {
                         mutableDesiredPlay.value = false
                     }
@@ -619,10 +809,18 @@ class PlaybackRuntimeOwner(
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 if (epoch == collectionGeneration && collection === cursor) {
-                    val wasWaiting = continuationResume.isPending
+                    val live = queue.state.value
+                    val wasWaiting = continuationResume.isPending || live.awaitingNext ||
+                        observedQueueWait == live.current?.let { session to it.entryId }
+                    continuationNext.fail(session, live.current?.entryId)
                     continuationResume.cancel()
                     queue.failContextTail(session)
-                    if (wasWaiting) mutableDesiredPlay.value = false
+                    if (wasWaiting) {
+                        mutableDesiredPlay.value = false
+                        services.pause()
+                    }
+                    saveSession(synchronous = true)
+                    updateRetention()
                 }
             } finally {
                 if (epoch == collectionGeneration) collectionJob = null

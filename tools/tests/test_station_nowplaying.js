@@ -118,6 +118,45 @@ const latest = ()=>reports.at(-1);
   // Station live latch is intentionally retained for this live session; a fresh
   // session tests generated-station presentation via the static projector tests.
   handlers.nowPlayingItemDidChange();assert.equal(latest().title,'');
+  // Actual live streams can publish song MediaItems without emitting ID3.
+  // Only the current-item event is fresh; old polling after reconnect is not.
+  const freshSong={id:'67890',type:'song',attributes:{name:'Fresh SDK Song',artistName:'Fresh Artist',
+    artwork:{url:'https://is1-ssl.mzstatic.com/image/fresh/{w}x{h}.jpg'}}};
+  music.nowPlayingItem=freshSong;
+  handlers.nowPlayingItemDidChange({item:freshSong});
+  assert.equal(latest().title,'Fresh SDK Song');
+  assert.equal(latest().artworkUrl,'https://is1-ssl.mzstatic.com/image/fresh/600x600.jpg');
+  const requestCount=requests.length;
+  handlers.timedMetadataDidChange({title:'Fresh SDK Song',performer:'Fresh Artist',storefrontAdamIds:{TW:'67890'}});
+  assert.equal(latest().artworkUrl,'https://is1-ssl.mzstatic.com/image/fresh/600x600.jpg',
+    'Matching ID3 must keep the already received SDK song cover');
+  handlers.nowPlayingItemDidChange({item:freshSong});
+  assert.equal(requests.at(-1).options.signal.aborted,false,
+    'Same-song current-item notification must not abort its matching ID3 lookup');
+  const nextSong={id:'78901',type:'song',attributes:{name:'Next SDK Song',artistName:'Next Artist',
+    artwork:{url:'https://is1-ssl.mzstatic.com/image/next.jpg'}}};
+  music.nowPlayingItem=nextSong;
+  handlers.nowPlayingItemDidChange({item:nextSong});
+  assert.equal(latest().title,'Next SDK Song');
+  assert.equal(latest().artworkUrl,'https://is1-ssl.mzstatic.com/image/next.jpg');
+  handlers.nowPlayingItemDidChange({item:freshSong});
+  assert.equal(latest().title,'Next SDK Song','A late old-item notification must not restore an old cover');
+  assert.equal(requests[requestCount].options.signal.aborted,true,
+    'A genuinely new SDK song must cancel the previous song lookup');
+  const originalStop=music.stop,originalPlay=music.play;
+  music.stop=function(){this.playbackState=4;return Promise.resolve();};
+  music.play=function(){this.playbackState=2;return Promise.resolve();};
+  context.window.amatvStationCommand('pause');await flush();
+  context.window.amatvStationCommand('play');await flush();
+  const reconnectReport=reports.slice().reverse().find(report=>typeof report.title==='string');
+  assert.equal(reconnectReport.title,'');assert.equal(reconnectReport.artworkUrl,'',
+    'Reconnect polling must not reuse the SDK item retained from the previous connection');
+  handlers.nowPlayingItemDidChange({item:nextSong});
+  assert.equal(latest().artworkUrl,'https://is1-ssl.mzstatic.com/image/next.jpg');
+  music.nowPlayingItem=station;
+  handlers.nowPlayingItemDidChange({item:station});
+  assert.equal(latest().title,'');assert.equal(latest().artworkUrl,'');
+  music.stop=originalStop;music.play=originalPlay;
   for (const [error, expected] of [
     [{status:'401'},'authorization'], [{statusCode:403},'authorization'],
     [{status:404},'unavailable'], [{status:503},'network'],
@@ -338,6 +377,23 @@ const latest = ()=>reports.at(-1);
     reconnects[2].reject(Object.assign(new Error('Current reconnect'),{name:'NetworkError'}));await flush();
     assert.equal(observations.at(-1).event,'error');assert.equal(observations.at(-1).reason,'network');
     assert.equal(backing.playbackState,4);
+  }
+  for(const [error,reason] of [
+    [{name:'NETWORK_ERROR'},'network'],
+    [{reason:'NETWORK_ERROR'},'network'],
+    [{name:'SDKError',data:{status:503}},'network'],
+    [{name:'AUTHORIZATION_ERROR'},'playback'],
+    [{name:'AUTHORIZATION_ERROR',data:{status:401}},'authorization'],
+  ]){
+    const events={},observations=[];
+    const backing={...music,addEventListener:(name,callback)=>{events[name]=callback;}};
+    vm.runInNewContext(inline,{...context,window:{...context.window},
+      document:{addEventListener:(name,callback)=>{events[name]=callback;}},
+      bridge:{report:raw=>observations.push(JSON.parse(raw))},
+      MusicKit:{...context.MusicKit,configure:()=>Promise.resolve(backing)}});
+    events.musickitloaded();await flush();
+    events.mediaPlaybackError(error);await flush();
+    assert.equal(observations.at(-1).reason,reason,JSON.stringify(error));
   }
   console.log('PASS station bootstrap/account-country readiness, fresh reconnect metadata, exact ID/art, cancellation, finite resume, preview rejection and reconnect ownership');
 })().catch(error=>{console.error(error);process.exitCode=1;});

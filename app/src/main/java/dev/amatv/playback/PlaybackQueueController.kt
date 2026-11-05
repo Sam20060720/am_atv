@@ -516,7 +516,9 @@ class PlaybackQueueController(
     fun adoptNativeCurrent(entryId: Long): Boolean {
         val curr = _state.value
         if (curr.current?.entryId == entryId) return true
-        if (curr.playableFuture.none { it.entryId == entryId }) return false
+        // A snapshot queued before an edit may still name a later item. Only
+        // the currently adjacent occurrence can be a natural SDK transition.
+        if (curr.playableFuture.firstOrNull()?.entryId != entryId) return false
         val nextIndex = curr.upNext.indexOfFirst { it.entryId == entryId }
         val autoplayIndex = if (nextIndex < 0) curr.autoplay.indexOfFirst { it.entryId == entryId } else -1
         if (nextIndex < 0 && autoplayIndex < 0) return false
@@ -662,7 +664,7 @@ class PlaybackQueueController(
     }
 
     fun setInfinite(enabled: Boolean) {
-        if (_state.value.infinite == enabled) return
+        if (_state.value.infinite == enabled && (!enabled || _state.value.repeat == PlaybackRepeatMode.Off)) return
         playbackPrefs.autoplayEnabled = enabled
         if (!enabled) {
             cancelRefill()
@@ -678,7 +680,8 @@ class PlaybackQueueController(
                 )
             }
         } else {
-            _state.update { it.copy(infinite = true) }
+            playbackPrefs.repeatMode = PlaybackRepeatMode.Off
+            _state.update { it.copy(infinite = true, repeat = PlaybackRepeatMode.Off) }
             triggerRefillIfNeeded()
         }
     }
@@ -697,6 +700,15 @@ class PlaybackQueueController(
                 autoplayStatus = AutoplayStatus.Idle,
             )
         }
+        triggerRefillIfNeeded()
+    }
+
+    /** Provider identity changed without changing the selected recommendation source. */
+    fun invalidateRecommendationAuthorization() {
+        if (_state.value.source != AutoplaySource.YouTubeMusic) return
+        cancelRefill()
+        _state.update { it.copy(autoplay = emptyList(), amStationId = null,
+            ytmContinuation = null, ytmSeedVideoId = null, autoplayStatus = AutoplayStatus.Idle) }
         triggerRefillIfNeeded()
     }
 

@@ -5,9 +5,27 @@ const script=kotlin.split('</head><body><script>')[1].split('</script><script')[
   .replace('$configuration',JSON.stringify({epoch:7,station:'fixture',developer:'fixture',user:'fixture',build:'test',position:0,spectrumActive:false,storefront:'tw'}))
   .replaceAll('$BRIDGE','bridge');
 const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
-function fixture(diagnostics=false, elementProbe=false){
+// Independent Web Audio contract: actual PCM -> periodic Blackman window ->
+// 1/N complex DFT -> 20*log10 magnitude. Do not hand-pick different band levels.
+function pcmSignal(tones, sampleRate=48000){
+  const size=1024;
+  const wave=Float32Array.from({length:size},(_,n)=>tones.reduce((sum,[hz,amplitude])=>
+    sum+amplitude*Math.sin(2*Math.PI*hz*n/sampleRate),0));
+  const bins=new Float32Array(size/2);
+  for(let k=0;k<bins.length;k++){
+    let real=0,imaginary=0;
+    for(let n=0;n<size;n++){
+      const window=.42-.5*Math.cos(2*Math.PI*n/size)+.08*Math.cos(4*Math.PI*n/size);
+      const angle=2*Math.PI*k*n/size,sample=wave[n]*window/size;
+      real+=sample*Math.cos(angle);imaginary-=sample*Math.sin(angle);
+    }
+    bins[k]=20*Math.log10(Math.hypot(real,imaginary));
+  }
+  return {wave,bins,sampleRate};
+}
+function fixture(diagnostics=false, elementProbe=false, signal=null){
   const events={}, spectra=[], reports=[], contexts=[], intervals=new Map(), timeouts=new Map();
-  let nextTimer=1, originalStops=0, mode='signal', captureCalls=0, forcedCaptureError=false, resumeGate=null, suspendGate=null, elementSourceCreates=0;
+  let nextTimer=1, originalStops=0, mode='signal', captureCalls=0, forcedCaptureError=false, resumeGate=null, suspendGate=null, elementSourceCreates=0, elapsedMs=1;
   const boundElements=new WeakMap();
   const originalTrack={stop:()=>originalStops++};
   const elementEvents={};
@@ -20,7 +38,7 @@ function fixture(diagnostics=false, elementProbe=false){
       return {track,getAudioTracks:()=>[track],getTracks:()=>[track]};
     }};
   function AudioContext(){
-    this.state='suspended';this.sampleRate=48000;this.closed=0;this.resumes=0;this.suspends=0;
+    this.state='suspended';this.sampleRate=signal ? signal.sampleRate : 48000;this.closed=0;this.resumes=0;this.suspends=0;
     const destination={kind:'destination'};
     Object.defineProperty(this,'destination',{get(){if(elementProbe)return destination;throw new Error('Analysis must never connect to destination');}});
     this.createMediaElementSource=mediaElement=>{
@@ -35,10 +53,14 @@ function fixture(diagnostics=false, elementProbe=false){
     this.createAnalyser=()=>this.analyser={fftSize:1024,frequencyBinCount:512,smoothingTimeConstant:0,
       getFloatFrequencyData(array){
         if(mode==='sample_error')throw new Error('Synthetic first-sample failure');
+        if(mode==='signal' && signal){array.set(signal.bins);return;}
         array.fill(mode==='silence' ? -Infinity : -95);
         if(mode==='signal'){array[2]=-12;array[18]=-20;array[90]=-30;}
       },
-      getFloatTimeDomainData(array){for(let i=0;i<array.length;i++)array[i]=mode==='silence' ? 0 : Math.sin(i*.2)*.2;},
+      getFloatTimeDomainData(array){
+        if(mode==='signal' && signal){array.set(signal.wave);return;}
+        for(let i=0;i<array.length;i++)array[i]=mode==='silence' ? 0 : Math.sin(i*.2)*.2;
+      },
       connected:null,connect(target){this.connected=target;},disconnect(){this.connected=null;}};
     this.resume=()=>{this.resumes++;return resumeGate ? resumeGate.then(()=>{this.state='running';}) : (this.state='running',Promise.resolve());};
     this.suspend=()=>{this.suspends++;return suspendGate ? suspendGate.then(()=>{this.state='suspended';}) : (this.state='suspended',Promise.resolve());};
@@ -53,7 +75,7 @@ function fixture(diagnostics=false, elementProbe=false){
   const window={AudioContext,setInterval:(callback,ms)=>{const id=nextTimer++;intervals.set(id,{callback,ms});return id;},
     clearInterval:id=>intervals.delete(id),setTimeout:(callback,ms)=>{const id=nextTimer++;timeouts.set(id,{callback,ms});return id;},
     clearTimeout:id=>timeouts.delete(id),addEventListener:(name,callback)=>{events['window:'+name]=callback;}};
-  const context={console,window,document:{addEventListener:(name,callback)=>{events[name]=callback;},getElementById:()=>element},
+  const context={console,window,performance:{now:()=>elapsedMs},document:{addEventListener:(name,callback)=>{events[name]=callback;},getElementById:()=>element},
     bridge:{report:raw=>reports.push(JSON.parse(raw)),spectrum:raw=>{
       assert.ok(raw.length<=512);const data=JSON.parse(raw);
       const fields=['epoch','status','captured','available','rate','bass','mid','treble'];
@@ -73,9 +95,33 @@ function fixture(diagnostics=false, elementProbe=false){
     captureError:value=>{forcedCaptureError=value;},resumeGate:value=>{resumeGate=value;},suspendGate:value=>{suspendGate=value;},
     elementSourceCreates:()=>elementSourceCreates,
     enable:value=>window.amatvSetSpectrumActive(value),
-    sample:()=>{const frame=[...intervals.values()].find(x=>x.ms===50);assert.ok(frame,'20Hz analysis timer missing');frame.callback();}};
+    sample:()=>{const frame=[...intervals.values()].find(x=>x.ms===50);assert.ok(frame,'20Hz analysis timer missing');elapsedMs+=50;frame.callback();}};
 }
 (async()=>{
+  const response=[];
+  for(const sampleRate of [44100,48000])for(const [band,hz] of ['bass','mid','treble'].map((band,i)=>[band,[100,1000,6000][i]])){
+    const tone=fixture(false,false,pcmSignal([[hz,.2]],sampleRate));
+    tone.events.musickitloaded();await flush();tone.enable(true);await flush();
+    const frame=tone.spectra.at(-1);
+    // Equal-amplitude tones have equal band energy regardless of how many
+    // otherwise-empty FFT bins happen to fit in that frequency band's width.
+    const expected=Math.log1p(64*.2/Math.SQRT2)/Math.log(65)*(1-Math.exp(-50/28));
+    assert.ok(Math.abs(frame[band]-expected)<.008,JSON.stringify({sampleRate,hz,band,frame,expected}));
+    for(const other of ['bass','mid','treble'].filter(name=>name!==band))assert.ok(frame[other]<.005,
+      'A tone must not create energy in another band: '+JSON.stringify({sampleRate,hz,frame}));
+    assert.equal(frame.available,true);response.push({sampleRate,hz,value:frame[band]});
+    tone.events['window:pagehide']();await flush();
+  }
+  const quiet=fixture(false,false,pcmSignal([[1000,.02]]));
+  quiet.events.musickitloaded();await flush();quiet.enable(true);await flush();
+  assert.ok(quiet.spectra.at(-1).mid>.1 && quiet.spectra.at(-1).mid<.15,'Measured amplitude changes must remain visible');
+  quiet.events['window:pagehide']();await flush();
+  const silent=fixture(false,false,pcmSignal([[6000,.00001]]));
+  silent.events.musickitloaded();await flush();silent.enable(true);await flush();
+  assert.equal(silent.spectra.at(-1).available,false);
+  assert.equal(silent.spectra.at(-1).treble,0,'Window correction must not lift inaudible noise');
+  silent.events['window:pagehide']();await flush();
+  console.log('PCM tone response (amplitude .2, first 50ms): '+JSON.stringify(response));
   const f=fixture();f.events.musickitloaded();await flush();
   assert.equal(f.captureCalls(),0,'Disabled spectrum must not create a capture route');
   f.enable(true);await flush();

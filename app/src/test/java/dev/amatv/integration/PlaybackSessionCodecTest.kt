@@ -10,6 +10,25 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PlaybackSessionCodecTest {
+    @Test fun shuffledFutureIsRemovedFromOldHistoryBeforeCheckpointOrderIsApplied() {
+        val full = session(4, 0).copy(autoplayEntryIndices = emptySet())
+        val order = listOf(0, 3, 1, 2)
+        val shuffled = full.copy(queue = order.map(full.queue::get),
+            queueEntryIds = order.map(full.queueEntryIds::get), currentIndex = 1, savedRevision = 101)
+        val merged = checkNotNull(PlaybackSessionCodec.merge(full, PlaybackSessionCodec.encodeCheckpoint(shuffled)))
+        assertEquals(listOf(1L, 4L, 2L, 3L), merged.queueEntryIds)
+        assertEquals(1, merged.currentIndex)
+        assertEquals(merged.queue.size, merged.queueEntryIds.distinct().size)
+        assertNotNull(PlaybackSessionCodec.decode(PlaybackSessionCodec.encode(merged)))
+    }
+
+    @Test fun checkpointWithAnUnknownFutureOccurrenceRetainsTheConsistentFullSession() {
+        val full = session(20, 0)
+        val checkpoint = JSONObject(PlaybackSessionCodec.encodeCheckpoint(full.copy(savedRevision = 101)))
+        checkpoint.getJSONArray("futureIds").put(19, 99_999L)
+        assertEquals(full, PlaybackSessionCodec.merge(full, checkpoint.toString()))
+    }
+
     @Test fun bufferedShuffleCheckpointRoundTripsItsRawOccurrenceAndAlwaysRestartsAtFirstPage() {
         val playlist = track("playlist").copy(catalogKind = dev.amatv.model.CatalogKind.Playlist,
             palette = listOf(Color(0xFF202428), Color(0xFF30343A)))

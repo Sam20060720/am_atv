@@ -134,10 +134,18 @@ internal object PlaybackSessionCodec {
         val future = cpRoot.optJSONArray("futureIds")
         val ordered = if (future != null) {
             val byId = records.associateBy { it.id }
-            records.take(currentIndex + 1) + (0 until future.length()).mapNotNull { byId[future.optLong(it)] }
+            val futureIds = (0 until future.length()).map { future.optLong(it) }
+            // Unknown or duplicate occurrences cannot be reconstructed from a
+            // bounded window. Preserve the last complete consistent session.
+            if (futureIds.distinct().size != futureIds.size || currentId in futureIds ||
+                futureIds.any { it !in byId }) return full
+            val futureSet = futureIds.toSet()
+            val prefix = records.take(currentIndex).filterNot { it.id in futureSet }
+            prefix + byId.getValue(currentId) + futureIds.map(byId::getValue)
         } else records
         return checkpoint.copy(
-            queue = ordered.map { it.track }, queueEntryIds = ordered.map { it.id }, currentIndex = currentIndex,
+            queue = ordered.map { it.track }, queueEntryIds = ordered.map { it.id },
+            currentIndex = ordered.indexOfFirst { it.id == currentId },
             queueSourceEntryIds = ordered.map { it.sourceId },
             autoplayEntryIndices = ordered.indices.filter { ordered[it].autoplay }.toSet(),
             playedEntryIds = ordered.filter { it.played }.map { it.id }.toSet(),
