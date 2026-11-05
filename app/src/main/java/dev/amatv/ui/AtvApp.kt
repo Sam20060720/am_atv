@@ -1338,6 +1338,17 @@ fun AmAtvApp() {
         if (snapshot.requestGeneration == 0L || snapshot.requestGeneration != runtime.playbackGeneration) return
         publishSystemSnapshot(snapshot)
         audioBuffering = playWhenReady && snapshot.isBuffering
+        // A live reconnect clears the previous song before it is prepared.
+        // Show the current station fallback while waiting for fresh metadata.
+        if (!snapshot.isPrepared && snapshot.errorMessage == null) {
+            val current = snapshot.currentTrack
+            val queued = queueController.state.value.current?.track
+            if (current?.catalogKind == CatalogKind.Station && queued?.catalogKind == CatalogKind.Station &&
+                current.matchesPlaybackQueueEntry(queued)) {
+                if (track != current) track = current
+                hasCurrentTrack = true
+            }
+        }
         if (runtime.hasPendingPrepare || snapshot.errorMessage != null) return
         snapshot.appQueueEntryId?.takeIf { it != queueController.state.value.current?.entryId }?.let { entryId ->
             if (snapshot.hasPlayerCurrentTrack && queueController.adoptNativeCurrent(entryId)) {

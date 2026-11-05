@@ -153,6 +153,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
         check(available) { AppText.text(R.string.services_station_unsupported) }
         val epoch = generation.incrementAndGet()
         requested = track
+        latest = null
         desiredPlaying = playWhenReady
         spectrumFrame = SpectrumFrame(epoch, 0L, AudioSpectrum(), if (spectrumRequested) SpectrumCaptureState.WaitingForCapture else SpectrumCaptureState.Disabled)
         main.post {
@@ -206,11 +207,11 @@ internal class MusicKitStationPlayer(private val context: Context) {
         command("pause")
     }
     fun seekTo(positionMs: Long) {
-        if (latest?.canSeek == true) command("seek", positionMs.coerceAtLeast(0L) / 1000.0)
+        if (playbackSnapshot()?.canSeek == true) command("seek", positionMs.coerceAtLeast(0L) / 1000.0)
     }
-    fun skipToNext() { if (latest?.canSkipNext == true) command("next") }
-    fun skipToPrevious() { if (latest?.canSkipPrevious == true) command("previous") }
-    fun playbackSnapshot(): PlaybackSnapshot? = latest
+    fun skipToNext() { if (playbackSnapshot()?.canSkipNext == true) command("next") }
+    fun skipToPrevious() { if (playbackSnapshot()?.canSkipPrevious == true) command("previous") }
+    fun playbackSnapshot(): PlaybackSnapshot? = latest?.takeIf { it.requestGeneration == generation.get() }
     fun setPlaybackListener(value: ((PlaybackSnapshot) -> Unit)?) {
         main.post { listener = value }
     }
@@ -436,7 +437,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
             PlaybackFailureKind.TrackUnavailable -> R.string.services_track_unavailable
             else -> R.string.services_playback_failed
         })
-        val snapshot = (latest ?: PlaybackSnapshot(source, positionMs = 0L,
+        val snapshot = (playbackSnapshot() ?: PlaybackSnapshot(source, positionMs = 0L,
             durationMs = 0L, isPlaying = false, isBuffering = false, canSkipNext = false,
             canSkipPrevious = false))
             .copy(isPlaying = false, isBuffering = false, errorMessage = message,
@@ -477,7 +478,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
               var intentReceived=false, commandVersion=0, stationWasLive=false, stoppedLive=false;
               var resumePosition=config.position;
               var stopPromise=null, stoppedForVersion=-1, lastObservedPlaying=false;
-              var timedMetadata=null, timedCatalog=null, timedCatalogKey=null, metadataVersion=0, metadataFetch=null;
+              var timedMetadata=null, timedCatalog=null, timedCatalogKey=null, metadataVersion=0, metadataFetch=null, metadataActive=false;
               var metadataCache=Object.create(null), metadataCacheKeys=[];
               function send(data){ data.epoch=config.epoch; $BRIDGE.report(JSON.stringify(data)); }
               function finite(value){ return typeof value==='number' && isFinite(value) && value>=0 ? value : 0; }
@@ -750,12 +751,13 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 if(!artwork) return '';
                 try{return MusicKit.formatArtworkURL(artwork,600,600) || '';}catch(ignored){return '';}
               }
-              function clearTimedMetadata(){
+              function clearTimedMetadata(resetCache){
                 ++metadataVersion;timedMetadata=null;timedCatalog=null;timedCatalogKey=null;
                 if(metadataFetch){metadataFetch.abort();metadataFetch=null;}
+                if(resetCache){metadataCache=Object.create(null);metadataCacheKeys=[];}
               }
               function receiveTimedMetadata(event){
-                if(!music || terminal) return;
+                if(!music || terminal || !metadataActive) return;
                 var metadata=event && (event.metadata || event.detail && event.detail.metadata || event.detail || event);
                 if(!metadata || typeof metadata!=='object') {clearTimedMetadata();report();return;}
                 // The native caller has already resolved the authorized account's
@@ -782,7 +784,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 var controller=new AbortController();metadataFetch=controller;
                 var timeout=window.setTimeout(function(){controller.abort();},6000);
                 fetch('https://api.music.apple.com/v1/catalog/'+country+'/songs/'+id,
-                  {headers:{Authorization:'Bearer '+config.developer},signal:controller.signal})
+                  {headers:{Authorization:'Bearer '+config.developer},signal:controller.signal,cache:'no-store'})
                 .then(function(response){
                   metadataDiagnostic('metadata_lookup_http',metadata,country,ids,true,response.status);
                   if(!response.ok) throw new Error('MetadataUnavailable');return response.json();
@@ -837,12 +839,15 @@ internal class MusicKitStationPlayer(private val context: Context) {
                     catch(error){fail(error);return;}
                   }
                 }
-                var presentation=live && timedMetadata ? {
+                // During a fresh live connection the SDK item can still carry
+                // the previous programme. Only this stream's new ID3 is current;
+                // empty fields let native presentation use the source station.
+                var presentation=live ? timedMetadata ? {
                   name:timedMetadata.title || timedCatalog && timedCatalog.name || '',
                   artistName:timedMetadata.performer || timedCatalog && timedCatalog.artistName || '',
                   albumName:timedMetadata.album || timedCatalog && timedCatalog.albumName || '',
                   artwork:timedCatalog && timedCatalog.artwork
-                } : a;
+                } : {} : a;
                 try{drm=music.browserSupportsVideoDrm;}catch(ignored){}
                 send({event:event || 'state', prepared:prepared, hasItem:!!item,state:state,
                   queueCount:queue ? queue.length : 0,drmSupported:typeof drm==='boolean' ? drm : null,desired:desired,
@@ -870,12 +875,14 @@ internal class MusicKitStationPlayer(private val context: Context) {
               function stopLive(){
                 stoppedLive=true;
                 if(stopPromise) return stopPromise;
+                metadataActive=false;clearTimedMetadata(true);
                 stoppedForVersion=commandVersion;
                 diagnostic('live_stop_requested');
                 // Set the promise before calling the library: synchronous state
                 // events cannot recursively issue another Stop.
                 stopPromise=Promise.resolve().then(function(){return music.stop();});
                 var pending=stopPromise;
+                report();
                 pending.then(function(){
                   if(stopPromise===pending) stopPromise=null;
                   diagnostic('live_stop_resolved');
@@ -902,7 +909,8 @@ internal class MusicKitStationPlayer(private val context: Context) {
                   if(!stoppedLive) return music.play();
                   // Stop clears the live media element/current item. Reconnect
                   // the same station at its live edge, never seek an old stream.
-                  diagnostic('live_reconnect_requested');clearTimedMetadata();
+                  diagnostic('live_reconnect_requested');clearTimedMetadata(true);metadataActive=true;
+                  report();
                   return music.setQueue({station:config.station,startPlaying:false}).then(function(){
                     if(version!==commandVersion)return;
                     if(terminal || !desired){return stopLive();}
@@ -966,6 +974,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
                     diagnostic('account_ready');
                     if(String(music.storefrontCountryCode || '').toLowerCase()!==config.storefront)
                       throw {name:'StationStorefrontMismatch',reason:'CONTENT_EQUIVALENT'};
+                    metadataActive=true;
                     return music.setQueue({station:config.station,startPlaying:false});
                   }).then(function(){
                     diagnostic('queue_resolved');

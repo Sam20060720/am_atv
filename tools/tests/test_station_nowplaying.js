@@ -85,7 +85,7 @@ const latest = ()=>reports.at(-1);
     }
   }
   handlers.musickitloaded();await flush();
-  assert.equal(latest().title,'Station');assert.equal(latest().live,true);
+  assert.equal(latest().title,'');assert.equal(latest().live,true); // Native falls back to the source station.
   handlers.timedMetadataDidChange({title:'One',performer:'Artist',album:'Album',storefrontAdamIds:{TW:'12345'}});
   assert.equal(latest().title,'One');assert.equal(latest().artist,'Artist');assert.equal(latest().artworkUrl,'');
   assert.equal(requests.length,1);assert.equal(requests[0].url,'https://api.music.apple.com/v1/catalog/tw/songs/12345');
@@ -117,7 +117,7 @@ const latest = ()=>reports.at(-1);
     artwork:{url:'https://is1-ssl.mzstatic.com/image/generated.jpg'}}};
   // Station live latch is intentionally retained for this live session; a fresh
   // session tests generated-station presentation via the static projector tests.
-  handlers.nowPlayingItemDidChange();assert.equal(latest().title,'Generated Song');
+  handlers.nowPlayingItemDidChange();assert.equal(latest().title,'');
   for (const [error, expected] of [
     [{status:'401'},'authorization'], [{statusCode:403},'authorization'],
     [{status:404},'unavailable'], [{status:503},'network'],
@@ -185,6 +185,63 @@ const latest = ()=>reports.at(-1);
     events.timedMetadataDidChange({title:'Stream title',performer:'Stream artist',storefrontAdamIds:fixture.ids});
     assert.deepEqual(calls,fixture.expected ? [fixture.expected] : [], JSON.stringify(fixture));
   }
+  // A new live connection must start from the source station, even when the
+  // SDK retains the previous programme item. Only new stream metadata may
+  // replace it; repeated ID3 within one connection still keeps the cover cache.
+  const restartEvents={},restartReports=[],restartRequests=[],restartQueues=[];
+  let firstQueue=true,finishStop;
+  const staleItem={isLiveRadioStation:true,attributes:{name:'Previous programme',artistName:'Previous artist',
+    artwork:{url:'https://is1-ssl.mzstatic.com/image/previous.jpg'}}};
+  const restartMusic={...music,nowPlayingItem:staleItem,playbackState:2,
+    addEventListener:(name,callback)=>{restartEvents[name]=callback;},
+    setQueue:()=>{
+      if(firstQueue){firstQueue=false;return Promise.resolve();}
+      return new Promise(resolve=>restartQueues.push(resolve));
+    },
+    stop:()=>new Promise(resolve=>{finishStop=()=>{restartMusic.playbackState=4;resolve();};}),
+    play:()=>{restartMusic.playbackState=2;restartEvents.playbackStateDidChange();return Promise.resolve();}};
+  const restartContext={...context,window:{...context.window},
+    document:{addEventListener:(name,callback)=>{restartEvents[name]=callback;}},
+    bridge:{report:raw=>restartReports.push(JSON.parse(raw))},
+    MusicKit:{...context.MusicKit,configure:()=>Promise.resolve(restartMusic)},
+    fetch:(url,options)=>new Promise(resolve=>restartRequests.push({url,options,resolve}))};
+  const restartLatest=()=>restartReports.filter(report=>'title' in report).at(-1);
+  const songMetadata=title=>({title,performer:'Current artist',storefrontAdamIds:{TW:'12345'}});
+  const songResponse=art=>({ok:true,json:async()=>({data:[{id:'12345',type:'songs',attributes:{
+    name:'Catalog song',artwork:{url:'https://is1-ssl.mzstatic.com/image/'+art+'.jpg'}}}]})});
+  vm.runInNewContext(inline,restartContext);restartEvents.musickitloaded();await flush();
+  assert.equal(restartLatest().title,'');assert.equal(restartLatest().artworkUrl,'');
+  restartEvents.timedMetadataDidChange(songMetadata('Old stream song'));
+  restartRequests[0].resolve(songResponse('old-stream'));await flush();
+  assert.equal(restartLatest().artworkUrl,'https://is1-ssl.mzstatic.com/image/old-stream.jpg');
+  restartEvents.timedMetadataDidChange({title:'Pending old stream',storefrontAdamIds:{TW:'23456'}});
+  assert.equal(restartRequests.length,2);
+  restartContext.window.amatvStationCommand('pause',0);await flush();
+  assert.equal(restartRequests[1].options.signal.aborted,true);
+  assert.equal(restartLatest().title,'');assert.equal(restartLatest().artworkUrl,'');
+  restartEvents.timedMetadataDidChange(songMetadata('Late stopped stream'));
+  restartContext.window.amatvStationCommand('play',0);await flush();
+  restartEvents.timedMetadataDidChange(songMetadata('Late stopping stream'));
+  assert.equal(restartRequests.length,2,'Stopped stream events must not fetch or restore old metadata');
+  assert.equal(restartQueues.length,0,'Reconnect waits for the actual Stop');
+  finishStop();await flush();
+  assert.equal(restartQueues.length,1);
+  assert.equal(restartLatest().title,'');assert.equal(restartLatest().artworkUrl,'');
+  // The first new ID3 can precede Playing and setQueue settlement. It must be
+  // accepted and fetched again, even when its song ID was cached last time.
+  restartEvents.timedMetadataDidChange(songMetadata('Fresh stream song'));
+  assert.equal(restartRequests.length,3);
+  assert.equal(restartRequests[2].options.cache,'no-store');
+  assert.equal(restartLatest().title,'Fresh stream song');assert.equal(restartLatest().artworkUrl,'');
+  restartRequests[2].resolve(songResponse('fresh-stream'));await flush();
+  restartRequests[1].resolve({ok:true,json:async()=>({data:[{id:'23456',type:'songs',attributes:{
+    name:'Stale response',artwork:{url:'https://is1-ssl.mzstatic.com/image/stale-response.jpg'}}}]})});
+  await flush();
+  assert.equal(restartLatest().title,'Fresh stream song');
+  assert.equal(restartLatest().artworkUrl,'https://is1-ssl.mzstatic.com/image/fresh-stream.jpg');
+  restartQueues[0]();await flush();
+  assert.equal(restartLatest().title,'Fresh stream song');
+  assert.equal(restartLatest().artworkUrl,'https://is1-ssl.mzstatic.com/image/fresh-stream.jpg');
   // A finite programme shares the station engine, but resumes its cursor and
   // uses Pause/Play rather than the live stream's Stop/reconnect path.
   const episodeEvents={},episodeReports=[],episodeCalls=[];
@@ -282,5 +339,5 @@ const latest = ()=>reports.at(-1);
     assert.equal(observations.at(-1).event,'error');assert.equal(observations.at(-1).reason,'network');
     assert.equal(backing.playbackState,4);
   }
-  console.log('PASS station bootstrap/account-country readiness, metadata exact ID/art, cancellation, finite resume, preview rejection and reconnect ownership');
+  console.log('PASS station bootstrap/account-country readiness, fresh reconnect metadata, exact ID/art, cancellation, finite resume, preview rejection and reconnect ownership');
 })().catch(error=>{console.error(error);process.exitCode=1;});
