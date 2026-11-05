@@ -39,6 +39,20 @@ private val LyricsLanguageTags = listOf(
     "zh-TW", "zh-CN", "en-US", "ja-JP", "ko-KR", "es-ES", "fr-FR", "de-DE",
 )
 
+internal fun lyricsLanguageOptionKey(tag: String): String {
+    val locale = Locale.forLanguageTag(tag)
+    return if (locale.language == "zh") {
+        "zh-" + if (locale.script == "Hant" || locale.country in listOf("TW", "HK", "MO")) "Hant" else "Hans"
+    } else locale.language
+}
+
+internal fun lyricsLanguageOptions(appLanguageTag: String): List<String> =
+    (LyricsLanguageTags + appLanguageTag).filter(String::isNotBlank).distinctBy(::lyricsLanguageOptionKey)
+
+internal fun sameLyricsMenuSelection(first: String, second: String): Boolean =
+    first == second || (first.isNotBlank() && second.isNotBlank() &&
+        lyricsLanguageOptionKey(first) == lyricsLanguageOptionKey(second))
+
 /** Lyrics preferences use the same panel, rows and window-local focus as catalog actions. */
 @Composable
 internal fun LyricsDisplaySettingsDialog(
@@ -48,13 +62,9 @@ internal fun LyricsDisplaySettingsDialog(
     onBackHandlerChanged: ((() -> Unit)?) -> Unit = {},
     translationEnabled: Boolean,
     pronunciationEnabled: Boolean,
-    translationAvailable: Boolean,
-    pronunciationAvailable: Boolean,
     translationLanguageTag: String,
     pronunciationLanguageTag: String,
     appLanguageTag: String,
-    enhancementsReady: Boolean,
-    enhancementsFailed: Boolean,
     onTranslationChange: (Boolean) -> Unit,
     onPronunciationChange: (Boolean) -> Unit,
     onTranslationLanguageChange: (String) -> Unit,
@@ -140,7 +150,7 @@ internal fun LyricsDisplaySettingsDialog(
             val active = menuSize.width > 0 && menuSize.height > 0 && windowFocused &&
                 motion.entranceComplete && !motion.closing && !motion.transitioning
             val languageOptions = remember(appLanguageTag) {
-                (LyricsLanguageTags + appLanguageTag).filter(String::isNotBlank).distinct()
+                lyricsLanguageOptions(appLanguageTag)
             }
             val entryIds = if (picker == null) listOf("translation", "pronunciation")
                 else listOf("off", "follow") + languageOptions.map { "language-$it" }
@@ -272,11 +282,11 @@ internal fun LyricsDisplaySettingsDialog(
                                         if (currentPicker == null) {
                                             val translation = id == "translation"
                                             val enabled = if (translation) translationEnabled else pronunciationEnabled
-                                            val available = if (translation) translationAvailable else pronunciationAvailable
                                             val tag = if (translation) translationLanguageTag else pronunciationLanguageTag
-                                            val status = enhancementStatus(enabled, available, enhancementsReady, enhancementsFailed)
+                                            // This row describes the persisted choice, independently of
+                                            // whether the current song supplies the requested material.
                                             val value = when {
-                                                status != null -> stringResource(status)
+                                                !enabled -> stringResource(R.string.player_lyrics_display_off)
                                                 tag.isBlank() -> stringResource(R.string.player_lyrics_menu_follow_app)
                                                 !translation && tag == "en-US" -> stringResource(R.string.player_lyrics_menu_latin)
                                                 else -> lyricsLanguageValue(tag, appLocale)
@@ -297,7 +307,8 @@ internal fun LyricsDisplaySettingsDialog(
                                             val selected = when (id) {
                                                 "off" -> !enabled
                                                 "follow" -> enabled && tag.isBlank()
-                                                else -> enabled && tag == optionTag
+                                                else -> enabled && tag.isNotBlank() &&
+                                                    lyricsLanguageOptionKey(tag) == lyricsLanguageOptionKey(optionTag)
                                             }
                                             val label = when (id) {
                                                 "off" -> stringResource(R.string.player_lyrics_display_off)
@@ -339,15 +350,6 @@ internal fun LyricsDisplaySettingsDialog(
             }
         }
     }
-}
-
-/** Keep transient availability separate from the selected language preference. */
-private fun enhancementStatus(enabled: Boolean, available: Boolean, ready: Boolean, failed: Boolean): Int? = when {
-    !enabled -> R.string.player_lyrics_display_off
-    failed -> R.string.player_lyrics_menu_failed
-    !ready -> R.string.player_loading
-    !available -> R.string.player_lyrics_menu_unavailable
-    else -> null
 }
 
 @Composable

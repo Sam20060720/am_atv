@@ -290,6 +290,113 @@ class AppleTtmlParserTest {
     }
 
     @Test
+    fun incompatibleTaggedTranslationsDoNotFallBackToAnotherScriptOrAnUntaggedWildcard() {
+        val localizations = """
+            <tt xmlns="http://www.w3.org/ns/ttml"
+                xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+              <head><metadata><itunes:iTunesMetadata><itunes:translations>
+                <itunes:translation xml:lang="zh-Hans"><itunes:text for="L1">简体</itunes:text></itunes:translation>
+                <itunes:translation xml:lang="fr"><itunes:text for="L1">Toi</itunes:text></itunes:translation>
+                <itunes:translation><itunes:text for="L1">Unknown language</itunes:text></itunes:translation>
+              </itunes:translations></itunes:iTunesMetadata></metadata></head>
+              <body><div xml:lang="zh-Hans"><p itunes:key="L1">段落简体</p></div></body>
+            </tt>
+        """.trimIndent()
+        val line = parseLocalizedFixture(localizations, translationLocale = Locale.TAIWAN)
+        assertEquals(null, line.translation)
+        assertEquals("君", line.text)
+    }
+
+    @Test
+    fun bareTextAndParagraphTranslationFallbacksStillRequireTheRequestedLanguage() {
+        val localizations = """
+            <tt xmlns="http://www.w3.org/ns/ttml"
+                xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+              <head><metadata><itunes:text for="L1" xml:lang="fr">Toi</itunes:text></metadata></head>
+              <body><div xml:lang="zh-Hans"><p itunes:key="L1">你</p></div></body>
+            </tt>
+        """.trimIndent()
+        assertEquals(null, parseLocalizedFixture(localizations, translationLocale = Locale.US).translation)
+    }
+
+    @Test
+    fun latinPronunciationUsesTheSourceLanguageScriptAndNeverBecomesTranslation() {
+        val localizations = """
+            <tt xmlns="http://www.w3.org/ns/ttml"
+                xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+              <head><metadata><itunes:iTunesMetadata><itunes:transliterations>
+                <itunes:transliteration xml:lang="ja-Hira"><itunes:text for="L1">きみ</itunes:text></itunes:transliteration>
+                <itunes:transliteration xml:lang="ja-Latn"><itunes:text for="L1">kimi</itunes:text></itunes:transliteration>
+              </itunes:transliterations></itunes:iTunesMetadata></metadata></head>
+            </tt>
+        """.trimIndent()
+        val latin = parseLocalizedFixture(localizations, pronunciationLocale = Locale.US)
+        assertEquals("kimi", latin.pronunciationText)
+        assertEquals(null, latin.translation)
+        val hiragana = parseLocalizedFixture(localizations, pronunciationLocale = Locale.forLanguageTag("ja-Hira"))
+        assertEquals("きみ", hiragana.pronunciationText)
+    }
+
+    @Test
+    fun pronunciationParagraphFallbackCannotSatisfyADifferentScriptOrTranslation() {
+        val localizations = """
+            <tt xmlns="http://www.w3.org/ns/ttml"
+                xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+              <body><itunes:transliteration xml:lang="ja-Latn"><p itunes:key="L1">kimi</p></itunes:transliteration></body>
+            </tt>
+        """.trimIndent()
+        val latin = parseLocalizedFixture(localizations, pronunciationLocale = Locale.US)
+        assertEquals("kimi", latin.pronunciationText)
+        assertEquals(null, latin.translation)
+        val hiragana = parseLocalizedFixture(localizations, pronunciationLocale = Locale.forLanguageTag("ja-Hira"))
+        assertEquals(null, hiragana.pronunciationText)
+        assertEquals(null, hiragana.translation)
+    }
+
+    @Test
+    fun inlineOverlaysRespectLocaleAndPronunciationDisabledPreference() {
+        val ttml = """
+            <tt xmlns="http://www.w3.org/ns/ttml"
+                xmlns:ttm="http://www.w3.org/ns/ttml#metadata"
+                xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+              <body><div><p begin="1s" end="2s" itunes:key="L1">君
+                <span ttm:role="x-translation" xml:lang="fr">Toi</span>
+                <span ttm:role="x-roman" xml:lang="ja-Latn">kimi</span>
+              </p></div></body>
+            </tt>
+        """.trimIndent()
+        val line = AppleTtmlParser.parse(ttml, null, Locale.TAIWAN, Locale.US,
+            includeTranslations = true, includePronunciations = false).single()
+        assertEquals(null, line.translation)
+        assertEquals(null, line.pronunciationText)
+    }
+
+    @Test
+    fun untaggedInlineRomanizationDoesNotInheritTheCanonicalSongScript() {
+        val ttml = """<tt xmlns="http://www.w3.org/ns/ttml" xml:lang="ja"
+            xmlns:ttm="http://www.w3.org/ns/ttml#metadata">
+            <body><div><p begin="1s" end="2s">君<span ttm:role="x-roman">kimi</span></p></div></body></tt>"""
+        val line = AppleTtmlParser.parse(ttml, null, Locale.US, Locale.US,
+            includeTranslations = false, includePronunciations = true).single()
+        assertEquals("kimi", line.pronunciationText)
+    }
+
+    private fun parseLocalizedFixture(
+        localizations: String,
+        translationLocale: Locale = Locale.US,
+        pronunciationLocale: Locale = Locale.US,
+    ) = AppleTtmlParser.parse(
+        canonicalTtml = """<tt xmlns="http://www.w3.org/ns/ttml"
+            xmlns:itunes="http://music.apple.com/lyric-ttml-internal">
+            <body><div><p begin="1s" end="2s" itunes:key="L1">君</p></div></body></tt>""",
+        localizationTtml = localizations,
+        translationLocale = translationLocale,
+        pronunciationLocale = pronunciationLocale,
+        includeTranslations = true,
+        includePronunciations = true,
+    ).single()
+
+    @Test
     fun parsesSupportedAppleTimeExpressions() {
         assertEquals(62_500L, AppleTtmlParser.parseTimeMs("01:02.500"))
         assertEquals(3_250L, AppleTtmlParser.parseTimeMs("3.25s"))

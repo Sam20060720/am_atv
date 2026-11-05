@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.focused
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.disabled
@@ -168,7 +169,8 @@ internal fun TvPlaybackButton(
     Box(
         Modifier.automationId(controlId)
             .semantics {
-                this.selected = focused
+                this.selected = selected
+                this.focused = inputFocused
                 stateDescription = contentDescription
                 if (!enabled) disabled()
             }

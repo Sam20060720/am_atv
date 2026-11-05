@@ -43,6 +43,4 @@
     <string name="actions_sleep_timer_context_end">At End of Album or Playlist</string>
     <string name="player_lyrics_menu_follow_app">Follow App</string>
     <string name="player_lyrics_menu_latin">Latin</string>
-    <string name="player_lyrics_menu_failed">Failed</string>
-    <string name="player_lyrics_menu_unavailable">N/A</string>
 </resources>

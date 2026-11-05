@@ -18,7 +18,10 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -78,6 +81,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -100,6 +104,7 @@ import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -208,6 +213,7 @@ fun PlayerScreen(
     queueEntryIds: List<Long> = emptyList(),
     queueCurrentIndex: Int = -1,
     queueSessionId: Long = 0L,
+    playbackSelectionKey: String = track.id,
     canClearQueue: Boolean = queue.size > 1,
     lyricsTransientFailure: Boolean = false,
     onRetryLyrics: () -> Unit = {},
@@ -219,6 +225,8 @@ fun PlayerScreen(
     lyricPronunciationLanguageTag: String = "en-US",
     appLanguageTag: String = Locale.getDefault().toLanguageTag(),
     lyricsEnhancementsReady: Boolean = true,
+    lyricTranslationReady: Boolean = lyricsEnhancementsReady,
+    lyricPronunciationReady: Boolean = lyricsEnhancementsReady,
     onLyricTranslationEnabledChange: (Boolean) -> Unit = {},
     onLyricPronunciationEnabledChange: (Boolean) -> Unit = {},
     onLyricPronunciationLargerChange: (Boolean) -> Unit = {},
@@ -262,11 +270,11 @@ fun PlayerScreen(
     var pressedControl by remember { mutableStateOf<PlayerControl?>(null) }
     var controlPressEpoch by remember { mutableLongStateOf(0L) }
     var controlKeyHeld by remember { mutableStateOf(false) }
-    var selectedLyricIndex by remember(track.id) {
+    var selectedLyricIndex by remember(playbackSelectionKey) {
         mutableIntStateOf(-1)
     }
-    var isScrubbing by remember(track.id) { mutableStateOf(false) }
-    var scrubPositionMs by remember(track.id) { mutableLongStateOf(0L) }
+    var isScrubbing by remember(playbackSelectionKey) { mutableStateOf(false) }
+    var scrubPositionMs by remember(playbackSelectionKey) { mutableLongStateOf(0L) }
     LaunchedEffect(seekEnabled) {
         if (!seekEnabled) {
             isScrubbing = false
@@ -403,23 +411,20 @@ fun PlayerScreen(
         else -> PlayerPresentation.Artwork
     }
     val displayedLyrics = remember(
-        track.lyrics, lyricTranslationEnabled, lyricPronunciationEnabled, lyricsEnhancementsReady,
+        track.lyrics, lyricTranslationEnabled, lyricPronunciationEnabled, lyricTranslationReady, lyricPronunciationReady,
     ) {
         track.lyrics.map { line ->
             line.forDisplay(
-                showTranslation = lyricTranslationEnabled && lyricsEnhancementsReady,
-                showPronunciation = lyricPronunciationEnabled && lyricsEnhancementsReady,
+                showTranslation = lyricTranslationEnabled && lyricTranslationReady,
+                showPronunciation = lyricPronunciationEnabled && lyricPronunciationReady,
             )
         }
     }
     val displayedTrack = remember(track, displayedLyrics) { track.copy(lyrics = displayedLyrics) }
-    val lyricTranslationAvailable = lyricsEnhancementsReady && track.lyrics.any {
-        !it.translation.isNullOrBlank() || !it.backgroundTranslation.isNullOrBlank()
-    }
-    val lyricPronunciationAvailable = lyricsEnhancementsReady && track.lyrics.any { line ->
-        !line.pronunciationText.isNullOrBlank() || !line.backgroundPronunciationText.isNullOrBlank() ||
-            line.words.any { !it.pronunciationText.isNullOrBlank() } ||
-            line.backgroundWords.any { !it.pronunciationText.isNullOrBlank() }
+    LaunchedEffect(playbackSelectionKey, displayedLyrics.isEmpty()) {
+        if (navigationZone == PlayerNavigationZone.Lyrics && displayedLyrics.isEmpty()) {
+            navigationZone = PlayerNavigationZone.Controls
+        }
     }
 
     LaunchedEffect(controlsVisible, controlsActivity, isActiveScreen, isScrubbing,
@@ -515,9 +520,38 @@ fun PlayerScreen(
                 else PlayerNavigationZone.QueueModes
         } else if (presentation == PlayerPresentation.Lyrics && displayedLyrics.isNotEmpty()) {
             navigationZone = PlayerNavigationZone.Lyrics
-            val currentIdx = LyricTimeline.activeLineAt(displayedLyrics, playbackPosition.value, applyTimeProcessorOffsets = true)
+            val currentIdx = LyricTimeline.activeLineAt(displayedLyrics,
+                effectiveLyricsPosition(playbackPosition.value, lyricOffsetMs), applyTimeProcessorOffsets = true)
             selectedLyricIndex = if (currentIdx >= 0) currentIdx else 0
         }
+    }
+
+    fun lyricSelectionOrigin(): Int = selectedLyricIndex.takeIf { it in displayedLyrics.indices }
+        ?: LyricTimeline.activeLineAt(displayedLyrics,
+            effectiveLyricsPosition(playbackPosition.value, lyricOffsetMs), applyTimeProcessorOffsets = true).coerceAtLeast(0)
+
+    fun activateQueueMode(mode: QueueModeControl) {
+        if (!isActiveScreen || !showQueue || showLyricsSettings || mode !in availableQueueModes) return
+        controlsVisible = true
+        controlsActivity++
+        navigationZone = PlayerNavigationZone.QueueModes
+        focusedQueueMode = mode
+        when (mode) {
+            QueueModeControl.Shuffle -> if (canSetShuffle && !autoplayEnabled) onToggleShuffle()
+            QueueModeControl.Repeat -> if (canSetRepeat && !autoplayEnabled) onCycleRepeat()
+            QueueModeControl.Autoplay -> if (canSetAutoplay) onToggleAutoplay()
+            QueueModeControl.Source -> onToggleAutoplaySource()
+            QueueModeControl.Clear -> if (canClearQueue) onClearQueue()
+        }
+    }
+
+    fun activateQueueItem(index: Int, longClick: Boolean = false) {
+        if (!isActiveScreen || !showQueue || showLyricsSettings || index !in displayQueue.indices) return
+        controlsVisible = true
+        controlsActivity++
+        navigationZone = PlayerNavigationZone.QueueItems
+        focusQueueIndex(index)
+        if (longClick) queueEntryIds.getOrNull(index)?.let(onQueueItemActions) else onSelectTrack(index)
     }
 
     CompositionLocalProvider(LocalFocusTargetsEnabled provides (LocalFocusTargetsEnabled.current && !showLyricsSettings)) {
@@ -629,9 +663,7 @@ fun PlayerScreen(
                 if (!controlsVisible && presentation == PlayerPresentation.Lyrics && displayedLyrics.isNotEmpty()) {
                     when (native.keyCode) {
                         KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN -> {
-                            val active = LyricTimeline.activeLineAt(displayedLyrics, playbackPosition.value, applyTimeProcessorOffsets = true)
-                                .coerceAtLeast(0)
-                            val from = selectedLyricIndex.takeIf { it in displayedLyrics.indices } ?: active
+                            val from = lyricSelectionOrigin()
                             selectedLyricIndex = (from + if (native.keyCode == KeyEvent.KEYCODE_DPAD_UP) -1 else 1)
                                 .coerceIn(displayedLyrics.indices)
                             navigationZone = PlayerNavigationZone.Lyrics
@@ -639,7 +671,7 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                             if (selectedLyricIndex in displayedLyrics.indices) {
-                                if (seekEnabled) {
+                                if (seekEnabled && displayedLyrics[selectedLyricIndex].canSeekLyric()) {
                                     onSeekBy(displayedLyrics[selectedLyricIndex].startMs - playbackPosition.value)
                                     selectedLyricIndex = -1
                                 }
@@ -671,7 +703,7 @@ fun PlayerScreen(
                         when (navigationZone) {
                             PlayerNavigationZone.Lyrics -> {
                                 val targetLine = displayedLyrics.getOrNull(selectedLyricIndex)
-                                if (targetLine != null && seekEnabled) {
+                                if (targetLine != null && seekEnabled && targetLine.canSeekLyric()) {
                                     val delta = targetLine.startMs - playbackPosition.value
                                     onSeekBy(delta)
                                     selectedLyricIndex = -1
@@ -695,24 +727,12 @@ fun PlayerScreen(
                             PlayerNavigationZone.QueueItems -> {
                                 if (showQueue) {
                                     val index = selectedQueueIndex()
-                                    if (index in displayQueue.indices) onSelectTrack(index)
+                                    activateQueueItem(index)
                                 }
                             }
                             PlayerNavigationZone.QueueModes -> {
                                 if (showQueue) {
-                                    when (focusedQueueMode) {
-                                        QueueModeControl.Shuffle -> if (
-                                            canSetShuffle && !autoplayEnabled
-                                        ) onToggleShuffle()
-                                        QueueModeControl.Repeat -> if (
-                                            canSetRepeat && !autoplayEnabled
-                                        ) onCycleRepeat()
-                                        QueueModeControl.Autoplay -> if (canSetAutoplay) {
-                                            onToggleAutoplay()
-                                        }
-                                        QueueModeControl.Source -> onToggleAutoplaySource()
-                                        QueueModeControl.Clear -> if (canClearQueue) onClearQueue()
-                                    }
+                                    activateQueueMode(focusedQueueMode)
                                 }
                             }
                             PlayerNavigationZone.Controls -> {
@@ -751,7 +771,7 @@ fun PlayerScreen(
                             }
                             PlayerNavigationZone.Controls -> {
                                 val index = availableControls.indexOf(focusedControl).coerceAtLeast(0)
-                                focusedControl = availableControls[(index - 1).coerceAtLeast(0)]
+                                focusedControl = availableControls[(index - queueForwardStep).coerceIn(availableControls.indices)]
                             }
                         }
                         true
@@ -782,7 +802,7 @@ fun PlayerScreen(
                             PlayerNavigationZone.Controls -> {
                                 val index = availableControls.indexOf(focusedControl).coerceAtLeast(0)
                                 focusedControl = availableControls[
-                                    (index + 1).coerceAtMost(availableControls.lastIndex)
+                                    (index + queueForwardStep).coerceIn(availableControls.indices)
                                 ]
                             }
                         }
@@ -798,8 +818,8 @@ fun PlayerScreen(
                                 enterPresentation()
                             }
                             PlayerNavigationZone.Lyrics -> {
-                                if (selectedLyricIndex > 0) {
-                                    selectedLyricIndex--
+                                if (displayedLyrics.isNotEmpty()) {
+                                    selectedLyricIndex = (lyricSelectionOrigin() - 1).coerceAtLeast(0)
                                 }
                             }
                             PlayerNavigationZone.QueueItems -> {
@@ -822,8 +842,9 @@ fun PlayerScreen(
                                 navigationZone = if (seekEnabled) PlayerNavigationZone.ProgressBar else PlayerNavigationZone.Controls
                             }
                             PlayerNavigationZone.Lyrics -> {
-                                if (selectedLyricIndex < displayedLyrics.lastIndex) {
-                                    selectedLyricIndex++
+                                val from = lyricSelectionOrigin()
+                                if (from < displayedLyrics.lastIndex) {
+                                    selectedLyricIndex = from + 1
                                 } else {
                                     navigationZone = if (seekEnabled) PlayerNavigationZone.ProgressBar else PlayerNavigationZone.Controls
                                 }
@@ -880,6 +901,9 @@ fun PlayerScreen(
             focusedQueueIndex = focusedQueueIndex,
             selectionVisible = controlsVisible && navigationZone == PlayerNavigationZone.QueueItems,
             onQueueScrollStateChange = { queueScrollActive = it },
+            queueActionsEnabled = isActiveScreen && showQueue,
+            onQueueItemClick = { activateQueueItem(it) },
+            onQueueItemLongClick = if (queueEntryIds.size == displayQueue.size) ({ activateQueueItem(it, longClick = true) }) else null,
             lowPerformanceMode = lowPerformanceMode,
             modifier = Modifier.fillMaxSize(),
         )
@@ -905,6 +929,8 @@ fun PlayerScreen(
                     repeatMode, shuffleEnabled, autoplayEnabled, autoplaySource,
                     canSetRepeat, canSetShuffle, canSetAutoplay, canClearQueue,
                     focusedQueueMode.takeIf { navigationZone == PlayerNavigationZone.QueueModes },
+                    interactive = isActiveScreen && controlsVisible && showQueue,
+                    onActivate = ::activateQueueMode,
                 )
             }
         }
@@ -1039,17 +1065,21 @@ fun PlayerScreen(
                 },
                 translationEnabled = lyricTranslationEnabled,
                 pronunciationEnabled = lyricPronunciationEnabled,
-                translationAvailable = lyricTranslationAvailable,
-                pronunciationAvailable = lyricPronunciationAvailable,
                 translationLanguageTag = lyricTranslationLanguageTag,
                 pronunciationLanguageTag = lyricPronunciationLanguageTag,
                 appLanguageTag = appLanguageTag,
-                enhancementsReady = lyricsEnhancementsReady,
-                enhancementsFailed = lyricsTransientFailure && track.lyrics.isNotEmpty(),
                 onTranslationChange = onLyricTranslationEnabledChange,
                 onPronunciationChange = onLyricPronunciationEnabledChange,
-                onTranslationLanguageChange = onLyricTranslationLanguageChange,
-                onPronunciationLanguageChange = onLyricPronunciationLanguageChange,
+                onTranslationLanguageChange = { tag ->
+                    if ((lyricsTransientFailure || lyricsLookupFailed) && lyricTranslationEnabled &&
+                        sameLyricsMenuSelection(tag, lyricTranslationLanguageTag)) onRetryLyrics()
+                    onLyricTranslationLanguageChange(tag)
+                },
+                onPronunciationLanguageChange = { tag ->
+                    if ((lyricsTransientFailure || lyricsLookupFailed) && lyricPronunciationEnabled &&
+                        sameLyricsMenuSelection(tag, lyricPronunciationLanguageTag)) onRetryLyrics()
+                    onLyricPronunciationLanguageChange(tag)
+                },
                 onDismiss = ::dismissLyricsMenu,
             )
         }
@@ -1094,6 +1124,9 @@ private fun PlayerStage(
     focusedQueueIndex: Int,
     selectionVisible: Boolean,
     onQueueScrollStateChange: (Boolean) -> Unit,
+    queueActionsEnabled: Boolean,
+    onQueueItemClick: (Int) -> Unit,
+    onQueueItemLongClick: ((Int) -> Unit)?,
     lowPerformanceMode: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
@@ -1220,6 +1253,7 @@ private fun PlayerStage(
                 } else {
                     LyricsUnavailablePanel(
                         isLoading = lyricsLoading,
+                        isDrawing = lyricsDrawing,
                         confirmedUnavailable = lyricsLookupFailed,
                         hasFailed = lyricsTransientFailure,
                         stageOffsetPx = supportingStageOffsetPx,
@@ -1295,6 +1329,9 @@ private fun PlayerStage(
                     selectedIndex = focusedQueueIndex,
                     selectionVisible = selectionVisible,
                     onScrollStateChange = onQueueScrollStateChange,
+                    actionsEnabled = queueActionsEnabled,
+                    onItemClick = onQueueItemClick,
+                    onItemLongClick = onQueueItemLongClick,
                     isPlaying = audioIsPlaying,
                     audioSpectrum = audioSpectrum,
                     bandsEnabled = isVisibleOnScreen && presentation == PlayerPresentation.Queue,
@@ -1308,6 +1345,7 @@ private fun PlayerStage(
 @Composable
 private fun LyricsUnavailablePanel(
     isLoading: Boolean,
+    isDrawing: Boolean,
     confirmedUnavailable: Boolean,
     hasFailed: Boolean,
     stageOffsetPx: State<Float>,
@@ -1320,7 +1358,9 @@ private fun LyricsUnavailablePanel(
         contentAlignment = Alignment.Center,
     ) {
         if (isLoading) {
-            AppleLoadingIndicator()
+            CompositionLocalProvider(LocalFocusTargetsEnabled provides (LocalFocusTargetsEnabled.current && isDrawing)) {
+                AppleLoadingIndicator()
+            }
         } else if (confirmedUnavailable || hasFailed) {
             Text(
                 text = stringResource(if (confirmedUnavailable) {
@@ -1554,11 +1594,11 @@ private fun LyricsPanel(
     val isStaticMode = remember(lines) { lines.all { it.isStatic } }
     val effectiveLyricPositionState = remember(positionState, lyricOffsetMs, isVisible) {
         if (isVisible) derivedStateOf {
-            (positionState.value + lyricOffsetMs).coerceAtLeast(0L)
+            effectiveLyricsPosition(positionState.value, lyricOffsetMs)
         } else mutableLongStateOf(Snapshot.withoutReadObservation {
             // Retain measured words/scroll state without keeping hidden Queue
             // and artwork views subscribed to every playback-clock frame.
-            (positionState.value + lyricOffsetMs).coerceAtLeast(0L)
+            effectiveLyricsPosition(positionState.value, lyricOffsetMs)
         })
     }
     val songwriterNames = remember(lines) {
@@ -1750,7 +1790,7 @@ private fun LyricsPanel(
         LaunchedEffect(anchorKey, anchorDisplayIndex, layoutInfo.totalHeight, isVisible) {
             if (
                 !isVisible ||
-                isStaticMode ||
+                (isStaticMode && selectedLyricIndex == null) ||
                 anchorDisplayIndex < 0 ||
                 layoutInfo.totalHeight <= 0f
             ) return@LaunchedEffect
@@ -3519,6 +3559,9 @@ private fun QueuePanel(
     selectedIndex: Int,
     selectionVisible: Boolean,
     onScrollStateChange: (Boolean) -> Unit,
+    actionsEnabled: Boolean,
+    onItemClick: (Int) -> Unit,
+    onItemLongClick: ((Int) -> Unit)?,
     isPlaying: Boolean,
     audioSpectrum: () -> AudioSpectrum,
     bandsEnabled: Boolean,
@@ -3595,7 +3638,16 @@ private fun QueuePanel(
                         modifier = Modifier
                             .width(cardWidth)
                             .automationId("player-queue-item-$index")
-                            .semantics { selected = focused },
+                            .semantics(mergeDescendants = true) { selected = focused }
+                            .focusProperties { canFocus = false }
+                            .combinedClickable(
+                                interactionSource = remember { MutableInteractionSource() }, indication = null,
+                                enabled = actionsEnabled && focusEnabled, role = Role.Button,
+                                onClick = { onItemClick(index) },
+                                onLongClick = onItemLongClick?.let { callback -> { callback(index) } },
+                                onLongClickLabel = stringResource(R.string.actions_menu),
+                                hapticFeedbackEnabled = false,
+                            ),
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             MotionArtwork(
@@ -3662,6 +3714,8 @@ private fun QueueModeControls(
     canSetAutoplay: Boolean,
     canClearQueue: Boolean,
     focusedMode: QueueModeControl?,
+    interactive: Boolean,
+    onActivate: (QueueModeControl) -> Unit,
 ) {
             Row(Modifier.automationId("queue-mode-controls"), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 QueueModeButton(
@@ -3671,6 +3725,8 @@ private fun QueueModeControls(
                     focused = focusedMode == QueueModeControl.Shuffle,
                     enabled = canSetShuffle && !autoplayEnabled,
                     frameKey = "player-mode:shuffle",
+                    interactive = interactive,
+                    onClick = { onActivate(QueueModeControl.Shuffle) },
                 )
                 QueueModeButton(
                     icon = if (repeatMode == PlaybackRepeatMode.One) {
@@ -3685,6 +3741,8 @@ private fun QueueModeControls(
                     focused = focusedMode == QueueModeControl.Repeat,
                     enabled = canSetRepeat && !autoplayEnabled,
                     frameKey = "player-mode:repeat",
+                    interactive = interactive,
+                    onClick = { onActivate(QueueModeControl.Repeat) },
                 )
                 QueueModeButton(
                     icon = Icons.Rounded.AllInclusive,
@@ -3693,6 +3751,8 @@ private fun QueueModeControls(
                     focused = focusedMode == QueueModeControl.Autoplay,
                     enabled = canSetAutoplay,
                     frameKey = "player-mode:autoplay",
+                    interactive = interactive,
+                    onClick = { onActivate(QueueModeControl.Autoplay) },
                 )
                 QueueModeButton(
                     icon = Icons.Rounded.AutoAwesome,
@@ -3705,6 +3765,8 @@ private fun QueueModeControls(
                     focused = focusedMode == QueueModeControl.Source,
                     enabled = true,
                     frameKey = "player-mode:source",
+                    interactive = interactive,
+                    onClick = { onActivate(QueueModeControl.Source) },
                 )
                 QueueModeButton(
                     icon = Icons.Rounded.ClearAll,
@@ -3713,6 +3775,8 @@ private fun QueueModeControls(
                     focused = focusedMode == QueueModeControl.Clear,
                     enabled = canClearQueue,
                     frameKey = "player-mode:clear",
+                    interactive = interactive,
+                    onClick = { onActivate(QueueModeControl.Clear) },
                 )
             }
 }
@@ -3725,6 +3789,8 @@ private fun QueueModeButton(
     focused: Boolean,
     enabled: Boolean,
     frameKey: String,
+    interactive: Boolean,
+    onClick: () -> Unit,
 ) {
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.06f else 1f,
@@ -3733,6 +3799,10 @@ private fun QueueModeButton(
     )
     Row(
         modifier = Modifier
+            .semantics { this.selected = selected }
+            .focusProperties { canFocus = false }
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
+                enabled = enabled && interactive && LocalFocusTargetsEnabled.current, role = Role.Button, onClick = onClick)
             .focusFrameTarget(focused, frameKey, 22.dp, visualScale = scale)
             .graphicsLayer {
                 scaleX = scale

@@ -41,6 +41,4 @@
     <string name="actions_sleep_timer_context_end">本专辑／播放列表结束时</string>
     <string name="player_lyrics_menu_follow_app">跟随</string>
     <string name="player_lyrics_menu_latin">拉丁字母</string>
-    <string name="player_lyrics_menu_failed">加载失败</string>
-    <string name="player_lyrics_menu_unavailable">未提供</string>
 </resources>

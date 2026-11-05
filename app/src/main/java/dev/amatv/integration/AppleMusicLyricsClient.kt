@@ -17,6 +17,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.Request
 import org.json.JSONObject
 import org.w3c.dom.Element
@@ -25,7 +26,6 @@ import org.xml.sax.InputSource
 import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.ProtocolException
-import java.net.URI
 import java.net.URLEncoder
 import java.time.Instant
 import java.util.Base64
@@ -68,7 +68,12 @@ class AppleMusicLyricsClient(
     /** Debug builds only: raw syllable-lyrics responses are written here for inspection. */
     private val debugDumpDir: java.io.File? = null,
     private val contentCache: ContentCache? = null,
+    private val httpCalls: Call.Factory? = null,
 ) {
+    // Use the same pooled, verified TLS transport as catalog and web bootstrap.
+    // A cancelled language/song request also cancels its underlying HTTP call.
+    private val transport by lazy { CatalogHttpTransport(httpCalls ?: catalogHttpClient) }
+
     suspend fun lyricsFor(
         catalogId: String,
         localization: LyricsLocalizationRequest = LyricsLocalizationRequest.Disabled,
@@ -81,6 +86,10 @@ class AppleMusicLyricsClient(
                 LyricsFailureReason.Transient,
                 AppText.text(R.string.services_user_storefront_missing),
             )
+        fun checkAccount() {
+            if (userToken() != mediaUserToken) throw CancellationException("Account changed during lyrics request")
+        }
+        checkAccount()
         val cacheGeneration = contentCache?.generation ?: 0L
         // The key is hashed before becoming a filename; account tokens are never written.
         val cacheKey = buildString {
@@ -93,11 +102,16 @@ class AppleMusicLyricsClient(
         }
         contentCache?.readLyrics(cacheKey)?.let { cached ->
             val lines = runCatching { parseResponse(cached, localization) }.getOrNull().orEmpty()
-            if (lines.isNotEmpty()) return@withContext lines
+            if (lines.isNotEmpty()) {
+                checkAccount()
+                return@withContext lines
+            }
             contentCache.removeLyrics(cacheKey)
         }
-        suspend fun request(forceBearerRefresh: Boolean): Pair<Int, String> {
+        suspend fun request(forceBearerRefresh: Boolean): CatalogHttpReply {
             val bearer = webToken.token(forceBearerRefresh)
+            currentCoroutineContext().ensureActive()
+            checkAccount()
             val queryMap = localization.queryParameters()
             val query = queryMap.entries.joinToString("&") { (key, value) ->
                 "${key.urlEncoded()}=${value.urlEncoded()}"
@@ -105,39 +119,35 @@ class AppleMusicLyricsClient(
             val url = "https://amp-api.music.apple.com/v1/catalog/" +
                 "${requestStorefront.urlEncoded()}/songs/${catalogId.urlEncoded()}/" +
                 "syllable-lyrics" + if (query.isNotEmpty()) "?$query" else ""
-            val connection = URI(url).toURL().openConnection() as HttpURLConnection
+            val request = Request.Builder().url(url)
+                .header("Accept", "application/json")
+                .header("Authorization", "Bearer $bearer")
+                .header("media-user-token", mediaUserToken)
+                .header("Origin", MUSIC_ORIGIN)
+                .header("Referer", "$MUSIC_ORIGIN/")
+                .header("User-Agent", WEB_USER_AGENT)
+                .get().build()
             return try {
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 18_000
-                connection.setRequestProperty("Accept", "application/json")
-                connection.setRequestProperty("Authorization", "Bearer $bearer")
-                connection.setRequestProperty("media-user-token", mediaUserToken)
-                connection.setRequestProperty("Origin", MUSIC_ORIGIN)
-                connection.setRequestProperty("Referer", "$MUSIC_ORIGIN/")
-                connection.setRequestProperty("User-Agent", WEB_USER_AGENT)
-                val status = connection.responseCode
-                val body = (if (status in 200..299) {
-                    connection.inputStream
-                } else {
-                    connection.errorStream
-                })?.bufferedReader()?.use { it.readText() }.orEmpty()
-                status to body
-            } finally {
-                connection.disconnect()
+                transport.execute(request)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                // Type names distinguish certificate/protocol/transport failures
+                // without logging credentials, response bodies, URLs or messages.
+                val types = generateSequence<Throwable>(error) { it.cause }.take(4)
+                    .joinToString(" -> ") { it.javaClass.simpleName }
+                runCatching { Log.w(TAG, "Lyrics transport failed ($types)") }
+                throw error
             }
         }
 
-        var (status, body) = request(forceBearerRefresh = false)
-        if (status == HttpURLConnection.HTTP_UNAUTHORIZED) {
-            val retried = request(forceBearerRefresh = true)
-            status = retried.first
-            body = retried.second
+        val (status, body) = withCatalogRequestDeadline {
+            catalogRequestWithTokenRefresh(::request)
         }
+        checkAccount()
         if (status == HttpURLConnection.HTTP_UNAUTHORIZED) {
             throw LyricsRequestException(LyricsFailureReason.Authorization, AppText.text(R.string.services_lyrics_auth_expired))
         }
-        Log.i(TAG, "Apple syllable-lyrics HTTP $status for catalog item $catalogId")
+        runCatching { Log.i(TAG, "Apple syllable-lyrics HTTP $status for catalog item $catalogId") }
         if (status !in 200..299) {
             throw LyricsRequestException(lyricsHttpFailure(status), when (status) {
                 HttpURLConnection.HTTP_UNAUTHORIZED ->
@@ -156,7 +166,8 @@ class AppleMusicLyricsClient(
         }
         val lines = parseResponse(body, localization)
         if (lines.isNotEmpty()) contentCache?.writeLyrics(cacheKey, body, cacheGeneration)
-        Log.i(TAG, "Apple TTML lyrics: lines=${lines.size}, units=${lines.sumOf { it.words.size }}")
+        checkAccount()
+        runCatching { Log.i(TAG, "Apple TTML lyrics: lines=${lines.size}, units=${lines.sumOf { it.words.size }}") }
         lines
     }
 
@@ -315,6 +326,7 @@ class AppleWebPlaybackTokenClient internal constructor(private val fetch: suspen
             // User catalog/lyrics requests choose their own account storefront.
             val html = fetch("$MUSIC_ORIGIN/us/browse")
             val assetPaths = extractAssetPaths(html)
+            runCatching { Log.i(TAG, "Public player bootstrap assets=${assetPaths.size}") }
             check(assetPaths.isNotEmpty()) { AppText.text(R.string.services_web_player_unavailable) }
 
             var found: String? = null
@@ -324,11 +336,15 @@ class AppleWebPlaybackTokenClient internal constructor(private val fetch: suspen
                 val candidate = runCatching { JWT.find(fetch(assetUrl))?.value }.getOrElse { failure ->
                     if (failure is CancellationException) throw failure
                     currentCoroutineContext().ensureActive()
+                    runCatching { Log.w(TAG, "Public player asset failed (${failure.javaClass.simpleName})") }
                     null
                 }
                 if (candidate != null) { found = candidate; break }
             }
-            val token = found ?: error(AppText.text(R.string.services_web_token_changed))
+            val token = found ?: run {
+                runCatching { Log.w(TAG, "Public player bearer not found") }
+                error(AppText.text(R.string.services_web_token_changed))
+            }
             currentCoroutineContext().ensureActive()
             cachedToken = token
             cachedExpiryEpochSeconds = jwtExpiry(token) ?: (now + DEFAULT_CACHE_SECONDS)
@@ -359,7 +375,13 @@ class AppleWebPlaybackTokenClient internal constructor(private val fetch: suspen
             var redirects = 0
             while (true) {
                 currentCoroutineContext().ensureActive()
-                val reply = transport.execute(request)
+                val reply = try {
+                    transport.execute(request)
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    runCatching { Log.w(TAG, "Public player transport failed (${error.javaClass.simpleName})") }
+                    throw error
+                }
                 if (reply.status in 200..299) return reply.body
                 // HttpURLConnection followed same-protocol GET redirects, including
                 // relative Locations. Keep this local to the unauthenticated web GET.
@@ -367,12 +389,16 @@ class AppleWebPlaybackTokenClient internal constructor(private val fetch: suspen
                     reply.location?.let { request.url.resolve(it) }
                         ?.takeIf { it.scheme == request.url.scheme }
                 } else null
-                if (target == null) error(AppText.text(R.string.services_music_website_http_error, reply.status))
+                if (target == null) {
+                    runCatching { Log.w(TAG, "Public player HTTP ${reply.status}") }
+                    error(AppText.text(R.string.services_music_website_http_error, reply.status))
+                }
                 if (redirects++ >= MAX_REDIRECTS) throw ProtocolException("Too many redirects")
                 request = request.newBuilder().url(target).build()
             }
         }
 
+        const val TAG = "AppleWebLyricsToken"
         const val MUSIC_ORIGIN = "https://music.apple.com"
         const val WEB_USER_AGENT = "Mozilla/5.0 (Linux; Android 12; TV) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142 Safari/537.36"
@@ -545,6 +571,9 @@ internal object AppleTtmlParser {
                     translations = translations,
                     pronunciations = pronunciations,
                     includeTranslations = includeTranslations,
+                    includePronunciations = includePronunciations,
+                    translationLocale = translationLocale,
+                    pronunciationLocale = pronunciationLocale,
                 )?.let(::add)
             }
         }
@@ -574,6 +603,9 @@ internal object AppleTtmlParser {
         translations: Map<String, ParsedTranslation>,
         pronunciations: Map<String, ParsedPronunciation>,
         includeTranslations: Boolean = false,
+        includePronunciations: Boolean,
+        translationLocale: Locale,
+        pronunciationLocale: Locale,
     ): LyricLine? {
         val lineStart = paragraph.time("begin")
         val lineEnd = paragraph.time("end")
@@ -584,8 +616,12 @@ internal object AppleTtmlParser {
             agentId != primaryPersonAgentId
 
         val translation = if (includeTranslations) lineKey?.let(translations::get) else null
-        val inlineTranslation = if (includeTranslations) paragraph.extractInlineRoleText("x-translation") else null
-        val inlinePronunciation = paragraph.extractInlineRoleText("x-roman")
+        val inlineTranslation = if (includeTranslations) {
+            paragraph.extractInlineRoleText("x-translation", translationLocale, preferScript = false)
+        } else null
+        val inlinePronunciation = if (includePronunciations) {
+            paragraph.extractInlineRoleText("x-roman", pronunciationLocale, preferScript = true)
+        } else null
         val pronunciation = lineKey?.let(pronunciations::get)
 
         val mainPronunciationByBegin = pronunciation?.mainWords
@@ -1014,9 +1050,8 @@ internal object AppleTtmlParser {
             }
         }
         for (container in containers) {
-            val textNodes = container.getElementsByTagNameNS("*", "text")
-            for (j in 0 until textNodes.length) {
-                val textEl = textNodes.item(j) as? Element ?: continue
+            val texts = container.descendants("text").filterNot { it.isInsidePronunciation() }
+            for (textEl in selectLocalizedElements(texts, targetLocale, preferScript = false)) {
                 val key = textEl.attributeByLocalName("for") ?: continue
                 val mainText = textEl.mainText(includeBg = false).trim().takeIf { it.isNotEmpty() }
                 val bgText = textEl.extractBgText()?.trim()?.removeSurrounding("(", ")")?.trim()
@@ -1027,10 +1062,8 @@ internal object AppleTtmlParser {
             }
         }
         if (output.isEmpty()) {
-            val textNodes = root.getElementsByTagNameNS("*", "text")
-            for (index in 0 until textNodes.length) {
-                val element = textNodes.item(index) as? Element ?: continue
-                if (element.isInsideTag("transliterations")) continue
+            val texts = root.descendants("text").filterNot { it.isInsidePronunciation() }
+            for (element in selectLocalizedElements(texts, targetLocale, preferScript = false)) {
                 val key = element.attributeByLocalName("for") ?: continue
                 val mainText = element.mainText(includeBg = false).trim().takeIf { it.isNotEmpty() }
                 val bgText = element.extractBgText()?.trim()?.removeSurrounding("(", ")")?.trim()
@@ -1042,12 +1075,9 @@ internal object AppleTtmlParser {
         }
         if (output.isEmpty() && allowParagraphFallback) {
             val paragraphs = root.descendants("p").filter {
-                it.lineKey() != null || it.attributeByLocalName("for") != null
+                !it.isInsidePronunciation() && (it.lineKey() != null || it.attributeByLocalName("for") != null)
             }
-            val best = selectLocalizedElement(paragraphs, targetLocale, preferScript = false)
-            val selectedLanguage = best?.resolvedLanguageTag()
-            for (element in paragraphs) {
-                if (selectedLanguage != null && element.resolvedLanguageTag() != selectedLanguage) continue
+            for (element in selectLocalizedElements(paragraphs, targetLocale, preferScript = false)) {
                 val key = element.lineKey() ?: element.attributeByLocalName("for") ?: continue
                 val mainText = element.mainText(includeBg = false).trim().takeIf(String::isNotEmpty)
                 val bgText = element.extractBgText()?.trim()?.removeSurrounding("(", ")")?.trim()
@@ -1075,9 +1105,7 @@ internal object AppleTtmlParser {
             }
         }
         for (container in containers) {
-            val textNodes = container.getElementsByTagNameNS("*", "text")
-            for (j in 0 until textNodes.length) {
-                val textEl = textNodes.item(j) as? Element ?: continue
+            for (textEl in selectLocalizedElements(container.descendants("text"), targetLocale, preferScript = true)) {
                 val key = textEl.attributeByLocalName("for") ?: continue
                 val mainText = textEl.mainText(includeBg = false).trim().takeIf { it.isNotEmpty() }
                 val bgText = textEl.extractBgText()?.trim()?.removeSurrounding("(", ")")?.trim()
@@ -1119,10 +1147,7 @@ internal object AppleTtmlParser {
             val paragraphs = root.descendants("p").filter {
                 it.isInsideTag("transliterations") || it.isInsideTag("transliteration")
             }
-            val best = selectLocalizedElement(paragraphs, targetLocale, preferScript = true)
-            val selectedLanguage = best?.resolvedLanguageTag()
-            for (element in paragraphs) {
-                if (selectedLanguage != null && element.resolvedLanguageTag() != selectedLanguage) continue
+            for (element in selectLocalizedElements(paragraphs, targetLocale, preferScript = true)) {
                 val key = element.lineKey() ?: element.attributeByLocalName("for") ?: continue
                 val mainText = element.mainText(includeBg = false).trim().takeIf(String::isNotEmpty)
                 val bgText = element.extractBgText()?.trim()?.removeSurrounding("(", ")")?.trim()
@@ -1167,7 +1192,7 @@ internal object AppleTtmlParser {
     private fun String.normalizedLyricText(): String =
         lowercase(Locale.ROOT).filterNot(Char::isWhitespace).trim('(', ')', '（', '）')
 
-    private data class LocaleParts(val language: String, val script: String, val region: String)
+    private data class LocaleParts(val language: String, val scripts: Set<String>, val region: String)
 
     private fun localeParts(tag: String): LocaleParts {
         val locale = Locale.forLanguageTag(tag)
@@ -1176,8 +1201,12 @@ internal object AppleTtmlParser {
 
     private fun localeParts(locale: Locale): LocaleParts = LocaleParts(
         language = locale.language.lowercase(Locale.ROOT),
-        script = locale.script.ifEmpty { AppleLocaleUtil.getChineseScript(locale) }
-            .lowercase(Locale.ROOT),
+        scripts = when {
+            locale.script.isNotEmpty() -> setOf(locale.script)
+            AppleLocaleUtil.getChineseScript(locale).isNotEmpty() -> setOf(AppleLocaleUtil.getChineseScript(locale))
+            locale.language == "zh" || locale.language.isEmpty() -> emptySet()
+            else -> AppleLocaleUtil.getSystemLyricsScripts(locale).map { it.substringAfter('-') }.toSet()
+        }.map { it.lowercase(Locale.ROOT) }.toSet(),
         region = locale.country.lowercase(Locale.ROOT),
     )
 
@@ -1185,21 +1214,51 @@ internal object AppleTtmlParser {
         candidates: List<Element>,
         targetLocale: Locale,
         preferScript: Boolean,
+        languageTag: (Element) -> String? = { it.resolvedLanguageTag() },
     ): Element? {
         if (candidates.isEmpty()) return null
         val target = localeParts(targetLocale)
-        return candidates.withIndex().maxWithOrNull(
+        val allowUntagged = candidates.none { !languageTag(it).isNullOrBlank() }
+        return candidates.withIndex().filter {
+            it.value.isCompatibleWith(targetLocale, preferScript, allowUntagged, languageTag(it.value))
+        }.maxWithOrNull(
             compareBy<IndexedValue<Element>> { indexed ->
-                val tag = indexed.value.resolvedLanguageTag().orEmpty()
+                val tag = languageTag(indexed.value).orEmpty()
                 if (tag.isBlank()) return@compareBy 1
                 val candidate = localeParts(tag)
                 if (candidate == target) return@compareBy 1_000
                 val language = if (candidate.language.isNotEmpty() && candidate.language == target.language) 100 else 0
-                val script = if (candidate.script.isNotEmpty() && candidate.script == target.script) 60 else 0
+                val script = if (candidate.scripts.any { it in target.scripts }) 60 else 0
                 val region = if (candidate.region.isNotEmpty() && candidate.region == target.region) 20 else 0
                 if (preferScript) script * 2 + language + region else language * 2 + script + region
             }.thenBy { -it.index },
         )?.value
+    }
+
+    private fun Element.isInsidePronunciation(): Boolean =
+        isInsideTag("transliteration") || isInsideTag("transliterations")
+
+    private fun selectLocalizedElements(
+        candidates: List<Element>,
+        targetLocale: Locale,
+        preferScript: Boolean,
+        languageTag: (Element) -> String? = { it.resolvedLanguageTag() },
+    ): List<Element> {
+        val best = selectLocalizedElement(candidates, targetLocale, preferScript, languageTag) ?: return emptyList()
+        val tag = languageTag(best)
+        return candidates.filter { languageTag(it).equals(tag, ignoreCase = true) }
+    }
+
+    private fun Element.isCompatibleWith(targetLocale: Locale, preferScript: Boolean, allowUntagged: Boolean, tag: String?): Boolean {
+        if (tag.isNullOrBlank()) return allowUntagged
+        val candidate = localeParts(tag)
+        val target = localeParts(targetLocale)
+        val sameLanguage = candidate.language.isNotEmpty() && candidate.language == target.language
+        val sameScript = candidate.scripts.any { it in target.scripts }
+        // Pronunciation describes the source song in the requested script (e.g.
+        // ja-Latn for the Latin option), rather than translating it into English.
+        if (preferScript) return sameScript || (sameLanguage && candidate.scripts.isEmpty())
+        return sameLanguage && (candidate.scripts.isEmpty() || target.scripts.isEmpty() || sameScript)
     }
 
     private fun Element.resolvedLanguageTag(): String? {
@@ -1261,10 +1320,13 @@ internal object AppleTtmlParser {
             .takeIf { it.isNotEmpty() }
     }
 
-    private fun Element.extractInlineRoleText(targetRole: String): String? {
-        val spans = childElements().filter {
+    private fun Element.extractInlineRoleText(targetRole: String, targetLocale: Locale, preferScript: Boolean): String? {
+        val candidates = childElements().filter {
             it.attributeByLocalName("role")?.lowercase() == targetRole
         }
+        // The canonical paragraph's language describes the sung text, not an
+        // untagged inline translation/romanization. Only its own tag labels it.
+        val spans = selectLocalizedElements(candidates, targetLocale, preferScript) { it.attributeByLocalName("lang") }
         if (spans.isEmpty()) return null
         return spans.joinToString(" ") { it.textContent?.trim().orEmpty() }
             .trim()
