@@ -2,7 +2,6 @@ package dev.amatv.ui
 
 import android.view.KeyEvent
 import androidx.compose.foundation.focusGroup
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -215,16 +214,14 @@ internal fun CatalogCollectionBody(
             }
         }
         if (bodyKeys.isEmpty()) item(key = "status", span = { GridItemSpan(maxLineSpan) }, contentType = "status") {
-            val target = itemModifier("status", "catalog-collection-empty", true, true)
             if (failed) ArtistTextAction(catalogRecoveryLabel(failureReason),
-                { performCatalogRecovery(failureReason, onRetry, onSignIn) }, target.fillMaxWidth())
+                { performCatalogRecovery(failureReason, onRetry, onSignIn) },
+                itemModifier("status", "catalog-collection-empty", true, true).fillMaxWidth())
             else {
-                var statusFocused by remember { mutableStateOf(false) }
-                val statusFocusKey = remember { Any() }
-                Box(target.fillMaxWidth().heightIn(min = 96.dp)
-                    .onFocusChanged { statusFocused = it.isFocused }
-                    .then(if (classic) Modifier.focusFrameTarget(statusFocused && contentActive, statusFocusKey, 10.dp) else Modifier)
-                    .focusable(contentActive), Alignment.Center) {
+                // Loading/empty text is presentation, not an action. The host
+                // keeps navigation focused until a real item or retry exists.
+                Box(Modifier.automationId("catalog-collection-empty")
+                    .fillMaxWidth().heightIn(min = 96.dp), Alignment.Center) {
                     if (loading || !loaded) Row(verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         AppleLoadingIndicator(Modifier.size(18.dp))

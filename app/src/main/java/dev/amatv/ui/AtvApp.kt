@@ -712,6 +712,7 @@ fun AmAtvApp() {
         if (result.resultCode != android.app.Activity.RESULT_OK || data == null) {
             pendingAuthentication.clear()
             pendingAuthAttempt = null
+            catalogModalExitToken++
             serviceMessage = data?.getStringExtra(
                 dev.amatv.integration.MusicKitWebAuthActivity.EXTRA_ERROR,
             ) ?: AppText.text(R.string.app_apple_sign_in_cancelled)
@@ -720,7 +721,10 @@ fun AmAtvApp() {
                 .onSuccess {
                     appleAuthenticationCompleted()
                 }
-                .onFailure { serviceMessage = it.message ?: AppText.text(R.string.app_sign_in_failed) }
+                .onFailure {
+                    catalogModalExitToken++
+                    serviceMessage = it.message ?: AppText.text(R.string.app_sign_in_failed)
+                }
         }
     }
 
@@ -871,6 +875,7 @@ fun AmAtvApp() {
         phoneSignInJob[0] = null
         phoneSignInSession?.close()
         phoneSignInSession = null
+        if (phoneSignInVisible) catalogModalExitToken++
         phoneSignInVisible = false
         authLaunchGate.finish()
     }
@@ -2205,6 +2210,7 @@ fun AmAtvApp() {
     }
     fun dismissExitConfirmation() {
         catalogModalInput.dialogBackDismissed()
+        if (exitConfirmationVisible) catalogModalExitToken++
         exitConfirmationVisible = false
     }
     fun showExitConfirmation() {
@@ -2299,9 +2305,19 @@ fun AmAtvApp() {
                         services = services,
                         interfaceStyleFocusPending = interfaceStyleFocusPending,
                         onBackExhausted = ::showExitConfirmation,
-                        contextMenuVisible = catalogActionItem != null,
-                        isContextMenuOpen = { catalogActionItem != null },
-                        onDismissPendingContextMenu = ::dismissCatalogActions,
+                        modalVisible = catalogActionItem != null || phoneSignInVisible || exitConfirmationVisible,
+                        isModalOpen = { catalogActionItem != null || phoneSignInVisible || exitConfirmationVisible },
+                        onDismissPendingModal = {
+                            when {
+                                exitConfirmationVisible -> dismissExitConfirmation()
+                                phoneSignInVisible -> {
+                                    pendingAuthentication.clear()
+                                    pendingAuthAttempt = null
+                                    closePhoneSignIn()
+                                }
+                                else -> dismissCatalogActions()
+                            }
+                        },
                         destination = activeBrowseDestination,
                         isBrowseVisible = !isNowPlaying,
                         currentTrack = track,

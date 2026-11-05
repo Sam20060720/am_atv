@@ -1552,6 +1552,7 @@ private fun HomeShelves(
                                     .onFocusChanged { state ->
                                         if (state.isFocused) {
                                             focusedHeader = actionKey
+                                            pendingPageFocus = null
                                             retained.headerAction = actionKey
                                             val item = if (navigationCursor.focused.shelf == shelfIndex) navigationCursor.focused.item
                                                 else rowStates[shelfIndex].firstVisibleItemIndex
@@ -1674,10 +1675,10 @@ private fun HomeShelves(
                                         .onFocusChanged { state ->
                                             if (state.isFocused) {
                                                 recordFocused(shelfIndex, shelf.items.size)
-                                                // A first-page read can complete while this
-                                                // loading slot owns focus. Follow its first
-                                                // real replacement, just like an explicit More.
-                                                if (page.loading) pendingPageFocus = ShelfFocusPosition(shelfIndex, shelf.items.size)
+                                                // Track ownership before loading starts too:
+                                                // background paging may replace this footer
+                                                // without another native focus callback.
+                                                pendingPageFocus = ShelfFocusPosition(shelfIndex, shelf.items.size)
                                             }
                                         },
                                 )
