@@ -48,6 +48,21 @@ class QueueEditingAndContinuationTest {
         emptyList(), emptyList(), catalogId = id, catalogKind = CatalogKind.Song)
     @After fun close() = scope.cancel()
 
+    @Test fun selectingACurrentLyricCancelsPendingAdvanceButKeepsTheFutureCollectionTail() {
+        controller.playContext(listOf(song("current")), 0, pendingTail = true)
+        val before = controller.state.value
+        assertNull(controller.advanceNext())
+        assertTrue(controller.state.value.awaitingNext)
+
+        controller.cancelAwaitingNext(checkNotNull(before.current).entryId)
+        assertFalse(controller.state.value.awaitingNext)
+        assertTrue(controller.state.value.contextContinuationPending)
+        assertTrue(controller.appendContextTail(before.sessionId, listOf(song("next")), true))
+        assertEquals("current", controller.state.value.current?.track?.id)
+        assertEquals(listOf("next"), controller.state.value.upNext.map { it.track.id })
+        assertEquals(listOf("current"), played)
+    }
+
     @Test fun enablingInfinityClearsRepeatInBothStateAndPreferences() {
         controller.playContext(listOf(song("one"), song("two")), 0)
         controller.setRepeat(PlaybackRepeatMode.One)

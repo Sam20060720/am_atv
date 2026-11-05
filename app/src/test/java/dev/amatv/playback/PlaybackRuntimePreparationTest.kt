@@ -20,6 +20,43 @@ class PlaybackRuntimePreparationTest {
     private fun request(serial: Long = 1L, session: Long = 10L, entry: Long = 20L) =
         PreparationRequest(serial, session, entry, song, 37_000L)
 
+    @Test fun coldLyricSelectionCarriesItsAbsoluteCursorThroughDelayedCatalogResolution() = runBlocking {
+        val lyric = request().copy(track = song.copy(durationMs = 0L), positionMs = 45_000L)
+        val resolved = CompletableDeferred<Track>()
+        val preparedPositions = mutableListOf<Long>()
+        val pending = async(start = CoroutineStart.UNDISPATCHED) {
+            prepareRuntimeSelection(lyric, resolve = { resolved.await() },
+                prepare = { _, position, entry ->
+                    assertEquals(lyric.entryId, entry)
+                    preparedPositions += position
+                    9L
+                }, isCurrent = { true })
+        }
+        assertTrue(preparedPositions.isEmpty())
+        resolved.complete(song)
+        assertEquals(9L, pending.await()?.generation)
+        assertEquals(listOf(45_000L), preparedPositions)
+    }
+
+    @Test fun aNewLyricTargetOnTheSameOccurrenceSupersedesAnInflightColdPreparation() = runBlocking {
+        val first = request().copy(positionMs = 12_000L)
+        var selected = first
+        val oldEngine = CompletableDeferred<Long>()
+        val positions = mutableListOf<Long>()
+        val old = async(start = CoroutineStart.UNDISPATCHED) {
+            prepareRuntimeSelection(first, resolve = { it },
+                prepare = { _, position, _ -> positions += position; oldEngine.await() },
+                isCurrent = { it == selected })
+        }
+        selected = first.copy(serial = first.serial + 1L, positionMs = 81_000L)
+        val latest = prepareRuntimeSelection(selected, resolve = { it },
+            prepare = { _, position, _ -> positions += position; 2L }, isCurrent = { it == selected })
+        oldEngine.complete(1L)
+        assertNull(old.await())
+        assertEquals(2L, latest?.generation)
+        assertEquals(listOf(12_000L, 81_000L), positions)
+    }
+
     @Test fun lateResolutionCannotPrepareAnOlderOccurrenceOfTheSameSong() = runBlocking {
         val original = request()
         var selected = original

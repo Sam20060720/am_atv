@@ -217,6 +217,7 @@ fun PlayerScreen(
     canClearQueue: Boolean = queue.size > 1,
     lyricsTransientFailure: Boolean = false,
     onRetryLyrics: () -> Unit = {},
+    onPlayFromLyric: ((Long) -> Unit)? = null,
     lowPerformanceMode: Boolean = false,
     lyricTranslationEnabled: Boolean = false,
     lyricPronunciationEnabled: Boolean = false,
@@ -275,10 +276,15 @@ fun PlayerScreen(
     }
     var isScrubbing by remember(playbackSelectionKey) { mutableStateOf(false) }
     var scrubPositionMs by remember(playbackSelectionKey) { mutableLongStateOf(0L) }
-    LaunchedEffect(seekEnabled) {
+    var lyricProgressPending by remember(playbackSelectionKey) { mutableStateOf(false) }
+    LaunchedEffect(seekEnabled, isActiveScreen) {
+        if (!isActiveScreen) lyricProgressPending = false
         if (!seekEnabled) {
             isScrubbing = false
             if (navigationZone == PlayerNavigationZone.ProgressBar) navigationZone = PlayerNavigationZone.Controls
+        } else if (lyricProgressPending) {
+            lyricProgressPending = false
+            if (controlsVisible && isActiveScreen) navigationZone = PlayerNavigationZone.ProgressBar
         }
     }
     var focusedQueueMode by remember { mutableStateOf(QueueModeControl.Repeat) }
@@ -526,6 +532,22 @@ fun PlayerScreen(
         }
     }
 
+    fun activateLyric(index: Int): Boolean {
+        val line = displayedLyrics.getOrNull(index)?.takeIf { it.canSeekLyric() } ?: return false
+        val playFrom = onPlayFromLyric
+        if (playFrom != null && track.catalogKind == CatalogKind.Song) playFrom(line.startMs)
+        else if (seekEnabled) onSeekBy(line.startMs - playbackPosition.value)
+        else return false
+        selectedLyricIndex = -1
+        isScrubbing = false
+        if (controlsVisible) {
+            lyricProgressPending = !seekEnabled
+            navigationZone = if (seekEnabled) PlayerNavigationZone.ProgressBar else PlayerNavigationZone.Controls
+            if (!seekEnabled) focusedControl = PlayerControl.PlayPause
+        }
+        return true
+    }
+
     fun lyricSelectionOrigin(): Int = selectedLyricIndex.takeIf { it in displayedLyrics.indices }
         ?: LyricTimeline.activeLineAt(displayedLyrics,
             effectiveLyricsPosition(playbackPosition.value, lyricOffsetMs), applyTimeProcessorOffsets = true).coerceAtLeast(0)
@@ -597,6 +619,7 @@ fun PlayerScreen(
                 if (!isActiveScreen || event.nativeKeyEvent.action != KeyEvent.ACTION_DOWN) {
                     return@onPreviewKeyEvent false
                 }
+                if (native.repeatCount == 0) lyricProgressPending = false
                 if (directional) heldNavigationKey = native.keyCode
                 controlsActivity++
                 if (showQueue && navigationZone == PlayerNavigationZone.QueueItems) {
@@ -671,10 +694,7 @@ fun PlayerScreen(
                         }
                         KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                             if (selectedLyricIndex in displayedLyrics.indices) {
-                                if (seekEnabled && displayedLyrics[selectedLyricIndex].canSeekLyric()) {
-                                    onSeekBy(displayedLyrics[selectedLyricIndex].startMs - playbackPosition.value)
-                                    selectedLyricIndex = -1
-                                }
+                                activateLyric(selectedLyricIndex)
                                 return@onPreviewKeyEvent true
                             }
                         }
@@ -702,14 +722,7 @@ fun PlayerScreen(
                     KeyEvent.KEYCODE_ENTER -> {
                         when (navigationZone) {
                             PlayerNavigationZone.Lyrics -> {
-                                val targetLine = displayedLyrics.getOrNull(selectedLyricIndex)
-                                if (targetLine != null && seekEnabled && targetLine.canSeekLyric()) {
-                                    val delta = targetLine.startMs - playbackPosition.value
-                                    onSeekBy(delta)
-                                    selectedLyricIndex = -1
-                                    isScrubbing = false
-                                    navigationZone = PlayerNavigationZone.ProgressBar
-                                }
+                                activateLyric(selectedLyricIndex)
                             }
                             PlayerNavigationZone.ProgressBar -> {
                                 if (!seekEnabled) {

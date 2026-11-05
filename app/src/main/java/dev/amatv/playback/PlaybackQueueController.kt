@@ -442,6 +442,11 @@ class PlaybackQueueController(
         return true
     }
 
+    /** An explicit seek in the current song supersedes waiting to advance. */
+    fun cancelAwaitingNext(entryId: Long) {
+        _state.update { if (it.current?.entryId == entryId) it.copy(awaitingNext = false) else it }
+    }
+
     /** Restore an authenticated continuation before reopening its background loader. */
     fun markContextTailPending(sessionId: Long, context: PlaybackContext? = null): Boolean {
         if (_state.value.sessionId != sessionId || _state.value.current == null) return false

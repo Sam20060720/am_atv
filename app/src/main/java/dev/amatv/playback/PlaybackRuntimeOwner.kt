@@ -757,6 +757,40 @@ class PlaybackRuntimeOwner(
         seekDetached(positionMs)
     }
 
+    /** A lyric selection means seek AND play, including an unprepared engine. */
+    fun playFromPosition(positionMs: Long): Boolean {
+        checkMain()
+        val state = queue.state.value
+        val current = state.current ?: return false
+        if (isReleased || current.track.catalogKind != CatalogKind.Song) return false
+        val target = positionMs.coerceAtLeast(0L).let {
+            if (current.track.durationMs > 0L) it.coerceAtMost(current.track.durationMs) else it
+        }
+        cancelPendingNext()
+        observedQueueWait = null
+        queue.cancelAwaitingNext(current.entryId)
+        retryAttempts = 0
+        setDesiredPlayIntent(true)
+        metadataCursor.remember(state.sessionId, current.entryId, target)
+        val value = snapshot.value
+        val prepared = preparation.value
+        if (prepared.phase == PreparationPhase.Ready &&
+            prepared.request?.matches(prepareSerial, state.sessionId, current.entryId) == true &&
+            value != null && value.requestGeneration == prepared.generation && value.isPrepared && value.canSeek &&
+            !value.isEnded && value.errorMessage == null &&
+            (value.appQueueEntryId == null || value.appQueueEntryId == current.entryId)) {
+            // Seek is enqueued before Play on the same engine. Never resume at
+            // its old paused position before submitting the selected lyric.
+            services.seekTo(target)
+            services.play()
+            updateRetention()
+            return true
+        }
+        // Replaces a pending prepare/retry serial too. The engine receives the
+        // absolute cursor while paused, then the current intent may start it.
+        return beginPreparation(target)
+    }
+
     private fun syncNativeRail() {
         val value = snapshot.value ?: return
         if (value.currentTrack?.catalogKind == CatalogKind.Station) return

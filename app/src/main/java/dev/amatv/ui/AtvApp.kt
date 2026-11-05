@@ -823,6 +823,59 @@ fun AmAtvApp() {
         if (playWhenReady) pausePlayback() else requestPlayback()
     }
 
+    fun playFromLyric(positionMs: Long) {
+        if (!hasCurrentTrack || track.catalogKind != CatalogKind.Song) return
+        val target = positionMs.coerceAtLeast(0L).let { if (track.durationMs > 0L) it.coerceAtMost(track.durationMs) else it }
+        nativeResumeRecovery.cancel()
+        positionAnchorMs = target
+        startupCursorEdited = true
+        playStartedRealtimeMs = SystemClock.elapsedRealtime()
+        if (!MockCatalog.isDemoTrack(track) &&
+            (connectionState != MusicConnectionState.SignedIn || lastPlaybackFailure == PlaybackFailureKind.Authorization ||
+                runtime.preparation.value.failureKind == PlaybackFailureKind.Authorization)) {
+            val live = queueController.state.value
+            pendingAuthentication.remember(PendingAuthenticationAction.ResumeCurrent(
+                track, live.sessionId, live.current?.entryId, target, destination))
+            playbackSignIn[0]?.invoke()
+            return
+        }
+        playWhenReady = true
+        playbackMessage = null
+        lastPlaybackFailure = null
+        // Full session hydration already preserves startupCursorEdited. Do not
+        // start a checkpoint-only queue before that owner has finished restoring.
+        if (!startupSessionLoaded && selectionGeneration == 0L && !retainedRuntimeSession) {
+            hasUserPlaybackRequest = false
+            runtime.setDesiredPlayIntent(true)
+            return
+        }
+        waitingQueueEntryId = null
+        hasUserPlaybackRequest = true
+        if (MockCatalog.isDemoTrack(track)) {
+            runtime.setDesiredPlayIntent(true)
+            isPlaying = true
+        } else {
+            selectionGeneration++
+            runCatching { runtime.playFromPosition(target) }
+                .onSuccess { started ->
+                    playbackPrepared = runtime.snapshot.value?.isPrepared == true
+                    audioBuffering = started && !playbackPrepared
+                    if (!playbackPrepared) isPlaying = false
+                    if (!started) {
+                        playWhenReady = false
+                        runtime.setDesiredPlayIntent(false)
+                        playbackMessage = AppText.text(R.string.app_choose_content_before_playback)
+                    }
+                }
+                .onFailure {
+                    playWhenReady = false
+                    isPlaying = false
+                    runtime.setDesiredPlayIntent(false)
+                    playbackMessage = AppText.text(R.string.app_seek_failed)
+                }
+        }
+    }
+
     fun retryCurrentLyrics() {
         val identity = track.lyricsIdentity()
         lyricsLookupFailures = lyricsLookupFailures - identity
@@ -2527,6 +2580,7 @@ fun AmAtvApp() {
                         onSkipPrevious = { skip(-1) },
                         onSkipNext = { skip(1) },
                         onSeekBy = ::seekPlaybackBy,
+                        onPlayFromLyric = if (hasCurrentTrack) ::playFromLyric else null,
                         onSelectTrack = (::selectQueueTrack),
                         lowPerformanceMode = lowPerformanceMode,
                         lyricTranslationEnabled = lyricTranslationEnabled,

@@ -36,6 +36,15 @@
 
 整合後 Debug APK 建置成功；106 個相關單元測試通過（0 failures／errors／skipped），包含反向分頁／選播／queue restore、既有分頁及 shuffle、歌詞去重／高度／素材切換，以及焦點邊界與 modal 輸入。新增反向分頁 fixture 曾因未等待非同步 parser 而失敗，已改為等待 loaded／onReady，未變更順序與 occurrence 的預期。這些檢查不代替實際遙控器驗收。
 
-已保留資料安裝到 `emulator-5554`；未操作實體電視。APK：`app/build/outputs/apk/debug/app-debug.apk`，103,432,527 bytes，SHA-256 `ed6f04f69dfa883bb81454b7634b7424b86bd21cebe944b2cb579115a205b0c8`。
+已保留資料安裝到 `emulator-5554`；未操作實體電視。APK：`app/build/outputs/apk/debug/app-debug.apk`，103,440,563 bytes，SHA-256 `ab386a12b279dacfaed91592485a3e152bd97073a6e8b9fe4bbdd2fdcfebf179`。
 
 中國區後續僅完成程式與匿名官方目錄核對：[官方中國區廣播頁](https://music.apple.com/cn/radio)有提供風格電台，不能把「所有電台失敗」直接判成不支援中國區。帳號尚未登入，實際授權、SDK queue、串流及 DRM 的失敗層仍待真帳號回應。
+
+
+### 暫停／冷啟動時選擇歌詞段落
+
+歌詞選段使用獨立的絕對時間「跳段並播放」意圖，套用於控制列顯示與隱藏兩種路徑。已準備好的同一 occurrence 先送 Seek 再 Play；未準備好、準備中、重試中或歌曲時長尚未知時，由既有 runtime prepare 帶入目標時間，保持引擎暫停至準備完成。選取新段落會取代較早的 prepare serial；使用者後續 Pause 仍可取消播放意圖。
+
+完整 session 尚在磁碟還原時，沿用既有 startup cursor 編輯與 Play gate，完成 hydration 後才開始。若在等待下一頁歌曲，明確選取目前歌詞會取消本次 advance，保留未載入的 collection tail；後續頁到達只補 queue，不再自動跳走。授權恢復保存所選段落；靜態／未定時歌詞維持不可跳段。控制列可見時，緩衝期間保留可操作的播放按鈕，進度條可用後回到進度條；新的遙控器操作會取消這個待返回目標。
+
+本項 Debug APK 建置成功，84 個相關測試通過（0 failures／errors／skipped），包含新增的延遲解析仍保留絕對時間、同 occurrence 最新段落取代舊準備，以及取消等待但保留後續 queue。已保留資料更新並啟動模擬器；尚未進行這條新增路徑的實際遙控器驗收。
