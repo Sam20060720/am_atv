@@ -417,7 +417,7 @@ fun PlayerScreen(
             line.forDisplay(
                 showTranslation = lyricTranslationEnabled && lyricTranslationReady,
                 showPronunciation = lyricPronunciationEnabled && lyricPronunciationReady,
-            )
+            ).withoutRedundantLocalization()
         }
     }
     val displayedTrack = remember(track, displayedLyrics) { track.copy(lyrics = displayedLyrics) }

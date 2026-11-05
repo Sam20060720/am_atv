@@ -2,6 +2,9 @@ package dev.amatv.ui
 
 import dev.amatv.model.LyricLine
 import dev.amatv.model.LyricTiming
+import dev.amatv.model.LyricWord
+import java.text.Normalizer
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.ceil
 
@@ -28,6 +31,62 @@ internal fun LyricLine.forDisplay(
         pronunciationWords = pronunciationWords.takeIf { showPronunciation }.orEmpty(),
         backgroundPronunciationWords = backgroundPronunciationWords.takeIf { showPronunciation }.orEmpty(),
     )
+}
+
+/** Render-only projection: retain all raw overlays in the lyrics cache for later toggles. */
+internal fun LyricLine.withoutRedundantLocalization(): LyricLine {
+    val mainTranslation = translation.takeIf { !sameLyricDisplayText(it, text) }
+    val backingTranslation = backgroundTranslation.takeIf { !sameLyricDisplayText(it, backgroundText) }
+    return copy(
+        words = words.withDisplayedPronunciation(text, mainTranslation),
+        backgroundWords = backgroundWords.withDisplayedPronunciation(backgroundText, backingTranslation),
+        translation = mainTranslation,
+        backgroundTranslation = backingTranslation,
+        pronunciationText = pronunciationText.takeIf {
+            !sameLyricDisplayText(it, text, mainTranslation)
+        },
+        backgroundPronunciationText = backgroundPronunciationText.takeIf {
+            !sameLyricDisplayText(it, backgroundText, backingTranslation)
+        },
+        pronunciationWords = pronunciationWords.takeIf {
+            !sameLyricDisplayText(it.joinToString("") { word -> word.text }, text, mainTranslation)
+        }.orEmpty(),
+        backgroundPronunciationWords = backgroundPronunciationWords.takeIf {
+            !sameLyricDisplayText(it.joinToString("") { word -> word.text }, backgroundText, backingTranslation)
+        }.orEmpty(),
+    )
+}
+
+/** Compare only overlays belonging to this vocal line, never other timed lines. */
+private fun sameLyricDisplayText(value: String?, vararg originals: String?): Boolean {
+    fun key(text: String): String {
+        val normalized = Normalizer.normalize(text, Normalizer.Form.NFKC).lowercase(Locale.ROOT)
+        return buildString(normalized.length) {
+            for (character in normalized) {
+                if (character.isWhitespace() || Character.isSpaceChar(character) ||
+                    Character.getType(character) == Character.FORMAT.toInt()) continue
+                append(when (character) {
+                    '\u2018', '\u2019' -> '\''
+                    '\u201c', '\u201d' -> '"'
+                    else -> character
+                })
+            }
+        }.trim('(', ')')
+    }
+    val candidate = value?.takeIf(String::isNotBlank)?.let(::key)?.takeIf(String::isNotEmpty) ?: return false
+    return originals.any { it != null && key(it) == candidate }
+}
+
+private fun List<LyricWord>.withDisplayedPronunciation(
+    original: String,
+    translation: String?,
+): List<LyricWord> {
+    if (none { it.pronunciationText != null || it.pronunciationEndMs != null }) return this
+    val repeatedLine = sameLyricDisplayText(joinToString("") { it.pronunciationText.orEmpty() }, original, translation)
+    return map { word ->
+        if (!repeatedLine && !sameLyricDisplayText(word.pronunciationText, word.text)) word
+        else word.copy(pronunciationText = null, pronunciationEndMs = null)
+    }
 }
 
 /** Only the current viewport and its outgoing scroll context need word trees. */
