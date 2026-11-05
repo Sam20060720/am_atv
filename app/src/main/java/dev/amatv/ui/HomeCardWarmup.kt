@@ -1,12 +1,28 @@
 package dev.amatv.ui
 
 import kotlinx.coroutines.channels.Channel
+import dev.amatv.model.Track
+
+/** Supplemental URL changes do not create a new card identity. */
+internal fun Track.homeCardMountKey(): List<Any?> =
+    listOf(id, catalogKind, catalogId, resourceType, resourceId)
+
+/** Small per-style identity history; a tab return is not a cold card visit. */
+internal class HomeCardMountHistory(private val limit: Int = 256) {
+    // Per-style retention owns only identities, never lazy callbacks or images.
+    private val mounted = LinkedHashMap<Any, Unit>(128, .75f, true)
+    fun contains(key: Any): Boolean = mounted[key] != null
+    fun remember(key: Any) {
+        mounted[key] = Unit
+        if (mounted.size > limit) mounted.remove(mounted.keys.first())
+    }
+}
 
 /**
  * One feed-wide budget for expensive card content. Entries exist only while their
  * lazy card slots are attached; mounted and disposed cards leave no queued work.
  */
-internal class HomeCardWarmup {
+internal class HomeCardWarmup(private val history: HomeCardMountHistory = HomeCardMountHistory()) {
     internal class Ticket(
         val sequence: Long,
         var priority: (() -> Int)?,
@@ -19,16 +35,10 @@ internal class HomeCardWarmup {
     private var lastMountFrame = Long.MIN_VALUE
     private var closed = false
     private var visibleCards: Set<Any> = emptySet()
-    // Retain only small identity keys, never painters, bitmaps or mount closures.
-    // A lazy slot leaving the viewport is not a first visit when it returns.
-    private val mountedContent = LinkedHashMap<Any, Unit>(128, .75f, true)
-
-    fun wasMounted(key: Any): Boolean = mountedContent[key] != null
+    fun wasMounted(key: Any): Boolean = history.contains(key)
 
     fun rememberMounted(key: Any) {
-        if (closed) return
-        mountedContent[key] = Unit
-        if (mountedContent.size > 256) mountedContent.remove(mountedContent.keys.first())
+        if (!closed) history.remember(key)
     }
 
     /** One viewport sample serves every pending card; no per-ticket lazy scans. */
@@ -112,7 +122,6 @@ internal class HomeCardWarmup {
         pending.values.forEach(::release)
         pending.clear()
         visibleCards = emptySet()
-        mountedContent.clear()
         wakeup.close()
     }
 

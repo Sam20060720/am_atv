@@ -8,6 +8,35 @@ import org.junit.Test
 class BrowseInlineBrowserTest {
     private fun track(id: String) = Track(id, id, "", "", 0, emptyList(), emptyList())
 
+    @Test fun refreshRetainsFallbackAndReplacesItFromFirstPageAfterLocaleChange() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val refreshed = CompletableDeferred<Unit>()
+        var refresh = false
+        val cursors = mutableListOf<BrowseInlineCursor?>()
+        val browser = BrowseInlineBrowser(scope) { section, cursor ->
+            if (section == BrowseInlineSection.Genres) {
+                cursors += cursor
+                if (refresh) refreshed.await()
+                val next = BrowseInlineCursor.Genres("/old-more")
+                BrowseInlinePage(listOf(track(if (refresh) "localized" else "fallback")), "/first",
+                    if (refresh) null else next, if (refresh) null else next.path)
+            } else BrowseInlinePage(emptyList(), section.name)
+        }
+        try {
+            browser.invalidate("0:en-US"); browser.setVisible(true)
+            refresh = true; browser.invalidate("1:zh-TW")
+            val loading = browser.state.value.pages.getValue(BrowseInlineSection.Genres)
+            assertEquals("fallback", loading.items.single().id)
+            assertTrue(loading.loading)
+            assertNull(loading.next)
+            refreshed.complete(Unit)
+            assertEquals("localized", browser.state.value.pages.getValue(BrowseInlineSection.Genres).items.single().id)
+            assertEquals(listOf(null, null), cursors)
+            browser.setVisible(false); browser.setVisible(true)
+            assertEquals(2, cursors.size)
+        } finally { refreshed.complete(Unit); browser.close(); scope.cancel() }
+    }
+
     @Test fun firstPagesHaveTwoReadLimitAndAnIndependentFailureDoesNotEraseOtherRows() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         val gates = BrowseInlineSection.entries.associateWith { CompletableDeferred<Unit>() }

@@ -132,12 +132,14 @@ internal fun CatalogActionSheet(
     canSleepAtTrackEnd: Boolean = false,
     canSleepAtContextEnd: Boolean = false,
     onResourceDeleted: ((Track) -> Unit)? = null,
+    accountScopeKey: String = services.authorizationCacheScope(),
+    onRegisterBackHandler: ((() -> Unit)?) -> Unit = {},
 ) {
     val identity = "${item.resourceType}:${item.resourceId ?: item.id}"
-    key(identity) {
+    key(identity, accountScopeKey, signedIn) {
         CatalogActionSheetContent(item, services, signedIn, onSignIn, onDismiss, onLibraryChanged, onViewArtist, onOpenResource,
             extraActions, onQueue, anchorBounds, backdropLayer, lowPerformanceMode, onMediaKey, modalInputGate,
-            sleepTimerState, onSleepTimer, canSleepAtTrackEnd, canSleepAtContextEnd, onResourceDeleted)
+            sleepTimerState, onSleepTimer, canSleepAtTrackEnd, canSleepAtContextEnd, onResourceDeleted, accountScopeKey, onRegisterBackHandler)
     }
 }
 
@@ -153,6 +155,8 @@ private fun CatalogActionSheetContent(
     sleepTimerState: PlaybackSleepTimerState?, onSleepTimer: ((SleepTimerOption) -> Unit)?, canSleepAtTrackEnd: Boolean,
     canSleepAtContextEnd: Boolean,
     onResourceDeleted: ((Track) -> Unit)?,
+    accountScopeKey: String,
+    onRegisterBackHandler: ((() -> Unit)?) -> Unit,
 ) {
     val actions = services.catalogActions
     val available = remember(item) {
@@ -178,6 +182,7 @@ private fun CatalogActionSheetContent(
     var state by remember { mutableStateOf<CatalogActionState?>(null) }
     val libraryManagementFirst = remember { FocusRequester() }
     val libraryManagementBack = remember { arrayOfNulls<() -> Boolean>(1) }
+    val libraryManagementPending = remember { CatalogLibraryManagementPending() }
     val libraryManagementItem = remember(item, state?.libraryResource) {
         val ref = CatalogResourceRef.fromTrack(item)?.takeIf {
             it.type in setOf("library-playlists", "library-playlist-folders", "library-songs")
@@ -259,7 +264,9 @@ private fun CatalogActionSheetContent(
     var playlistDescription by remember { mutableStateOf("") }
     val headerFocus = remember { FocusRequester() }
     val playlistCreateFocus = remember { FocusRequester() }
-    val focusVisit = remember(pane) { CatalogMenuFocusVisit() }
+    val focusVisits = remember { mutableMapOf<CatalogSheetPane, CatalogMenuFocusVisit>() }
+    val focusVisit = focusVisits.getOrPut(pane) { CatalogMenuFocusVisit() }
+    DisposableEffect(focusVisit) { onDispose { focusVisit.resumed(false) } }
     val nameFocus = remember { FocusRequester() }
     val descriptionFocus = remember { FocusRequester() }
     val createFocus = remember { FocusRequester() }
@@ -281,13 +288,15 @@ private fun CatalogActionSheetContent(
         "${it.resourceType}:${it.resourceId ?: it.id}" in uneditablePlaylists
     } else artists
 
+    suspend fun <T> accountRead(operation: suspend () -> T): T = services.withAuthorizationScope(accountScopeKey, operation)
+
     suspend fun sourceTracks(): List<Track> {
         val tracks = if (item.catalogKind in setOf(CatalogKind.Album, CatalogKind.Playlist)) services.collectionTracks(item) else listOf(item)
         check(tracks.isNotEmpty())
         return tracks
     }
 
-    suspend fun addOptionalLibraryItems(items: List<Track>, currentState: CatalogActionState? = state): CatalogActionState? {
+    suspend fun addOptionalLibraryItems(items: List<Track>, currentState: CatalogActionState? = state): CatalogActionState? = services.withAuthorizationScope(accountScopeKey) {
         val sourceKey = libraryResourceKey(item)
         val fresh = items.filter { track ->
             val key = libraryResourceKey(track)
@@ -296,11 +305,11 @@ private fun CatalogActionSheetContent(
         val wasBusy = busy
         busy = true
         try {
-            val result = actions.addEligibleItemsToLibraryAndConfirm(fresh)
+            val result = accountRead { actions.addEligibleItemsToLibraryAndConfirm(fresh) }
             pendingAdditionalLibrary = pendingAdditionalLibrary + result.pendingItems.associate { track ->
                 libraryResourceKey(track) to CatalogSheetLibraryAddition(track, result.retryAllowed)
             }
-            return if (result.attemptedItems.any { libraryResourceKey(it) == sourceKey } &&
+            if (result.attemptedItems.any { libraryResourceKey(it) == sourceKey } &&
                 result.pendingItems.none { libraryResourceKey(it) == sourceKey }) {
                 (currentState ?: CatalogActionState(null, null, null)).copy(inLibrary = true)
             } else currentState
@@ -362,6 +371,12 @@ private fun CatalogActionSheetContent(
         if (paneStack.size == 1) dismiss()
         else navigate(paneStack[paneStack.lastIndex - 1], replaceTransition = true)
     }
+    val registeredBack by rememberUpdatedState<() -> Unit>({ back() })
+    val backRegistration by rememberUpdatedState(onRegisterBackHandler)
+    DisposableEffect(Unit) {
+        backRegistration { registeredBack() }
+        onDispose { backRegistration(null) }
+    }
     fun openCreate(kind: CatalogSheetCreation) {
         if (creationKind != kind) { playlistName = ""; playlistDescription = "" }
         creationKind = kind
@@ -397,10 +412,11 @@ private fun CatalogActionSheetContent(
             finally { if (generation == pageGeneration[0]) pageLoading = false }
         }
     }
+    fun mutationReady() = authorized && !busy && initialStateResolved && !stateLoading &&
+        (!isFolder || initialFolderResolved && !folderLoading)
     fun mutate(success: Int, folderCreation: CatalogSheetCreation? = null,
         successNotice: (() -> Int)? = null, operation: suspend () -> Unit) {
-        if (!canActivateMenu() || busy || !authorized) return
-        if (!initialStateResolved || stateLoading || (isFolder && (!initialFolderResolved || folderLoading))) return
+        if (!canActivateMenu() || !mutationReady()) return
         busy = true
         stateGeneration[0]++
         folderGeneration[0]++
@@ -412,7 +428,7 @@ private fun CatalogActionSheetContent(
                 // Deliberately no retry wrapper: create/append timeouts may have
                 // reached Apple. Their submit flags also prevent a second POST
                 // from the same menu visit after an uncertain result.
-                operation()
+                services.withAuthorizationScope(accountScopeKey) { operation() }
                 notice = successNotice?.invoke() ?: success
                 onLibraryChanged()
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -508,128 +524,132 @@ private fun CatalogActionSheetContent(
         stateVersion++
     }
     LaunchedEffect(signedIn, stateVersion) {
-        if (motion.closing) return@LaunchedEffect
-        val generation = ++stateGeneration[0]
-        stateJob[0] = currentCoroutineContext()[Job]
-        // One read owner loads the general snapshot first, then applies the
-        // pending confirmations. Publish once so a slower rating/snapshot read
-        // cannot overwrite a newer, confirmed favorite or Library result.
-        val readSnapshot = signedIn && item.catalogKind != CatalogKind.Page &&
-            (available.canAddToLibrary || available.canFavorite || available.canRate)
-        val recoverPending = signedIn && stateVersion > 0 && (pendingCreation != null || pendingAppends.isNotEmpty() ||
-            pendingAdditionalLibrary.isNotEmpty() || libraryRequested || favoritePendingTarget != null || addLibraryAfterFavorite)
-        stateLoading = readSnapshot || recoverPending
-        recoveringMutations = recoverPending
-        var refreshedState = state
-        var confirmedNotice: Int? = null
-        var readFailed = false
-        try {
-            if (readSnapshot) {
-                stateFailed = false
-                try {
-                    refreshedState = actions.readState(item)
-                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
-                    authNeeded = false
-                    resourceUnavailable = false
-                    if (libraryRequested && refreshedState?.inLibrary == true) confirmedNotice = R.string.actions_library_added
-                    if (favoritePendingTarget != null && refreshedState?.inFavorites == favoritePendingTarget)
-                        confirmedNotice = if (refreshedState?.inFavorites == true) R.string.actions_favorite_saved else R.string.library_management_favorite_removed
-                } catch (cancelled: CancellationException) { throw cancelled }
-                catch (failure: Exception) {
-                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
-                    stateFailed = true
-                    if ((failure as? CatalogRequestException)?.reason == CatalogFailureReason.Unavailable) resourceUnavailable = true
-                    if ((failure as? CatalogRequestException)?.reason == CatalogFailureReason.Authorization) authNeeded = true
+        services.withAuthorizationScope(accountScopeKey) {
+            if (motion.closing) return@withAuthorizationScope
+            val generation = ++stateGeneration[0]
+            stateJob[0] = currentCoroutineContext()[Job]
+            // One read owner loads the general snapshot first, then applies the
+            // pending confirmations. Publish once so a slower rating/snapshot read
+            // cannot overwrite a newer, confirmed favorite or Library result.
+            val readSnapshot = signedIn && item.catalogKind != CatalogKind.Page &&
+                (available.canAddToLibrary || available.canFavorite || available.canRate)
+            val recoverPending = signedIn && stateVersion > 0 && (pendingCreation != null || pendingAppends.isNotEmpty() ||
+                pendingAdditionalLibrary.isNotEmpty() || libraryRequested || favoritePendingTarget != null || addLibraryAfterFavorite)
+            stateLoading = readSnapshot || recoverPending
+            recoveringMutations = recoverPending
+            var refreshedState = state
+            var confirmedNotice: Int? = null
+            var readFailed = false
+            try {
+                if (readSnapshot) {
+                    stateFailed = false
+                    try {
+                        refreshedState = accountRead { actions.readState(item) }
+                        if (generation != stateGeneration[0] || motion.closing) return@withAuthorizationScope
+                        authNeeded = false
+                        resourceUnavailable = false
+                        if (libraryRequested && refreshedState?.inLibrary == true) confirmedNotice = R.string.actions_library_added
+                        if (favoritePendingTarget != null && refreshedState?.inFavorites == favoritePendingTarget)
+                            confirmedNotice = if (refreshedState?.inFavorites == true) R.string.actions_favorite_saved else R.string.library_management_favorite_removed
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (failure: Exception) {
+                        if (generation != stateGeneration[0] || motion.closing) return@withAuthorizationScope
+                        stateFailed = true
+                        if ((failure as? CatalogRequestException)?.reason == CatalogFailureReason.Unavailable) resourceUnavailable = true
+                        if ((failure as? CatalogRequestException)?.reason == CatalogFailureReason.Authorization) authNeeded = true
+                    }
                 }
-            }
-            if (recoverPending) {
-                val additionalAtStart = pendingAdditionalLibrary
-                pendingCreation?.let { pending ->
-                    val confirmed = try { actions.confirmPlaylistCreation(pending) }
-                    catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { readFailed = true; null }
-                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
-                    confirmed?.let { resource ->
-                        if (pendingCreation === pending) {
-                            createdResource = resource
-                            pendingCreation = null
-                            confirmedNotice = if (pending.folder) R.string.actions_folder_created else R.string.actions_playlist_created
-                            if (addLibraryAfterCreation) {
-                                addLibraryAfterCreation = false
+                if (recoverPending) {
+                    val additionalAtStart = pendingAdditionalLibrary
+                    pendingCreation?.let { pending ->
+                        val confirmed = try { accountRead { actions.confirmPlaylistCreation(pending) } }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { readFailed = true; null }
+                        if (generation != stateGeneration[0] || motion.closing) return@withAuthorizationScope
+                        confirmed?.let { resource ->
+                            if (pendingCreation === pending) {
+                                createdResource = resource
+                                pendingCreation = null
+                                confirmedNotice = if (pending.folder) R.string.actions_folder_created else R.string.actions_playlist_created
+                                if (addLibraryAfterCreation) {
+                                    addLibraryAfterCreation = false
+                                    refreshedState = addOptionalLibraryItems(pending.tracks, refreshedState)
+                                }
+                            }
+                        }
+                    }
+                    for ((key, pending) in pendingAppends.toMap()) {
+                        val confirmed = try { accountRead { actions.confirmPlaylistAppend(pending) } }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { readFailed = true; false }
+                        if (generation != stateGeneration[0] || motion.closing) return@withAuthorizationScope
+                        if (confirmed && pendingAppends[key] === pending) {
+                            pendingAppends = pendingAppends - key
+                            confirmedNotice = R.string.actions_playlist_added
+                            if (key in addLibraryAfterAppends) {
+                                addLibraryAfterAppends = addLibraryAfterAppends - key
                                 refreshedState = addOptionalLibraryItems(pending.tracks, refreshedState)
                             }
                         }
                     }
-                }
-                for ((key, pending) in pendingAppends.toMap()) {
-                    val confirmed = try { actions.confirmPlaylistAppend(pending) }
-                    catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { readFailed = true; false }
-                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
-                    if (confirmed && pendingAppends[key] === pending) {
-                        pendingAppends = pendingAppends - key
-                        confirmedNotice = R.string.actions_playlist_added
-                        if (key in addLibraryAfterAppends) {
-                            addLibraryAfterAppends = addLibraryAfterAppends - key
-                            refreshedState = addOptionalLibraryItems(pending.tracks, refreshedState)
+                    val inLibrary = if (libraryRequested && refreshedState?.inLibrary != true) try { accountRead { actions.libraryState(item) } }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { readFailed = true; null }
+                        else null
+                    if (generation != stateGeneration[0] || motion.closing) return@withAuthorizationScope
+                    inLibrary?.let { confirmed ->
+                        refreshedState = (refreshedState ?: CatalogActionState(null, null, null)).copy(inLibrary = confirmed)
+                        if (confirmed) confirmedNotice = R.string.actions_library_added
+                    }
+                    val favoriteTarget = favoritePendingTarget
+                    val inFavorites = if (favoriteTarget != null) try {
+                        accountRead { if (favoriteTarget) actions.favoriteState(item) else services.libraryManagement.favoriteState(item) }
+                    }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { readFailed = true; null }
+                        else null
+                    if (generation != stateGeneration[0] || motion.closing) return@withAuthorizationScope
+                    inFavorites?.let { confirmed ->
+                        refreshedState = (refreshedState ?: CatalogActionState(null, null, null)).copy(inFavorites = confirmed)
+                        if (confirmed == favoriteTarget) {
+                            favoritePendingTarget = null
+                            confirmedNotice = if (confirmed) R.string.actions_favorite_saved else R.string.library_management_favorite_removed
                         }
                     }
-                }
-                val inLibrary = if (libraryRequested && refreshedState?.inLibrary != true) try { actions.libraryState(item) }
-                    catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { readFailed = true; null }
-                    else null
-                if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
-                inLibrary?.let { confirmed ->
-                    refreshedState = (refreshedState ?: CatalogActionState(null, null, null)).copy(inLibrary = confirmed)
-                    if (confirmed) confirmedNotice = R.string.actions_library_added
-                }
-                val favoriteTarget = favoritePendingTarget
-                val inFavorites = if (favoriteTarget != null) try {
-                    if (favoriteTarget) actions.favoriteState(item) else services.libraryManagement.favoriteState(item)
-                }
-                    catch (cancelled: CancellationException) { throw cancelled }
-                    catch (_: Exception) { readFailed = true; null }
-                    else null
-                if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
-                inFavorites?.let { confirmed ->
-                    refreshedState = (refreshedState ?: CatalogActionState(null, null, null)).copy(inFavorites = confirmed)
-                    if (confirmed == favoriteTarget) {
-                        favoritePendingTarget = null
-                        confirmedNotice = if (confirmed) R.string.actions_favorite_saved else R.string.library_management_favorite_removed
+                    if (refreshedState?.inFavorites == true && addLibraryAfterFavorite) {
+                        addLibraryAfterFavorite = false
+                        refreshedState = addOptionalLibraryItems(listOf(item), refreshedState)
+                    }
+                    if (additionalAtStart.isNotEmpty()) {
+                        val pending = accountRead { actions.libraryItemsAwaitingConfirmation(additionalAtStart.values.map { it.item }) }
+                            .mapTo(HashSet(), ::libraryResourceKey)
+                        if (generation != stateGeneration[0] || motion.closing) return@withAuthorizationScope
+                        val confirmedKeys = additionalAtStart.keys - pending
+                        pendingAdditionalLibrary = pendingAdditionalLibrary - confirmedKeys
+                        if (libraryResourceKey(item) in confirmedKeys)
+                            refreshedState = (refreshedState ?: CatalogActionState(null, null, null)).copy(inLibrary = true)
+                        if (confirmedKeys.isNotEmpty()) confirmedNotice = R.string.actions_library_added
                     }
                 }
-                if (refreshedState?.inFavorites == true && addLibraryAfterFavorite) {
-                    addLibraryAfterFavorite = false
-                    refreshedState = addOptionalLibraryItems(listOf(item), refreshedState)
+                if (generation != stateGeneration[0] || motion.closing) return@withAuthorizationScope
+                state = refreshedState
+                if (refreshedState?.inLibrary == true) libraryRequested = false
+                confirmedNotice?.let {
+                    notice = it
+                    if (recoverPending) { error = null; onLibraryChanged() }
                 }
-                if (additionalAtStart.isNotEmpty()) {
-                    val pending = actions.libraryItemsAwaitingConfirmation(additionalAtStart.values.map { it.item })
-                        .mapTo(HashSet(), ::libraryResourceKey)
-                    if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
-                    val confirmedKeys = additionalAtStart.keys - pending
-                    pendingAdditionalLibrary = pendingAdditionalLibrary - confirmedKeys
-                    if (libraryResourceKey(item) in confirmedKeys)
-                        refreshedState = (refreshedState ?: CatalogActionState(null, null, null)).copy(inLibrary = true)
-                    if (confirmedKeys.isNotEmpty()) confirmedNotice = R.string.actions_library_added
+                if (readFailed) error = R.string.actions_operation_failed
+            } finally {
+                if (generation == stateGeneration[0]) {
+                    stateLoading = false
+                    recoveringMutations = false
+                    initialStateResolved = true
+                    stateJob[0] = null
                 }
-            }
-            if (generation != stateGeneration[0] || motion.closing) return@LaunchedEffect
-            state = refreshedState
-            confirmedNotice?.let {
-                notice = it
-                if (recoverPending) { error = null; onLibraryChanged() }
-            }
-            if (readFailed) error = R.string.actions_operation_failed
-        } finally {
-            if (generation == stateGeneration[0]) {
-                stateLoading = false
-                recoveringMutations = false
-                initialStateResolved = true
-                stateJob[0] = null
             }
         }
     }
+
     LaunchedEffect(signedIn, stateVersion, folderRef) {
         if (motion.closing) return@LaunchedEffect
         if (!signedIn || folderRef == null) { initialFolderResolved = true; return@LaunchedEffect }
@@ -757,10 +777,11 @@ private fun CatalogActionSheetContent(
                         if (failure.httpStatus in 400..499) libraryRequested = false
                         throw failure
                     }
-                    val inLibrary = try { actions.libraryState(item) }
+                    val inLibrary = try { accountRead { actions.libraryState(item) } }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { null }
                     state = (state ?: CatalogActionState(null, null, null)).copy(inLibrary = inLibrary)
+                    if (inLibrary == true) libraryRequested = false
                 }
             })
             if (available.canFavorite) {
@@ -818,9 +839,9 @@ private fun CatalogActionSheetContent(
                     mutate(R.string.actions_rating_cleared) { actions.deleteRating(item); state = state?.copy(rating = null) }
                 })
             }
-            if (canAppendSource) add(CatalogSheetAction("playlist", stringResource(R.string.actions_add_playlist)) { navigate(CatalogSheetPane.Playlists) })
-            if (canCreatePlaylist) add(CatalogSheetAction("create", stringResource(R.string.actions_create_playlist), enabled = folderReady && !creationUnconfirmed) { openCreate(CatalogSheetCreation.Playlist) })
-            if (canCreateFolder) add(CatalogSheetAction("create-folder", stringResource(R.string.actions_create_folder), enabled = folderReady && !creationUnconfirmed) { openCreate(CatalogSheetCreation.Folder) })
+            if (canAppendSource) add(CatalogSheetAction("playlist", stringResource(R.string.actions_add_playlist), enabled = mutationReady()) { navigate(CatalogSheetPane.Playlists) })
+            if (canCreatePlaylist) add(CatalogSheetAction("create", stringResource(R.string.actions_create_playlist), enabled = mutationReady() && !creationUnconfirmed) { openCreate(CatalogSheetCreation.Playlist) })
+            if (canCreateFolder) add(CatalogSheetAction("create-folder", stringResource(R.string.actions_create_folder), enabled = mutationReady() && !creationUnconfirmed) { openCreate(CatalogSheetCreation.Folder) })
         }
         if (authorized && pendingAdditionalLibrary.values.any { it.retryAllowed })
             add(CatalogSheetAction("retry-library", stringResource(R.string.actions_retry_library_addition), enabled = stateReady && !recoveringMutations) {
@@ -948,7 +969,7 @@ private fun CatalogActionSheetContent(
                 val resuming = focusVisit.resumed(active)
                 if (!active) return@LaunchedEffect
                 val initialId = focusVisit.entryTarget(entryIds)
-                val entryId = initialId ?: (if (resuming && !menuHasFocus) focusVisit.restoreTarget(entryIds) else null)
+                val entryId = initialId ?: (if (resuming) focusVisit.restoreTarget(entryIds) else null)
                     ?: return@LaunchedEffect
                 if (pane != CatalogSheetPane.Create) {
                     val index = if (initialId != null) 0 else entryIds.indexOf(entryId).coerceAtLeast(0)
@@ -1034,7 +1055,7 @@ private fun CatalogActionSheetContent(
                                 modifier = Modifier.padding(horizontal = 12.5.dp, vertical = 5.dp)) }
                             if (pane == CatalogSheetPane.LibraryManagement && libraryManagementItem != null) {
                                 CatalogLibraryManagementPane(libraryManagementItem, services, services.libraryManagement,
-                                    firstRequester = libraryManagementFirst,
+                                    firstRequester = libraryManagementFirst, pending = libraryManagementPending, accountScopeKey = accountScopeKey,
                                     onChanged = onLibraryChanged,
                                     onDeleted = {
                                         onResourceDeleted?.invoke(libraryManagementItem)
@@ -1069,7 +1090,7 @@ private fun CatalogActionSheetContent(
                                 CatalogSheetRow(stringResource(if (isFolder) R.string.actions_create else if (canAppendSource) R.string.actions_create_and_add else R.string.actions_create_playlist),
                                     Modifier.focusRequester(createFocus).automationId(if (creationKind == CatalogSheetCreation.Folder) "catalog-folder-create" else "catalog-playlist-create")
                                         .focusProperties { up = if (creationKind == CatalogSheetCreation.Folder) nameFocus else descriptionFocus; down = FocusRequester.Cancel },
-                                    enabled = !busy && !creationUnconfirmed && canCreateCurrent && playlistName.isNotBlank(), icon = Icons.Rounded.Add) {
+                                    enabled = mutationReady() && !creationUnconfirmed && canCreateCurrent && playlistName.isNotBlank(), icon = Icons.Rounded.Add) {
                                     keyboard?.hide()
                                     if (canCreateCurrent && !creationUnconfirmed) {
                                         val requestedCreation = creationKind
@@ -1180,7 +1201,7 @@ private fun CatalogActionSheetContent(
                                     if (pane == CatalogSheetPane.Playlists) item(key = "create") {
                                         CatalogSheetRow(stringResource(R.string.actions_create_playlist), Modifier.focusRequester(playlistCreateFocus)
                                             .onFocusChanged { if (it.isFocused) focusVisit.focused("create") }
-                                            .automationId("catalog-action-new-playlist"), enabled = !busy, icon = Icons.Rounded.Add,
+                                            .automationId("catalog-action-new-playlist"), enabled = mutationReady() && canCreatePlaylist && !creationUnconfirmed, icon = Icons.Rounded.Add,
                                             submenu = true) { openCreate(CatalogSheetCreation.Playlist) }
                                         if (targets.isNotEmpty()) CatalogSheetSeparator()
                                     }
@@ -1190,7 +1211,7 @@ private fun CatalogActionSheetContent(
                                         val requester = targetRequesters.getOrPut(targetKey) { FocusRequester() }
                                         CatalogSheetRow(target.title, Modifier.automationId("catalog-action-target-$index").focusRequester(requester)
                                             .onFocusChanged { if (it.isFocused) focusVisit.focused(targetKey) },
-                                            enabled = !busy && targetKey !in unconfirmedAppendTargets, artwork = target) {
+                                            enabled = !busy && (pane == CatalogSheetPane.Artists || mutationReady()) && targetKey !in unconfirmedAppendTargets, artwork = target) {
                                             if (pane == CatalogSheetPane.Artists) dismiss { onViewArtist(target) }
                                             else if (targetKey !in unconfirmedAppendTargets) mutate(R.string.actions_playlist_added,
                                                 successNotice = { if (targetKey in pendingAppends) R.string.actions_operation_failed else R.string.actions_playlist_added }) {
@@ -1212,7 +1233,7 @@ private fun CatalogActionSheetContent(
                                                     }
                                                     throw failure
                                                 }
-                                                val confirmed = try { actions.confirmPlaylistAppend(pending) }
+                                                val confirmed = try { accountRead { actions.confirmPlaylistAppend(pending) } }
                                                 catch (cancelled: CancellationException) { throw cancelled }
                                                 catch (_: Exception) { false }
                                                 if (confirmed) {

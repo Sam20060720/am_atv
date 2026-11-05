@@ -130,6 +130,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 private suspend fun <T> cancellableResult(block: suspend () -> T): Result<T> = try {
     Result.success(block())
@@ -204,8 +206,12 @@ fun AmAtvApp() {
     val catalogAnchorRef = remember { arrayOfNulls<Rect>(1) }
     var catalogActionAnchor by remember { mutableStateOf<Rect?>(null) }
     var catalogLibraryDirty by remember { mutableStateOf(false) }
+    var libraryRevision by remember { mutableLongStateOf(0L) }
+    var browseRefreshRevision by remember { mutableLongStateOf(0L) }
     val reportCatalogAnchor: (Rect) -> Unit = remember { { catalogAnchorRef[0] = it } }
     var catalogActionItem by remember { mutableStateOf<Track?>(null) }
+    var catalogBackHandler by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var pendingCatalogBack by remember { mutableStateOf(false) }
     var catalogQueueActionEntryId by remember { mutableStateOf<Long?>(null) }
     val catalogModalInput = remember { CatalogModalInputGate() }
     var exitConfirmationVisible by remember { mutableStateOf(false) }
@@ -215,6 +221,8 @@ fun AmAtvApp() {
     val showCatalogActions: (Track) -> Unit = remember { { item ->
         if (catalogActionItem == null && item.hasCatalogMenu() && capabilities.canOpen(item)) {
             catalogQueueActionEntryId = null
+            catalogBackHandler = null
+            pendingCatalogBack = false
             catalogModalInput.menuOpened()
             catalogActionAnchor = catalogAnchorRef[0]
             catalogActionItem = item
@@ -266,6 +274,9 @@ fun AmAtvApp() {
     }
     var playbackPrepared by remember { mutableStateOf(retainedSnapshot?.isPrepared == true) }
     var hasUserPlaybackRequest by remember { mutableStateOf(retainedRuntimeSession) }
+    var playerArtworkSource by remember { mutableStateOf<Track?>(null) }
+    var playerArtworkIdentity by remember { mutableStateOf<String?>(null) }
+    var playerArtworkScope by remember { mutableStateOf<String?>(null) }
     var lowPerformanceMode by remember { mutableStateOf(playbackPrefs.lowPerformanceMode) }
     val artworkMotionEnabled by services.artworkMotionPreferences.enabled.collectAsState()
     var playbackMessage by remember { mutableStateOf<String?>(null) }
@@ -312,6 +323,9 @@ fun AmAtvApp() {
     var libraryVisitedPages by remember { mutableStateOf<Map<String, Set<String>>>(emptyMap()) }
     var libraryLoadingShelves by remember { mutableStateOf<Set<String>>(emptySet()) }
     var libraryFailedShelves by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var libraryFailureReasons by remember {
+        mutableStateOf<Map<String, dev.amatv.integration.CatalogFailureReason>>(emptyMap())
+    }
     var libraryPagingGeneration by remember { mutableLongStateOf(0L) }
     val libraryPageJobs = remember { mutableMapOf<String, Job>() }
     val libraryShelfGenerations = remember { mutableMapOf<String, Long>() }
@@ -322,9 +336,21 @@ fun AmAtvApp() {
             if (services.isCatalogConfigured) emptyList() else MockCatalog.tracks.asReversed(),
         )
     }
+    val recentTracksMutex = remember { Mutex() }
+    var recentTracksPage by remember { mutableStateOf<LibraryPage?>(null) }
+    var recentTracksScope by remember { mutableStateOf<String?>(null) }
+    var recentTracksLoadedAt by remember { mutableLongStateOf(0L) }
+    val recentTracksJob = remember { arrayOfNulls<Job>(1) }
+    val currentContentLanguage by rememberUpdatedState(contentLanguageTag)
     var advancingEndedTrackId by remember { mutableStateOf<String?>(null) }
     var ytmPairing by remember { mutableStateOf<GoogleTvPairing?>(null) }
-    var ytmSignedIn by remember { mutableStateOf(services.ytmSignedIn) }
+    val ytmAuthorization by services.ytmAuthorizationState.collectAsState()
+    val ytmSignedIn = ytmAuthorization.signedIn
+    val ytmPairingJob = remember { arrayOfNulls<Job>(1) }
+    val ytmPairingEpoch = remember { longArrayOf(0L) }
+    DisposableEffect(Unit) {
+        onDispose { ytmPairingEpoch[0]++; ytmPairingJob[0]?.cancel() }
+    }
     var canSkipNext by remember { mutableStateOf(true) }
     var canSkipPrevious by remember { mutableStateOf(true) }
     var lyricOffsetMs by remember { mutableLongStateOf(playbackPrefs.lyricOffsetMs) }
@@ -356,11 +382,7 @@ fun AmAtvApp() {
             includePronunciations = lyricPronunciationEnabled,
         )
     }
-    val lyricsVariant = remember(lyricsLocalization) {
-        "${lyricsLocalization.languageTag}|trans=${lyricsLocalization.includeTranslations}" +
-            "|pron=${lyricsLocalization.includePronunciations}" +
-            "|pronLang=${lyricsLocalization.pronunciationLanguageTag}"
-    }
+    val lyricsVariant = lyricsLocalization.variantKey
     var nativeCanSeek by remember { mutableStateOf(retainedSnapshot?.canSeek == true) }
     var audioBuffering by remember { mutableStateOf(false) }
     var lyricsByTrackId by remember {
@@ -444,17 +466,40 @@ fun AmAtvApp() {
         return updated
     }
 
-    fun resetLibraryPagination() {
+    fun resetLibraryPagination(preserveRadio: Boolean = false) {
+        fun retained(id: String) = preserveRadio && id in setOf("radio-personal", "radio-recent", "radio-live")
         libraryPagingGeneration++
         libraryPageJobs.values.forEach(Job::cancel)
         libraryPageJobs.clear()
         libraryShelfGenerations.clear()
         libraryRefreshItems.clear()
-        libraryNextPages = emptyMap()
-        libraryTotals = emptyMap()
-        libraryVisitedPages = emptyMap()
+        libraryNextPages = libraryNextPages.filterKeys(::retained)
+        libraryTotals = libraryTotals.filterKeys(::retained)
+        libraryVisitedPages = libraryVisitedPages.filterKeys(::retained)
         libraryLoadingShelves = emptySet()
-        libraryFailedShelves = emptySet()
+        libraryFailedShelves = libraryFailedShelves.filterTo(mutableSetOf(), ::retained)
+        libraryFailureReasons = libraryFailureReasons.filterKeys(::retained)
+    }
+
+    suspend fun loadRecentTracks(): LibraryPage? = recentTracksMutex.withLock {
+        if (connectionState != MusicConnectionState.SignedIn) return@withLock null
+        val requestScope = services.authorizationCacheScope() + ":" + contentLanguageTag
+        if (recentTracksScope == requestScope && recentTracksPage != null &&
+            SystemClock.elapsedRealtime() - recentTracksLoadedAt < 60_000L) return@withLock recentTracksPage
+        val page = retryCatalogRequest({ services.recentlyPlayedTracksPage() })
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        if (requestScope != services.authorizationCacheScope() + ":" + currentContentLanguage)
+            throw CancellationException("Recent history account or language changed")
+        recentTracksPage = page
+        recentTracksScope = requestScope
+        recentTracksLoadedAt = SystemClock.elapsedRealtime()
+        recentTracks = capabilities.filterTracks(page.items)
+        page
+    }
+
+    fun ensureRecentTracks() {
+        if (recentTracksJob[0]?.isActive == true) return
+        recentTracksJob[0] = scope.launch { cancellableResult { loadRecentTracks() } }
     }
 
     fun rememberLibraryPage(shelfId: String, page: LibraryPage) {
@@ -479,6 +524,7 @@ fun AmAtvApp() {
             shelfGeneration == (libraryShelfGenerations[shelfId] ?: 0L)
         libraryLoadingShelves = libraryLoadingShelves + shelfId
         libraryFailedShelves = libraryFailedShelves - shelfId
+        libraryFailureReasons = libraryFailureReasons - shelfId
         libraryPageJobs[shelfId] = scope.launch {
             try {
                 val rawPage = retryCatalogRequest({
@@ -521,6 +567,7 @@ fun AmAtvApp() {
             } catch (error: Exception) {
                 if (isCurrentRequest()) {
                     libraryFailedShelves = libraryFailedShelves + shelfId
+                    libraryFailureReasons = libraryFailureReasons + (shelfId to error.catalogUiFailureReason())
                     Log.w("AMATV-Library", "Library page failed (${error.javaClass.simpleName})")
                 }
             } finally {
@@ -542,6 +589,7 @@ fun AmAtvApp() {
             libraryVisitedPages = libraryVisitedPages - shelfId
             libraryLoadingShelves = libraryLoadingShelves - shelfId
             libraryFailedShelves = libraryFailedShelves - shelfId
+            libraryFailureReasons = libraryFailureReasons - shelfId
             libraryRefreshItems[shelfId] = emptyList()
             loadLibraryShelf(shelfId, firstPage = true)
         }
@@ -568,6 +616,7 @@ fun AmAtvApp() {
         val generation = libraryPagingGeneration
         libraryLoadingShelves = libraryLoadingShelves + shelfId
         libraryFailedShelves = libraryFailedShelves - shelfId
+        libraryFailureReasons = libraryFailureReasons - shelfId
         libraryPageJobs[shelfId] = scope.launch {
             try {
                 val page = retryCatalogRequest({ services.radioSectionPage(section, next) })
@@ -579,8 +628,11 @@ fun AmAtvApp() {
                 }
                 shelvesByDestination = shelvesByDestination + (Destination.Radio to updated)
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
-                if (generation == libraryPagingGeneration) libraryFailedShelves = libraryFailedShelves + shelfId
+            catch (error: Exception) {
+                if (generation == libraryPagingGeneration) {
+                    libraryFailedShelves = libraryFailedShelves + shelfId
+                    libraryFailureReasons = libraryFailureReasons + (shelfId to error.catalogUiFailureReason())
+                }
             } finally {
                 if (generation == libraryPagingGeneration) {
                     libraryLoadingShelves = libraryLoadingShelves - shelfId
@@ -591,7 +643,10 @@ fun AmAtvApp() {
     }
 
     fun refreshAllContent() {
-        resetLibraryPagination()
+        resetLibraryPagination(preserveRadio = true)
+        libraryRevision++
+        browseRefreshRevision++
+        recentTracksLoadedAt = 0L
         connectionState = services.connectionState
         shelvesByDestination = shelvesByDestination.filterKeys { it != Destination.Library }
         val targets = if (destination == Destination.Home || destination == Destination.Browse || destination == Destination.Radio)
@@ -612,7 +667,13 @@ fun AmAtvApp() {
         val resumed = pendingAuthAttempt?.let(pendingAuthentication::completeAttempt)
         pendingAuthAttempt = null
         authenticatedAction = resumed
-        runtime.resetSession()
+        catalogActionItem = null
+        catalogLibraryDirty = false
+        catalogBackHandler = null
+        pendingCatalogBack = false
+        catalogModalExitToken++
+        if (resumed is PendingAuthenticationAction.ResumeCurrent) runtime.resetForAuthorizationResume()
+        else runtime.resetSession()
         selectionGeneration++
         isPlaying = false
         playWhenReady = false
@@ -625,6 +686,11 @@ fun AmAtvApp() {
         connectionState = MusicConnectionState.SignedIn
         resetLibraryPagination()
         shelvesByDestination = emptyMap()
+        recentTracks = emptyList()
+        recentTracksJob[0]?.cancel()
+        recentTracksPage = null
+        recentTracksScope = null
+        recentTracksLoadedAt = 0L
         homeFeedSnapshot = null
         feedNotices = emptyMap()
         feedFailureReasons = emptyMap()
@@ -688,6 +754,10 @@ fun AmAtvApp() {
     }
 
     fun requestPlayback() {
+        if (services.isCatalogConfigured && queueController.state.value.current == null && startupSessionLoaded) {
+            playbackMessage = AppText.text(R.string.app_choose_content_before_playback)
+            return
+        }
         if (!MockCatalog.isDemoTrack(track) &&
             (connectionState != MusicConnectionState.SignedIn || lastPlaybackFailure == PlaybackFailureKind.Authorization ||
                 runtime.preparation.value.failureKind == PlaybackFailureKind.Authorization)) {
@@ -704,7 +774,7 @@ fun AmAtvApp() {
                 continuationSnapshot.appQueueEntryId == continuationQueue.current?.entryId) &&
             continuationSnapshot.currentTrack?.catalogId == track.catalogId &&
             continuationSnapshot.currentTrack?.catalogKind == track.catalogKind
-        if (endedContinuation && continuationQueue.contextContinuationPending &&
+        if (runtime.hasPendingNextIntent || endedContinuation && continuationQueue.contextContinuationPending &&
             (continuationQueue.contextContinuationFailed || waitingQueueEntryId != null)) {
             waitingQueueEntryId = continuationQueue.current?.entryId
             playWhenReady = true
@@ -713,7 +783,8 @@ fun AmAtvApp() {
             lastPlaybackFailure = null
             playbackMessage = null
             nativeResumeRecovery.cancel()
-            if (runtime.retryContextContinuation(advanceWhenAvailable = true)) return
+            if (if (runtime.hasPendingNextIntent) runtime.retryPendingNext()
+                else runtime.retryContextContinuation(advanceWhenAvailable = true)) return
             waitingQueueEntryId = null
             playWhenReady = false
             runtime.setDesiredPlayIntent(false)
@@ -765,7 +836,7 @@ fun AmAtvApp() {
         startupCursorEdited = true
         if (MockCatalog.isDemoTrack(track) || runtime.playbackGeneration == 0L) return
         if (playbackPrepared) {
-            runCatching { services.seekTo(positionAnchorMs) }
+            runCatching { runtime.seekTo(positionAnchorMs) }
                 .onFailure { playbackMessage = AppText.text(R.string.app_seek_failed) }
         } else if (hasUserPlaybackRequest && playWhenReady) {
             selectionGeneration++
@@ -837,8 +908,10 @@ fun AmAtvApp() {
                 }
                 val token = active.awaitToken()
                 phoneSignInPhase = PhoneSignInPhase.Authorizing
-                services.completePhoneAuthentication(token)
+                val candidate = services.validatePhoneAuthentication(token)
                 if (epoch != phoneSignInEpoch[0]) return@launch
+                // No suspension between account commit and its owner/UI handoff.
+                services.completePhoneAuthentication(candidate)
                 appleAuthenticationCompleted()
                 phoneSignInPhase = PhoneSignInPhase.Complete
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -870,19 +943,21 @@ fun AmAtvApp() {
             serviceMessage = AppText.text(R.string.app_google_sign_in_unavailable)
             return
         }
-        scope.launch {
+        val epoch = ++ytmPairingEpoch[0]
+        ytmPairingJob[0]?.cancel()
+        ytmPairingJob[0] = scope.launch {
             try {
                 val pairing = services.startYtmPairing()
+                if (epoch != ytmPairingEpoch[0]) return@launch
                 ytmPairing = pairing
                 serviceMessage = null
                 services.awaitYtmPairing(pairing)
+                if (epoch != ytmPairingEpoch[0]) return@launch
                 ytmPairing = null
-                ytmSignedIn = true
-                shelvesByDestination = shelvesByDestination - Destination.Home
-                reloadNonce++
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
+                if (epoch != ytmPairingEpoch[0]) return@launch
                 ytmPairing = null
                 serviceMessage = error.message ?: AppText.text(R.string.app_google_pairing_failed)
             }
@@ -936,7 +1011,6 @@ fun AmAtvApp() {
     queueController = runtime.queue
     val queueState by queueController.state.collectAsState()
     val sleepTimerState by runtime.sleepTimer.collectAsState()
-    val playbackQueue = queueState.displayQueue
     val nativeUpcoming = remember(queueState.current?.entryId, queueState.upNext, queueState.autoplay,
         queueState.repeat, queueState.contextContinuationPending, queueState.deferredLastEntryIds, sleepTimerState.option) {
         runtime.nativeUpcoming(queueState)
@@ -975,7 +1049,7 @@ fun AmAtvApp() {
         }
         when (action) {
             StartupQueueAction.Next -> {
-                val next = queueController.advanceNext(manual = true)
+                val next = runtime.requestNext()
                 val live = queueController.state.value
                 if (next == null && live.awaitingNext) {
                     waitForNextQueueEntry(live.current?.entryId)
@@ -988,6 +1062,7 @@ fun AmAtvApp() {
                 }
             }
             StartupQueueAction.Previous -> {
+                runtime.cancelPendingNext()
                 queueController.advancePrevious(currentPositionMs())
             }
             is StartupQueueAction.Select -> {
@@ -1025,7 +1100,10 @@ fun AmAtvApp() {
             startupSessionLoaded = true
             return@LaunchedEffect
         }
-        startupCheckpoint?.let(queueController::restoreFromSession)
+        startupCheckpoint?.let {
+            queueController.restoreFromSession(it)
+            runtime.restoreMetadataCursor(it)
+        }
         val fullSession = cancellableResult {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { playbackPrefs.restoreSession() }
         }.getOrNull()?.copy(wasPlaying = false)
@@ -1035,6 +1113,7 @@ fun AmAtvApp() {
             } else fullSession.positionMs
             val restored = fullSession.copy(positionMs = cursor, wasPlaying = playWhenReady)
             queueController.restoreFromSession(restored)
+            runtime.restoreMetadataCursor(restored)
             runtime.restorePendingCollection(restored)
             track = withCachedLyrics(restored.queue[restored.currentIndex])
             hasCurrentTrack = true
@@ -1050,6 +1129,12 @@ fun AmAtvApp() {
             )
         } else {
             startupQueueActions.drain()
+        }
+        if (services.isCatalogConfigured && queueController.state.value.current == null) {
+            if (playWhenReady) playbackMessage = AppText.text(R.string.app_choose_content_before_playback)
+            playWhenReady = false
+            isPlaying = false
+            runtime.setDesiredPlayIntent(false)
         }
         startupSessionLoaded = true
     }
@@ -1230,19 +1315,6 @@ fun AmAtvApp() {
             // One failed explicit native resume may reprepare this occurrence.
             selectionGeneration++
             launchNativePlayback(resumePosition)
-        } else if (kind == PlaybackFailureKind.TrackUnavailable && playWhenReady && track.catalogKind != CatalogKind.Station) {
-            val entry = queueController.state.value.current
-            val next = entry?.let { queueController.skipFailedCurrent(it.entryId) }
-            if (selection != selectionGeneration) return
-            if (next == null && queueController.state.value.awaitingNext) {
-                runtime.setDesiredPlayIntent(true)
-                waitForNextQueueEntry(queueController.state.value.current?.entryId)
-            } else if (next == null) {
-                playWhenReady = false
-                playbackMessage = if (queueController.state.value.failureLimitReached) {
-                    AppText.text(R.string.app_multiple_songs_unavailable)
-                } else message
-            }
         } else {
             playWhenReady = false
             playbackMessage = message
@@ -1306,7 +1378,7 @@ fun AmAtvApp() {
             isPlaying = false
             lastPlaybackFailure = PlaybackFailureKind.Network
             playbackMessage = context.getString(R.string.services_collection_next_page_failed)
-            runtime.setDesiredPlayIntent(false)
+            runtime.setDesiredPlayIntent(false, preservePendingNext = true)
             return@LaunchedEffect
         }
         if (queueState.contextContinuationPending) return@LaunchedEffect
@@ -1336,6 +1408,14 @@ fun AmAtvApp() {
 
     fun applyPlaybackSnapshot(snapshot: PlaybackSnapshot) {
         if (snapshot.requestGeneration == 0L || snapshot.requestGeneration != runtime.playbackGeneration) return
+        val previousOccurrence = systemPlaybackSnapshot.value?.appQueueEntryId
+        if (snapshot.nativeQueueHandoff && snapshot.appQueueEntryId != null &&
+            snapshot.appQueueEntryId != previousOccurrence) {
+            selectionGeneration++
+            nativeResumeRecovery.cancel()
+            lastPlaybackFailure = null
+            playbackMessage = null
+        }
         publishSystemSnapshot(snapshot)
         audioBuffering = playWhenReady && snapshot.isBuffering
         // A live reconnect clears the previous song before it is prepared.
@@ -1350,14 +1430,9 @@ fun AmAtvApp() {
             }
         }
         if (runtime.hasPendingPrepare || snapshot.errorMessage != null) return
-        snapshot.appQueueEntryId?.takeIf { it != queueController.state.value.current?.entryId }?.let { entryId ->
-            if (snapshot.hasPlayerCurrentTrack && queueController.adoptNativeCurrent(entryId)) {
-                selectionGeneration++
-                nativeResumeRecovery.cancel()
-                lastPlaybackFailure = null
-                playbackMessage = null
-            }
-        }
+        // Runtime has already reconciled native handoffs against the live rail.
+        if (snapshot.appQueueEntryId != null &&
+            snapshot.appQueueEntryId != queueController.state.value.current?.entryId) return
         if (!snapshot.isPrepared) {
             playbackPrepared = false
             nativeCanSeek = false
@@ -1441,6 +1516,7 @@ fun AmAtvApp() {
             next = { skip(1) },
             previous = { skip(-1) },
             seekTo = { position -> seekPlaybackBy(position - currentPositionMs()) },
+            seekRelative = ::seekPlaybackBy,
         ),
     )
     DisposableEffect(runtime) {
@@ -1452,6 +1528,7 @@ fun AmAtvApp() {
                     play = { latestSystemPlaybackCallbacks.play() }, pause = { latestSystemPlaybackCallbacks.pause() },
                     next = { latestSystemPlaybackCallbacks.next() }, previous = { latestSystemPlaybackCallbacks.previous() },
                     seekTo = { latestSystemPlaybackCallbacks.seekTo(it) },
+                    seekRelative = { latestSystemPlaybackCallbacks.seekRelative(it) },
                 ),
             ))
         onDispose {
@@ -1540,7 +1617,12 @@ fun AmAtvApp() {
             saveCurrentSession(false)
         }
     }
-    LaunchedEffect(queueState.source) {
+    var previousYtmScope by remember { mutableStateOf(ytmAuthorization.scope) }
+    LaunchedEffect(queueState.source, ytmAuthorization.scope) {
+        if (previousYtmScope != ytmAuthorization.scope) {
+            previousYtmScope = ytmAuthorization.scope
+            queueController.invalidateRecommendationAuthorization()
+        }
         shelvesByDestination = shelvesByDestination - Destination.Home
         homeFeedSnapshot = null
         feedSuccessTimes = feedSuccessTimes - Destination.Home
@@ -1556,7 +1638,7 @@ fun AmAtvApp() {
         while (isPlaying) {
             val currentMs = currentPositionMs()
             if (currentMs >= track.durationMs - 250L) {
-                advanceNextTrack(isAuto = true)
+                if (!runtime.consumeSimulatedPlaybackEnd()) advanceNextTrack(isAuto = true)
                 break
             }
             delay(250L)
@@ -1569,15 +1651,36 @@ fun AmAtvApp() {
     // Album motion is optional display metadata, never part of audio prepare.
     // Only the selected recording is enriched; rapid skips cancel old work.
     LaunchedEffect(track.catalogId, track.catalogKind, lowPerformanceMode, artworkMotionEnabled, contentLanguageTag,
-        connectionState, startupSessionLoaded, hasCurrentTrack, reloadNonce) {
+        contentAccountScope, cacheSettings.revision, connectionState, startupSessionLoaded, hasCurrentTrack, reloadNonce) {
         val selected = track
         if (!startupSessionLoaded || !hasCurrentTrack || !artworkMotionEnabled || lowPerformanceMode || selected.catalogKind != CatalogKind.Song ||
-            selected.motionArtworkUrl != null || selected.motionArtworkVariants.isNotEmpty() ||
             MockCatalog.isDemoTrack(selected) || connectionState != MusicConnectionState.SignedIn) return@LaunchedEffect
-        val enriched = services.editorialArtwork(selected)
+        val identity = "${selected.catalogKind}:${selected.catalogId}:${selected.resourceType}:${selected.resourceId}"
+        val artScope = "$contentAccountScope:$contentLanguageTag:${cacheSettings.revision}"
+        val previousSource = playerArtworkSource.takeIf { playerArtworkIdentity == identity }
+        if (previousSource != null && playerArtworkScope == artScope) return@LaunchedEffect
+        if (previousSource == null && (selected.motionArtworkUrl != null || selected.motionArtworkVariants.isNotEmpty())) {
+            // A card may already have enriched the selected item. Keep that
+            // image now, but retain a clean lookup source for later locale changes.
+            playerArtworkSource = selected.copy(motionArtworkUrl = null, motionPreviewUrl = null,
+                motionArtworkVariants = emptyList())
+            playerArtworkIdentity = identity
+            playerArtworkScope = artScope
+            return@LaunchedEffect
+        }
+        val source = previousSource?.let {
+            selected.copy(motionArtworkUrl = it.motionArtworkUrl, motionPreviewUrl = it.motionPreviewUrl,
+                motionArtworkVariants = it.motionArtworkVariants)
+        } ?: selected
+        val enriched = services.editorialArtwork(source)
         if (track.catalogId == selected.catalogId && track.catalogKind == selected.catalogKind &&
-            connectionState == MusicConnectionState.SignedIn) {
-            track = track.withEditorialArtwork(enriched)
+            connectionState == MusicConnectionState.SignedIn && services.authorizationCacheScope() == contentAccountScope &&
+            currentContentLanguage == contentLanguageTag) {
+            playerArtworkSource = source
+            playerArtworkIdentity = identity
+            playerArtworkScope = artScope
+            track = track.copy(motionArtworkUrl = enriched.motionArtworkUrl,
+                motionPreviewUrl = enriched.motionPreviewUrl, motionArtworkVariants = enriched.motionArtworkVariants)
         }
     }
 
@@ -1610,7 +1713,6 @@ fun AmAtvApp() {
             val candidateIdentity = candidate.lyricsIdentity()
             val candidateLyricsKey = lyricsCacheKey(candidateIdentity, lyricsVariant)
             if ((currentLyricsLines.isNotEmpty() || currentLyricsIdentity in lyricsLookupFailures) &&
-                candidate.catalogId != null &&
                 (candidate.lyrics.isEmpty() || lyricsLocalization.enabled) &&
                 candidateLyricsKey !in lyricsByTrackId && candidateIdentity !in lyricsLookupFailures
             ) {
@@ -1645,28 +1747,13 @@ fun AmAtvApp() {
         currentLyricsIdentity, track.catalogKind, lyricsRequestReady, reloadNonce, lyricsRetryNonce,
         cacheSettings.revision, lyricsVariant,
     ) {
-        if (!lyricsRequestReady || track.catalogId == null || track.catalogKind != CatalogKind.Song) {
+        if (!lyricsRequestReady || track.catalogKind != CatalogKind.Song) {
             return@LaunchedEffect
         }
         val lookupIdentity = currentLyricsIdentity
         val originalTrack = track
         if (activeLyrics.trackIdentity != lookupIdentity || activeLyrics.lines.isEmpty()) {
             activeLyrics = ActiveLyricsState(lookupIdentity, originalTrack.lyrics, phase = LyricsLoadPhase.Loading)
-        }
-        val resolvedTrack = cancellableResult {
-            retryCatalogRequest({ services.resolvePlayableTrack(originalTrack) })
-        }.getOrElse {
-            activeLyrics = activeLyrics.copy(phase = if (
-                classifyPlaybackFailure(null, null, null, it) == PlaybackFailureKind.TrackUnavailable
-            ) LyricsLoadPhase.Unavailable else LyricsLoadPhase.Failed)
-            Log.w("AMATV-Lyrics", "Library catalog resolution failed (${it.javaClass.simpleName})")
-            return@LaunchedEffect
-        }
-        if (resolvedTrack.catalogId != originalTrack.catalogId) {
-            // Re-key the same library song before any request/cache lookup. The
-            // changed identity reruns this effect without flashing empty lyrics.
-            acceptResolvedTrack(originalTrack, resolvedTrack)
-            return@LaunchedEffect
         }
         val currentLyricsKey = lyricsCacheKey(lookupIdentity, lyricsVariant)
         lyricsByTrackId[currentLyricsKey]?.let { cached ->
@@ -1682,6 +1769,12 @@ fun AmAtvApp() {
             activeLyrics.resolvedVariant == lyricsVariant &&
             activeLyrics.phase == LyricsLoadPhase.Ready
         ) return@LaunchedEffect
+
+        activeLyrics.projectResolvedVariant(lookupIdentity, lyricsLocalization)?.let { projected ->
+            cacheLyrics(lookupIdentity, lyricsVariant, projected.lines)
+            activeLyrics = projected
+            return@LaunchedEffect
+        }
 
         // The canonical lines are the stable UI baseline. Changing language never
         // clears them and never exposes a half-parsed localization document.
@@ -1701,6 +1794,21 @@ fun AmAtvApp() {
             )
             return@LaunchedEffect
         }
+        val resolvedTrack = cancellableResult {
+            retryCatalogRequest({ services.resolvePlayableTrack(originalTrack) })
+        }.getOrElse {
+            activeLyrics = activeLyrics.copy(phase = if (
+                classifyPlaybackFailure(null, null, null, it) == PlaybackFailureKind.TrackUnavailable
+            ) LyricsLoadPhase.Unavailable else LyricsLoadPhase.Failed)
+            Log.w("AMATV-Lyrics", "Library catalog resolution failed (${it.javaClass.simpleName})")
+            return@LaunchedEffect
+        }
+        if (resolvedTrack.catalogId != originalTrack.catalogId) {
+            // Re-key the same library song before any request/cache lookup. The
+            // changed identity reruns this effect without flashing empty lyrics.
+            acceptResolvedTrack(originalTrack, resolvedTrack)
+            return@LaunchedEffect
+        }
         if (lookupIdentity in lyricsLookupFailures && baseline.isEmpty()) {
             activeLyrics = ActiveLyricsState(
                 trackIdentity = lookupIdentity,
@@ -1711,12 +1819,9 @@ fun AmAtvApp() {
             return@LaunchedEffect
         }
         val lookupTrack = track
-        activeLyrics = ActiveLyricsState(
-            trackIdentity = lookupIdentity,
-            lines = baseline,
-            resolvedVariant = null,
-            phase = LyricsLoadPhase.Loading,
-        )
+        val loadingLyrics = activeLyrics.pendingVariant(lookupIdentity, lyricsLocalization)
+            .let { pending -> if (pending.lines.isEmpty()) pending.copy(lines = baseline) else pending }
+        activeLyrics = loadingLyrics
         Log.i("AMATV-Lyrics", "Loading current lyrics: $lookupIdentity " +
             "source=${lookupTrack.resourceType}:${lookupTrack.resourceId} (audioPrepared=$playbackPrepared)")
         when (val result = requestLyricsWithRetry({
@@ -1745,10 +1850,10 @@ fun AmAtvApp() {
                     )
                 } else {
                     // Lyrics exist but this translation/pronunciation variant does not.
-                    cacheLyrics(lookupIdentity, lyricsVariant, baseline)
+                    cacheLyrics(lookupIdentity, lyricsVariant, loadingLyrics.lines)
                     activeLyrics = ActiveLyricsState(
                         trackIdentity = lookupIdentity,
-                        lines = baseline,
+                        lines = loadingLyrics.lines,
                         resolvedVariant = lyricsVariant,
                         phase = LyricsLoadPhase.Ready,
                     )
@@ -1757,12 +1862,7 @@ fun AmAtvApp() {
             is LyricsRequestResult.RetryableFailure -> {
                 if (track.lyricsIdentity() != lookupIdentity) return@LaunchedEffect
                 // Keep the canonical lines visible and expose a retryable state only.
-                activeLyrics = ActiveLyricsState(
-                    trackIdentity = lookupIdentity,
-                    lines = baseline,
-                    resolvedVariant = null,
-                    phase = LyricsLoadPhase.Failed,
-                )
+                activeLyrics = loadingLyrics.copy(phase = LyricsLoadPhase.Failed)
                 Log.w("AMATV-Lyrics", "Lyrics temporarily unavailable (${result.reason})")
             }
         }
@@ -1783,7 +1883,8 @@ fun AmAtvApp() {
         feedRefreshTick++
     }
 
-    LaunchedEffect(destination, connectionState, reloadNonce, contentLanguageTag, queueState.source, feedRefreshTick, contentAccountScope) {
+    LaunchedEffect(destination, connectionState, reloadNonce, contentLanguageTag, queueState.source,
+        ytmAuthorization.scope, feedRefreshTick, contentAccountScope) {
         if (shelvesLanguageTag != contentLanguageTag) {
             resetLibraryPagination()
             // Section titles are presentation metadata. Invalidate only this
@@ -1791,6 +1892,8 @@ fun AmAtvApp() {
             shelvesByDestination = if (services.isCatalogConfigured) emptyMap() else demoShelves()
             loadingDestinations = emptySet()
             shelvesLanguageTag = contentLanguageTag
+            browseRefreshRevision++
+            libraryRevision++
             homeFeedSnapshot = null
             feedNotices = emptyMap()
         feedFailureReasons = emptyMap()
@@ -1823,7 +1926,8 @@ fun AmAtvApp() {
             Destination.Browse -> dev.amatv.integration.CatalogFeedKind.Browse
             else -> null
         }
-        val snapshotScope = contentAccountScope + if (target == Destination.Home) ":${queueState.source.name}" else ""
+        val snapshotScope = contentAccountScope + if (target == Destination.Home)
+            ":${queueState.source.name}:${ytmAuthorization.scope.takeIf { queueState.source == AutoplaySource.YouTubeMusic }.orEmpty()}" else ""
         if (feedKind != null) {
             if (shelvesByDestination[target].isNullOrEmpty() && !(target == Destination.Home && probeColdHome)) {
                 val cached = feedCache.read(snapshotScope, contentLanguageTag, feedKind)
@@ -1845,11 +1949,6 @@ fun AmAtvApp() {
             forcedFeedRefresh = forcedFeedRefresh - target
             feedAttemptTimes = feedAttemptTimes + (target to SystemClock.elapsedRealtime())
         } else if (shelvesByDestination[target]?.isNotEmpty() == true && !radioNeedsRefresh) return@LaunchedEffect
-        if (target == Destination.Library && connectionState != MusicConnectionState.SignedIn) {
-            loadingDestinations = loadingDestinations - target
-            return@LaunchedEffect
-        }
-
         loadingDestinations = loadingDestinations + target
         val cacheGeneration = services.contentCache.generation
         val requestAttemptAt = feedAttemptTimes[target]
@@ -1876,7 +1975,7 @@ fun AmAtvApp() {
                             dev.amatv.integration.HomeFeedResult(services.ytmHomeShelves())
                         })
                         add(dev.amatv.integration.HomeFeedSource("recent-tracks") {
-                            val page = if (signedIn) services.recentlyPlayedTracksPage() else null
+                            val page = if (signedIn) loadRecentTracks() else null
                             val items = capabilities.filterTracks(page?.items.orEmpty())
                             dev.amatv.integration.HomeFeedResult(
                                 if (items.isEmpty()) emptyList() else listOf(ContentShelf("recent-tracks", AppText.text(R.string.app_recent_tracks), items,
@@ -1933,31 +2032,33 @@ fun AmAtvApp() {
                 Destination.Radio -> cancellableResult {
                     val generation = libraryPagingGeneration
                     radioRefreshComplete = false
-                    var completed = false
                     val firstPages = linkedMapOf<String, LibraryPage>()
-                    services.radioShelves(
-                        onPage = { id, page -> firstPages[id] = page },
-                        onFinished = { completed = it },
-                    ).let { fresh ->
+                    services.radioShelves(onPage = { id, page -> firstPages[id] = page }).let { result ->
+                        errors.addAll(result.failures.values)
                         if (generation == libraryPagingGeneration) {
                             // Keep the old rows and their continuation controls
                             // intact during refresh. Commit page cursors with
                             // the settled shelves, not each source completion.
-                            firstPages.forEach { (id, page) ->
+                            val replacedIds = (libraryNextPages.keys + libraryVisitedPages.keys + libraryTotals.keys +
+                                libraryFailedShelves + firstPages.keys).filter { id -> result.successfulSources.any { it.ownsShelf(id) } }
+                            replacedIds.forEach { id ->
                                 libraryPageJobs.remove(id)?.cancel()
                                 libraryLoadingShelves = libraryLoadingShelves - id
                                 libraryVisitedPages = libraryVisitedPages - id
                                 libraryNextPages = libraryNextPages - id
                                 libraryTotals = libraryTotals - id
+                                libraryFailedShelves = libraryFailedShelves - id
+                                libraryFailureReasons = libraryFailureReasons - id
+                            }
+                            firstPages.forEach { (id, page) ->
                                 rememberLibraryPage(id, page)
                             }
-                            radioRefreshComplete = completed
+                            radioRefreshComplete = result.failures.isEmpty()
                             radioRefreshFinishedAt = SystemClock.elapsedRealtime()
                             radioRecentPlaybackId = playedRadio
                         }
-                        if (completed) fresh else {
-                            val ids = fresh.mapTo(mutableSetOf()) { it.id }
-                            fresh + shelvesByDestination[target].orEmpty().filter { it.id !in ids }
+                        result.shelves + shelvesByDestination[target].orEmpty().filter { shelf ->
+                            result.successfulSources.none { it.ownsShelf(shelf.id) }
                         }
                     }
                 }.fold(onSuccess = { it }, onFailure = { errors.add(it); shelvesByDestination[target].orEmpty() })
@@ -1972,7 +2073,10 @@ fun AmAtvApp() {
                 -> emptyList()
             }
         }
-        val visibleShelves = capabilities.filterShelves(loadedShelves)
+        val visibleShelves = if (target == Destination.Radio) loadedShelves.mapNotNull { shelf ->
+            val items = capabilities.filterTracks(shelf.items)
+            shelf.copy(items = items).takeIf { items.isNotEmpty() || shelf.id in libraryNextPages }
+        } else capabilities.filterShelves(loadedShelves)
         feedFailureReasons = errors.firstOrNull()?.catalogUiFailureReason()?.let {
             feedFailureReasons + (target to it)
         } ?: (feedFailureReasons - target)
@@ -2044,8 +2148,27 @@ fun AmAtvApp() {
 
     fun dismissCatalogActions() {
         catalogActionItem = null
+        catalogBackHandler = null
+        pendingCatalogBack = false
         catalogModalExitToken++
         if (catalogLibraryDirty) { catalogLibraryDirty = false; refreshLoadedLibrary() }
+    }
+    fun libraryChanged() {
+        catalogLibraryDirty = true
+        libraryRevision++
+    }
+    fun backCatalogActions() {
+        val handler = catalogBackHandler
+        if (handler == null) pendingCatalogBack = true else handler()
+    }
+    LaunchedEffect(catalogActionItem, catalogBackHandler, pendingCatalogBack) {
+        if (catalogActionItem == null) {
+            catalogBackHandler = null
+            pendingCatalogBack = false
+        } else if (pendingCatalogBack && catalogBackHandler != null) {
+            pendingCatalogBack = false
+            catalogBackHandler?.invoke()
+        }
     }
     fun dispatchMediaKey(keyCode: Int): Boolean {
         return when (keyCode) {
@@ -2093,7 +2216,7 @@ fun AmAtvApp() {
     BackHandler {
         when {
             exitConfirmationVisible -> dismissExitConfirmation()
-            catalogActionItem != null -> dismissCatalogActions()
+            catalogActionItem != null -> backCatalogActions()
             phoneSignInVisible -> {
                 pendingAuthentication.clear()
                 pendingAuthAttempt = null
@@ -2124,7 +2247,7 @@ fun AmAtvApp() {
                         activation = native.keyCode in listOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
                             KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_SPACE), repeat = native.repeatCount)) {
                         CatalogModalInputGate.HostResult.DismissMenu -> {
-                            if (exitConfirmationVisible) dismissExitConfirmation() else dismissCatalogActions()
+                            if (exitConfirmationVisible) dismissExitConfirmation() else backCatalogActions()
                             return@onPreviewKeyEvent true
                         }
                         CatalogModalInputGate.HostResult.Consume -> return@onPreviewKeyEvent true
@@ -2190,6 +2313,8 @@ fun AmAtvApp() {
                             .associateWith { id -> LibraryShelfPagination(
                                 id in libraryNextPages, id in libraryLoadingShelves, id in libraryFailedShelves, libraryTotals[id],
                                 loadedPages = libraryVisitedPages[id]?.size ?: 0,
+                                failureReason = libraryFailureReasons[id],
+                                refreshGeneration = libraryRevision,
                             ) },
                         onLoadMoreShelf = { id ->
                             if (activeBrowseDestination == Destination.Radio) loadMoreRadioShelf(id)
@@ -2214,11 +2339,11 @@ fun AmAtvApp() {
                         ytmPairingConfigured = services.ytmPairingConfigured,
                         onYtmSignIn = (::startYtmPairing),
                         onYtmSignOut = {
+                            ytmPairingEpoch[0]++
+                            ytmPairingJob[0]?.cancel()
+                            ytmPairingJob[0] = null
                             services.signOutYtm()
-                            ytmSignedIn = false
                             ytmPairing = null
-                            shelvesByDestination = shelvesByDestination - Destination.Home
-                            reloadNonce++
                         },
                         onSignOut = {
                             pendingAuthentication.clear()
@@ -2253,6 +2378,10 @@ fun AmAtvApp() {
                             connectionState = services.connectionState
                             shelvesByDestination = emptyMap()
                             recentTracks = emptyList()
+                            recentTracksJob[0]?.cancel()
+                            recentTracksPage = null
+                            recentTracksScope = null
+                            recentTracksLoadedAt = 0L
                             serviceMessage = AppText.text(R.string.app_apple_signed_out)
                             reloadNonce++
                         },
@@ -2266,6 +2395,10 @@ fun AmAtvApp() {
                         modalExitToken = catalogModalExitToken,
                         onPlayCollection = ::playCollection,
                         searchHistoryScopeKey = contentAccountScope + ":" + contentLanguageTag,
+                        accountScopeKey = contentAccountScope,
+                        libraryRevision = libraryRevision,
+                        browseRefreshRevision = browseRefreshRevision,
+                        onEnsureRecentTracks = ::ensureRecentTracks,
                         onRootVisibleChange = { rootFeedVisible = it },
                         contentNotice = feedNotices[activeBrowseDestination]?.let { stringResource(it) },
                         contentFailureReason = feedFailureReasons[activeBrowseDestination],
@@ -2336,6 +2469,7 @@ fun AmAtvApp() {
                         queueEntryIds = timelineEntryIds,
                         queueCurrentIndex = queueState.currentTimelineIndex,
                         queueSessionId = queueState.sessionId,
+                        playbackSelectionKey = "${queueState.sessionId}|${queueState.current?.entryId}",
                         canClearQueue = queueState.upNext.isNotEmpty() || queueState.autoplay.isNotEmpty() || queueState.contextContinuationPending,
                         canSkipPrevious = if (track.catalogKind == CatalogKind.Station) canSkipPrevious else queueState.canSkipPrevious,
                         canSkipNext = if (track.catalogKind == CatalogKind.Station) canSkipNext else queueState.canSkipNext,
@@ -2344,7 +2478,8 @@ fun AmAtvApp() {
                         shuffleEnabled = track.catalogKind != CatalogKind.Station && queueState.shuffle,
                         autoplayEnabled = track.catalogKind != CatalogKind.Station && queueState.infinite,
                         canSetRepeat = track.catalogKind != CatalogKind.Station,
-                        canSetShuffle = track.catalogKind != CatalogKind.Station && !queueState.contextContinuationPending,
+                        canSetShuffle = track.catalogKind != CatalogKind.Station &&
+                            (!queueState.contextContinuationPending || queueState.shuffle),
                         canSetAutoplay = track.catalogId != null &&
                             track.catalogKind == dev.amatv.model.CatalogKind.Song,
                         autoplaySource = queueState.source,
@@ -2354,6 +2489,8 @@ fun AmAtvApp() {
                             if (catalogActionItem == null) queueController.state.value.sessionEntries.firstOrNull { it.entryId == entryId }?.let { entry ->
                                 catalogModalInput.menuOpened()
                                 catalogQueueActionEntryId = entryId
+                                catalogBackHandler = null
+                                pendingCatalogBack = false
                                 catalogActionAnchor = null
                                 catalogActionItem = entry.track
                             }
@@ -2385,6 +2522,10 @@ fun AmAtvApp() {
                             (activeLyrics.trackIdentity == currentLyricsIdentity &&
                                 activeLyrics.resolvedVariant == lyricsVariant &&
                                 activeLyrics.phase == LyricsLoadPhase.Ready),
+                        lyricTranslationReady = activeLyrics.trackIdentity == currentLyricsIdentity &&
+                            activeLyrics.translationReadyFor(lyricsLocalization),
+                        lyricPronunciationReady = activeLyrics.trackIdentity == currentLyricsIdentity &&
+                            activeLyrics.pronunciationReadyFor(lyricsLocalization),
                         onLyricTranslationEnabledChange = { enabled ->
                             lyricTranslationEnabled = enabled
                             playbackPrefs.lyricTranslationEnabled = enabled
@@ -2431,10 +2572,10 @@ fun AmAtvApp() {
                         queueEntry, queueState, services, connectionState == MusicConnectionState.SignedIn,
                         onSignIn = { catalogActionItem = null; startSignIn() },
                         onDismiss = ::dismissCatalogActions,
-                        onLibraryChanged = { catalogLibraryDirty = true },
+                        onLibraryChanged = ::libraryChanged,
                         onResourceDeleted = { deleted ->
                             catalogDeletedResource = CatalogResourceRef.fromTrack(deleted)
-                            catalogLibraryDirty = true
+                            libraryChanged()
                         },
                         onViewArtist = { artist ->
                             val returnToPlayer = destination == Destination.NowPlaying
@@ -2467,6 +2608,8 @@ fun AmAtvApp() {
                             Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode },
                         lowPerformanceMode = lowPerformanceMode,
                         onMediaKey = ::dispatchMediaKey, modalInputGate = catalogModalInput,
+                        accountScopeKey = contentAccountScope,
+                        onRegisterBackHandler = { catalogBackHandler = it },
                     ) else
                     CatalogActionSheet(item, services, connectionState == MusicConnectionState.SignedIn,
                         sleepTimerState = sleepTimerState,
@@ -2478,10 +2621,10 @@ fun AmAtvApp() {
                         onMediaKey = ::dispatchMediaKey,
                         modalInputGate = catalogModalInput,
                         onSignIn = { catalogActionItem = null; startSignIn() },
-                        onDismiss = ::dismissCatalogActions, onLibraryChanged = { catalogLibraryDirty = true },
+                        onDismiss = ::dismissCatalogActions, onLibraryChanged = ::libraryChanged,
                         onResourceDeleted = { deleted ->
                             catalogDeletedResource = CatalogResourceRef.fromTrack(deleted)
-                            catalogLibraryDirty = true
+                            libraryChanged()
                         },
                         onViewArtist = { artist ->
                             val returnToPlayer = destination == Destination.NowPlaying
@@ -2516,7 +2659,9 @@ fun AmAtvApp() {
                         anchorBounds = catalogActionAnchor,
                         backdropLayer = catalogBackdropLayer.takeIf { interfaceStyle == InterfaceStyle.Apple &&
                             Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode },
-                        lowPerformanceMode = lowPerformanceMode)
+                        lowPerformanceMode = lowPerformanceMode,
+                        accountScopeKey = contentAccountScope,
+                        onRegisterBackHandler = { catalogBackHandler = it })
                 }
                 if (phoneSignInVisible) PhoneMusicSignInDialog(
                     url = phoneSignInSession?.pairing?.url,

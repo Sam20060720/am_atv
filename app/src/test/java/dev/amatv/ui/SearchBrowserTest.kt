@@ -20,6 +20,32 @@ class SearchBrowserTest {
         while (!predicate()) delay(5)
     }
 
+    @Test fun libraryMutationInvalidatesCoveredEmptyResultsAndKeepsCatalogCache() {
+        val scope = scope()
+        var libraryCalls = 0
+        var catalogCalls = 0
+        val browser = SearchBrowser(scope, { _, _, _, library ->
+            if (library) {
+                libraryCalls++
+                LibraryPage(if (libraryCalls == 1) emptyList() else listOf(song("added", true)), null, "/library")
+            } else { catalogCalls++; LibraryPage(listOf(song("catalog")), null, "/catalog") }
+        }, { CatalogSearchSuggestions() })
+        try {
+            browser.submit("query")
+            browser.selectScope(SearchScope.Library)
+            assertTrue(browser.state.value.loaded)
+            assertTrue(browser.state.value.items.isEmpty())
+            browser.setVisible(false)
+            browser.invalidateLibrary()
+            assertEquals(1, libraryCalls)
+            browser.setVisible(true)
+            assertEquals("added", browser.state.value.items.single().id)
+            browser.selectScope(SearchScope.Catalog)
+            assertEquals("catalog", browser.state.value.items.single().id)
+            assertEquals(1, catalogCalls)
+        } finally { browser.dispose(); scope.cancel() }
+    }
+
     @Test fun completedSuggestionsSurviveSubmitCategoryAndScopeChangesAndReuseQueryCache() = runBlocking {
         val scope = CoroutineScope(coroutineContext + SupervisorJob())
         val reads = mutableListOf<String>()

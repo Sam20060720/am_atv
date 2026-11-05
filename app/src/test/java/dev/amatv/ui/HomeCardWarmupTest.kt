@@ -1,6 +1,8 @@
 package dev.amatv.ui
 
 import kotlinx.coroutines.CoroutineStart
+import dev.amatv.model.Track
+import dev.amatv.model.CatalogKind
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -21,7 +23,31 @@ class HomeCardWarmupTest {
         assertFalse(queue.wasMounted(key))
         assertTrue(queue.wasMounted("other-255"))
         queue.close()
-        assertFalse(queue.wasMounted("other-255"))
+        assertTrue(queue.wasMounted("other-255"))
+    }
+
+    @Test fun tabDisposalRetainsOnlyIdentityPermitsAndDropsPendingCallbacks() {
+        val history = HomeCardMountHistory()
+        val first = HomeCardWarmup(history)
+        first.rememberMounted("albums:123")
+        first.request({ 0 }) { fail("Disposed composition callback survived") }
+        first.close()
+        val returning = HomeCardWarmup(history)
+        assertEquals(0, first.pendingCount)
+        assertTrue(returning.wasMounted("albums:123"))
+        assertFalse(returning.wasMounted("library-albums:123"))
+        assertEquals(0, returning.pendingCount)
+        assertFalse(returning.mountNext(1))
+    }
+
+    @Test fun supplementalUrlsKeepAPermitButAnotherResourceTypeDoesNot() {
+        val item = Track("123", "Album", "Artist", "", 0L, emptyList(), emptyList(),
+            catalogKind = CatalogKind.Album, resourceType = "albums", resourceId = "123")
+        val queue = HomeCardWarmup()
+        queue.rememberMounted(item.homeCardMountKey())
+        assertTrue(queue.wasMounted(item.copy(artworkUrl = "https://example.test/new.jpg",
+            motionArtworkUrl = "https://example.test/new.m3u8").homeCardMountKey()))
+        assertFalse(queue.wasMounted(item.copy(resourceType = "library-albums").homeCardMountKey()))
     }
 
     @Test fun allRowsShareOneMountPermitPerDisplayFrame() {

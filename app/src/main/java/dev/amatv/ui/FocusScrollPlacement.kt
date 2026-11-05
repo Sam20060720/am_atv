@@ -46,6 +46,7 @@ internal class FocusScrollPlacement(
     private val spec: BringIntoViewSpec,
     private val viewport: FocusFrameGeometry,
     private val verticalScrollOffset: State<Float>? = null,
+    private val direction: LayoutDirection = LayoutDirection.Ltr,
 ) {
     fun destination(bounds: Rect, focusedScale: Float): Rect {
         val viewportBounds = viewport.bounds ?: return bounds
@@ -63,6 +64,7 @@ internal class FocusScrollPlacement(
             last?.takeIf { it.index == layout.totalItemsCount - 1 }?.let { it.offset + it.size },
             layout.viewportEndOffset,
             layout.afterContentPadding,
+            isRtl = direction == LayoutDirection.Rtl,
         )
         return bounds.translate(-distance, -(verticalScrollOffset?.value ?: 0f))
     }
@@ -74,11 +76,15 @@ internal fun reachableFocusScroll(
     lastItemEnd: Int?,
     viewportEnd: Int,
     afterPadding: Int,
+    isRtl: Boolean = false,
 ): Float {
+    // Lazy offsets are measured from logical start; bounds and requested
+    // distance are physical. Clamp in one coordinate system, then mirror back.
+    val sign = if (isRtl) -1f else 1f
     val minimum = firstItemOffset?.coerceAtMost(0)?.toFloat() ?: Float.NEGATIVE_INFINITY
     val maximum = lastItemEnd?.let { (it + afterPadding - viewportEnd).coerceAtLeast(0).toFloat() }
         ?: Float.POSITIVE_INFINITY
-    return requested.coerceIn(minimum, maximum)
+    return (requested * sign).coerceIn(minimum, maximum) * sign
 }
 
 internal val LocalFocusScrollPlacement = staticCompositionLocalOf<FocusScrollPlacement?> { null }
@@ -250,8 +256,8 @@ internal fun FocusTrackingRow(
     )
     val viewport = remember { FocusFrameGeometry() }
     val frameEnabled = LocalFocusFrameEnabled.current
-    val placement = remember(state, spec, verticalScrollOffset) {
-        FocusScrollPlacement(state, spec, viewport, verticalScrollOffset)
+    val placement = remember(state, spec, verticalScrollOffset, direction) {
+        FocusScrollPlacement(state, spec, viewport, verticalScrollOffset, direction)
     }
     CompositionLocalProvider(
         LocalBringIntoViewSpec provides spec,

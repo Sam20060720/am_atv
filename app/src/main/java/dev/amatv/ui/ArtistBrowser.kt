@@ -165,6 +165,13 @@ internal class ArtistBrowser(
         }
     }
 
+    fun invalidateLibrary() {
+        val libraryJobs = jobs.keys.filter { it.second == ArtistSection.LibraryAlbums }
+        libraryJobs.forEach { jobs.remove(it)?.cancel() }
+        visitedPages.keys.removeAll { it.second == ArtistSection.LibraryAlbums }
+        mutableVisits.value = mutableVisits.value.map { it.copy(sections = it.sections - ArtistSection.LibraryAlbums) }
+    }
+
     fun close() {
         cancelRequests()
         visitedPages.clear()

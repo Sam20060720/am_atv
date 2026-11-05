@@ -33,6 +33,23 @@ class EditorialArtworkResolverTest {
         assertEquals(2, calls)
     }
 
+    @Test fun clearingCacheInvalidatesPositiveAndNegativeAlbumRelationships() = runBlocking {
+        var generation = 0L
+        var calls = 0
+        var relation: Track? = null
+        val resolver = EditorialArtworkResolver({ "tw" }, { calls++; relation }, { it }, { generation })
+        resolver.artwork(song)
+        relation = album
+        resolver.artwork(song)
+        assertEquals(1, calls) // The negative result still belongs to this generation.
+        generation++
+        resolver.artwork(song)
+        assertEquals(2, calls)
+        generation++
+        resolver.artwork(song)
+        assertEquals(3, calls) // Clear also invalidates a successful relation.
+    }
+
     @Test fun unmatchedLibraryRecordingNeverGuessesAlbumByTitle() = runBlocking {
         val resolver = EditorialArtworkResolver({ "tw" }, { error("Must not fetch") }, { error("Must not fetch") })
         val unmatched = song.copy(catalogId = "i.abc")

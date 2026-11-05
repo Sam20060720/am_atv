@@ -36,6 +36,13 @@ internal class CatalogPageBrowser(
     private var artworkCompleted = false
     init { retryProfile() }
 
+    fun invalidate() {
+        jobs.values.toList().forEach(Job::cancel); jobs.clear(); cursors.clear()
+        artworkCompleted = false
+        mutableState.value = CatalogPageState(loading = visible)
+        if (visible) requestProfile(force = true)
+    }
+
     fun retryProfile() { artworkCompleted = false; requestProfile(force = true) }
 
     private fun requestProfile(force: Boolean = false) {

@@ -1,6 +1,7 @@
 package dev.amatv.ui
 
 import dev.amatv.R
+import dev.amatv.integration.CatalogFailureReason
 import dev.amatv.integration.LibraryPage
 import dev.amatv.integration.CollectionShuffleSample
 import dev.amatv.model.CatalogKind
@@ -26,6 +27,7 @@ internal data class CollectionBrowserState(
     val tracks: List<Track> = emptyList(),
     val loading: Boolean = false,
     val error: Int? = null,
+    val failureReason: CatalogFailureReason? = null,
     val artists: List<Track> = emptyList(),
     val next: String? = null,
     /** Server relationship total, when returned; it can include non-song resources. */
@@ -82,6 +84,10 @@ internal class CollectionBrowser(
         if (visible) { requestPage(); requestArtists(); requestMetadata() }
     }
 
+    fun invalidate() {
+        mutableState.value.collection?.let(::open)
+    }
+
     fun more() {
         val current = mutableState.value
         if (!visible || !current.loaded || current.next == null || current.error != null || current.preparing) return
@@ -112,7 +118,7 @@ internal class CollectionBrowser(
             current.total?.let { it > 0 } == true && loadShuffleSample != null) {
             cancelPageRequest()
             preparation = Preparation(generation, index, true, onReady)
-            mutableState.value = mutableState.value.copy(preparing = true, error = null)
+            mutableState.value = mutableState.value.copy(preparing = true, error = null, failureReason = null)
             requestShuffleSample(checkNotNull(current.total))
             return true
         }
@@ -120,7 +126,7 @@ internal class CollectionBrowser(
         // Reuse an in-flight browse page rather than cancelling and fetching
         // that same cursor again; its loop observes this preparation below.
         preparation = Preparation(generation, index, shuffle, onReady)
-        mutableState.value = mutableState.value.copy(preparing = true, error = null)
+        mutableState.value = mutableState.value.copy(preparing = true, error = null, failureReason = null)
         if (current.complete) {
             val ready = preparation
             preparation = null
@@ -149,9 +155,9 @@ internal class CollectionBrowser(
                 } else ready = CollectionPlaybackRequest(collection, listOf(sample.track), 0, true,
                     CollectionPlaybackContinuation.sampledShuffle(collection, sample, load))
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
+            catch (failure: Exception) {
                 if (visit == generation && request == requestGeneration) {
-                    mutableState.value = mutableState.value.copy(error = R.string.browse_tracks_error_detail)
+                    mutableState.value = mutableState.value.copy(error = R.string.browse_tracks_error_detail, failureReason = failure.catalogUiFailureReason())
                 }
             } finally {
                 if (visit == generation && request == requestGeneration) {
@@ -231,7 +237,7 @@ internal class CollectionBrowser(
         val visit = generation
         val request = ++requestGeneration
         mutableState.value = mutableState.value.copy(loading = !mutableState.value.loaded,
-            loadingMore = mutableState.value.loaded, error = null)
+            loadingMore = mutableState.value.loaded, error = null, failureReason = null)
         val loadingJob = scope.launch(start = CoroutineStart.LAZY) {
             var ready: Preparation? = null
             try {
@@ -258,7 +264,7 @@ internal class CollectionBrowser(
                         tracks = mutableState.value.tracks + page.items, next = page.nextPage,
                         total = page.total ?: mutableState.value.total, loaded = true,
                         loading = false, loadingMore = preparation != null && page.nextPage != null,
-                        error = null,
+                        error = null, failureReason = null,
                     )
                     if (mutableState.value.complete) {
                         ready = preparation
@@ -270,10 +276,10 @@ internal class CollectionBrowser(
                     if (preparation != null) yield()
                 } while (preparation != null)
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
+            catch (failure: Exception) {
                 if (visit == generation && request == requestGeneration) {
                     preparation = null
-                    mutableState.value = mutableState.value.copy(error = R.string.browse_tracks_error_detail)
+                    mutableState.value = mutableState.value.copy(error = R.string.browse_tracks_error_detail, failureReason = failure.catalogUiFailureReason())
                 }
             } finally {
                 if (visit == generation && request == requestGeneration) {

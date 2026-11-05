@@ -87,6 +87,7 @@ internal fun ArtistScreen(
     val profileRetryFocus = remember { FocusRequester() }
     val sectionEntries = remember { mutableMapOf<ArtistSection, FocusRequester>() }
     val scope = rememberCoroutineScope()
+    val cancelShelfIntents = remember { mutableMapOf<String, () -> Unit>() }
     var sectionFocusJob by remember { mutableStateOf<Job?>(null) }
     val sectionNavigation = remember(visit.key) {
         ArtistSectionNavigation(listOf(ArtistSectionNavigation.Profile) + ArtistSection.entries.map { it.name })
@@ -222,6 +223,7 @@ internal fun ArtistScreen(
     LaunchedEffect(contentActive) {
         if (!contentActive) {
             biographyReadingWanted = false
+            cancelShelfIntents.values.toList().forEach { it() }
             profileRetryFocusWanted = false
             cancelSectionFocus()
         }
@@ -276,8 +278,10 @@ internal fun ArtistScreen(
                 KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_MENU))
             return@onPreviewKeyEvent true
         if (key.action == KeyEvent.ACTION_DOWN && key.keyCode in listOf(KeyEvent.KEYCODE_DPAD_UP,
-                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_BACK))
+                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_BACK)) {
             biographyReadingWanted = false
+            cancelShelfIntents.values.toList().forEach { it() }
+        }
         if (key.action != KeyEvent.ACTION_DOWN) false
         else if (latestActive && key.keyCode in listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)) {
             val actual = selectedRoute()
@@ -401,6 +405,9 @@ internal fun ArtistScreen(
                         sectionEntries.getOrPut(section) { FocusRequester() }, selectedKey,
                         onSelected = { selectedKey = it; sectionNavigation.focused(section.name); if (section == visibleSections.firstOrNull()) pageTop.request() }, onMore = { onMore(section) },
                         onRetry = { onRetrySection(section) },
+                        onRegisterCancelPending = { cancel ->
+                            if (cancel == null) cancelShelfIntents.remove(section.name) else cancelShelfIntents[section.name] = cancel
+                        },
                         onEmptyFocus = {
                             val removedKey = latestSelectedKey
                             val current = latestSections[section]
@@ -432,6 +439,7 @@ internal fun CatalogShelf(
     onSignIn: () -> Unit = {},
     prefetchParent: LazyListState? = null,
     prefetchParentKey: Any? = null,
+    onRegisterCancelPending: ((() -> Unit)?) -> Unit = {},
 ) {
     val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     val cardWidth = if (classic) ClassicBrowseVisuals.CardWidth else BrowseTokens.CardWidth
@@ -443,6 +451,12 @@ internal fun CatalogShelf(
     var retainedEntryKey by rememberSaveable(sectionKey) { mutableStateOf<String?>(null) }
     var wantsStatusContent by remember { mutableStateOf(false) }
     var appendIndex by remember { mutableStateOf<Int?>(null) }
+    val cancelRegistration by rememberUpdatedState(onRegisterCancelPending)
+    val cancelIntent by rememberUpdatedState<() -> Unit>({ appendIndex = null; wantsStatusContent = false })
+    DisposableEffect(Unit) {
+        cancelRegistration { cancelIntent() }
+        onDispose { cancelRegistration(null) }
+    }
     val footerFocus = remember { FocusRequester() }
     val statusKey = "${sectionKey}:status"
     val hasFooter = page.next != null || page.failed || page.loading
@@ -488,7 +502,8 @@ internal fun CatalogShelf(
         }
         false
     }
-    Column(Modifier.fillMaxWidth().automationId("$automationPrefix-section-${sectionKey.lowercase()}")
+    Column(Modifier.fillMaxWidth().onFocusChanged { if (!it.hasFocus) { appendIndex = null; wantsStatusContent = false } }.focusGroup()
+        .automationId("$automationPrefix-section-${sectionKey.lowercase()}")
         .semantics { collectionInfo = CollectionInfo(rowCount = 1, columnCount = page.items.size) }
         .then(cancelPending)) {
         Text(title, color = Color.White.copy(alpha = 0.94f), fontSize = if (classic) 21.sp else 18.sp, lineHeight = if (classic) 27.sp else BrowseTokens.HeadingLineHeight,

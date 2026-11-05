@@ -3,6 +3,10 @@ package dev.amatv.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -50,6 +54,7 @@ internal fun TvTextField(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     readOnly: Boolean = false,
+    onActivate: (() -> Unit)? = null,
     placeholder: String? = null,
     label: String? = null,
     size: TvTextFieldSize = TvTextFieldSize.Compact,
@@ -116,7 +121,11 @@ internal fun TvTextField(
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
-            modifier = modifier.heightIn(min = minimumHeight)
+            modifier = modifier
+                .then(if (interactive && readOnly && onActivate != null) Modifier
+                    .pointerInput(onActivate) { detectTapGestures(onTap = { onActivate() }) }
+                    .semantics { onClick { onActivate(); true } } else Modifier)
+                .heightIn(min = minimumHeight)
                 .then(if (classic) Modifier.focusFrameTarget(focused, frameKey, 4.dp)
                     .localFocusFrame(4.dp) {
                         val opacity = when {

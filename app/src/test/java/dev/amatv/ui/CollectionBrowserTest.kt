@@ -15,6 +15,50 @@ class CollectionBrowserTest {
         id, id, "Curator", "", 0, emptyList(), emptyList(), catalogKind = CatalogKind.Playlist,
     )
 
+    @Test fun invalidationWhileCoveredDropsOldOrderAndRejectsLateContinuation() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val late = CompletableDeferred<LibraryPage>()
+        var refresh = false
+        val browser = CollectionBrowser(scope, { _, next ->
+            when {
+                next != null -> withContext(NonCancellable) { late.await() }
+                refresh -> LibraryPage(listOf(collection("new-first")), null, "/first")
+                else -> LibraryPage(listOf(collection("old-first")), "/more", "/first")
+            }
+        })
+        try {
+            browser.open(collection("playlist"))
+            browser.more()
+            browser.setVisible(false)
+            refresh = true
+            browser.invalidate()
+            assertTrue(browser.state.value.tracks.isEmpty())
+            assertFalse(browser.preparePlayback(0, false) { fail("Stale order played") })
+            browser.setVisible(true)
+            late.complete(LibraryPage(listOf(collection("late-old-tail")), null, "/more"))
+            assertEquals(listOf("new-first"), browser.state.value.tracks.map { it.id })
+        } finally { late.complete(LibraryPage(emptyList(), null, "/more")); browser.close(); scope.cancel() }
+    }
+
+    @Test fun authorizationFailureRetainsRecoveryReasonAcrossContinuationRetry() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        var failMore = true
+        val browser = CollectionBrowser(scope, { _, next ->
+            if (next == null) LibraryPage(listOf(collection("first")), "/more", "/first")
+            else if (failMore) throw dev.amatv.integration.CatalogRequestException(
+                dev.amatv.integration.CatalogFailureReason.Authorization, "Sign in", 401)
+            else LibraryPage(emptyList(), null, "/more")
+        })
+        try {
+            browser.open(collection("playlist")); browser.more()
+            assertEquals(dev.amatv.integration.CatalogFailureReason.Authorization, browser.state.value.failureReason)
+            assertEquals("first", browser.state.value.tracks.single().id)
+            failMore = false; browser.retry()
+            assertNull(browser.state.value.failureReason)
+            assertTrue(browser.state.value.complete)
+        } finally { browser.close(); scope.cancel() }
+    }
+
     @Test fun metadataResumesWithoutChangingLibraryIdentityOrAcceptingCancelledArtwork() = runBlocking {
         val old = CompletableDeferred<Track>()
         val fresh = CompletableDeferred<Track>()

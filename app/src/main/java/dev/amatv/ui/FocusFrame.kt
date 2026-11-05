@@ -52,6 +52,7 @@ internal class FocusFrameTransform(
     val liftProgress: State<Float>,
     val liftPx: Float,
     val focusedScale: Float,
+    val followImmediately: Boolean = false,
 )
 
 internal fun visualBounds(bounds: Rect, scale: Float, liftPx: Float = 0f): Rect {
@@ -130,7 +131,8 @@ internal fun FocusFrameOverlay(controller: FocusFrameController) {
                         left = rect.left, top = rect.top,
                         width = rect.width, height = rect.height, radius = destination.radiusPx,
                         visible = target != null,
-                        followImmediately = target?.visibility?.value?.let { it < 0.999f } ?: false,
+                        followImmediately = destination.transform?.followImmediately == true ||
+                            (target?.visibility?.value?.let { it < 0.999f } ?: false),
                         key = destination.key,
                     )
                     retained[0] = destination

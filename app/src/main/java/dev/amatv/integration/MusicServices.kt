@@ -6,8 +6,8 @@ import dev.amatv.i18n.AppText
 import android.content.Context
 import android.content.MutableContextWrapper
 import android.app.Activity
-import java.security.MessageDigest
 import android.content.Intent
+import androidx.core.content.ContextCompat
 import android.media.audiofx.AudioEffect
 import android.util.Log
 import android.os.Handler
@@ -35,6 +35,21 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.net.URI
 
+enum class RadioShelfSource {
+    Personal, Public, Recent;
+    fun ownsShelf(id: String): Boolean = when (this) {
+        Personal -> id == "radio-personal"
+        Recent -> id == "radio-recent"
+        Public -> id == "radio-live" || id.startsWith("public-radio:")
+    }
+}
+
+data class RadioShelvesResult(
+    val shelves: List<ContentShelf>,
+    val successfulSources: Set<RadioShelfSource>,
+    val failures: Map<RadioShelfSource, Exception>,
+)
+
 enum class MusicConnectionState {
     Demo,
     ReadyToSignIn,
@@ -54,6 +69,10 @@ interface RecommendationProvider {
 
 class MusicServices(context: Context) : RecommendationProvider {
     private val appContext = context.applicationContext
+    /** Dynamic app locale, including AppCompat locales on API 28–32. */
+    fun effectiveLanguageTag(): String = ContextCompat.getContextForLanguage(appContext)
+        .resources.configuration.locales[0].toLanguageTag()
+    suspend fun supportedCatalogLanguageTag(): String? = api.catalogLanguage(api.effectiveStorefront())
     val contentCache = ContentCache.get(appContext)
     val artworkMotionPreferences = ArtworkMotionPreferences.get(appContext)
     val libraryAdditionPreferences = LibraryAdditionPreferences(appContext)
@@ -79,11 +98,8 @@ class MusicServices(context: Context) : RecommendationProvider {
     private val playbackMain = Handler(Looper.getMainLooper())
     private var activeEngineRequest: EngineRequest? = null
     @Volatile private var serviceSnapshot: PlaybackSnapshot? = null
-    @Volatile private var servicePlaybackListener: ((PlaybackSnapshot) -> Unit)? = null
     @Volatile private var runtimePlaybackListener: ((PlaybackSnapshot) -> Unit)? = null
     @Volatile private var spectrumActive = false
-    private var uiSystemCallbacks: PlaybackMediaSession.Callbacks? = null
-    private var runtimeSystemCallbacks: PlaybackMediaSession.Callbacks? = null
     private val songSpectrum = SongAudioSpectrum(appContext) {
         // A station WebView does not expose the native renderer's audio session.
         // Never visualize an old native song as if it belonged to the station.
@@ -96,7 +112,7 @@ class MusicServices(context: Context) : RecommendationProvider {
         storefront = BuildConfig.APPLE_MUSIC_GUEST_STOREFRONT,
         developerTokens = developerTokens,
         userToken = tokenStore::readUserToken,
-    )
+    ).apply { language = ::effectiveLanguageTag }
     private val webPageToken = AppleWebPlaybackTokenClient()
     internal val webRequest = AppleMusicWebRequest(tokenStore::readUserToken, webPageToken)
     val libraryManagement = CatalogLibraryManagement(api::effectiveStorefront) { path, method, body ->
@@ -104,26 +120,27 @@ class MusicServices(context: Context) : RecommendationProvider {
     }
     private val publicBrowse = PublicMusicBrowseClient(
         storefront = api::effectiveStorefront,
-        language = { appContext.resources.configuration.locales[0].toLanguageTag() },
+        language = { effectiveLanguageTag() },
         editorialRequest = ::requestPublicEditorial,
         parseResource = api::parseResourceItem,
     )
     private val publicEditorialMotion = PublicEditorialMotionClient(
         storefront = api::effectiveStorefront,
-        language = { appContext.resources.configuration.locales[0].toLanguageTag() },
+        language = { effectiveLanguageTag() },
         cacheDirectory = java.io.File(appContext.cacheDir, "editorial-motion-metadata-v1"),
         cacheGeneration = { contentCache.generation },
         cacheEnabled = { contentCache.settings.value.let { it.enabled && !it.clearing } },
         canWriteCache = { contentCache.canWrite() },
     )
     private val editorialArtworkResolver = EditorialArtworkResolver(
-        scopeKey = { "${api.userStorefront()}:${appContext.resources.configuration.locales.toLanguageTags()}" },
+        scopeKey = { "${api.userStorefront()}:${effectiveLanguageTag()}" },
         albumForSong = { song ->
             catalogPages.sectionPage(dev.amatv.model.CatalogResourceRef(checkNotNull(song.catalogId), "songs"),
                 dev.amatv.model.CatalogResourceSection("albums", resourceTypes = setOf("albums"), pageSize = 10))
                 .items.firstOrNull { it.catalogKind == dev.amatv.model.CatalogKind.Album }
         },
         publicArtwork = publicEditorialMotion::artwork,
+        cacheGeneration = { contentCache.generation },
     )
     internal suspend fun editorialArtwork(item: Track): Track =
         if (artworkMotionPreferences.enabled.value) editorialArtworkResolver.artwork(item) else item
@@ -149,10 +166,18 @@ class MusicServices(context: Context) : RecommendationProvider {
     private val resolver = CrossCatalogResolver(api)
 
     /** Opaque per-authorization cache boundary; tokens never reach cache keys or logs. */
-    fun authorizationCacheScope(): String = tokenStore.readUserToken()?.takeIf { it.isNotBlank() }?.let { token ->
-        MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
-            .take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
-    } ?: "guest"
+    fun authorizationCacheScope(): String = appleAuthorizationCacheScope(tokenStore.readUserToken())
+
+    /** The complete read/prepare/write/readback chain keeps the account captured by its UI owner. */
+    suspend fun <T> withAuthorizationScope(expectedScope: String, operation: suspend () -> T): T {
+        val token = tokenStore.readUserToken()
+        if (appleAuthorizationCacheScope(token) != expectedScope) throw CancellationException("Apple account changed")
+        val account = AppleAuthorizationScope(token)
+        return withContext(account) {
+            account.checkCurrent(tokenStore::readUserToken)
+            operation().also { account.checkCurrent(tokenStore::readUserToken) }
+        }
+    }
 
     /** A retained engine can reattach its tiny station view without retaining an old Activity. */
     fun attachPlaybackHost(activity: Activity?) {
@@ -165,6 +190,9 @@ class MusicServices(context: Context) : RecommendationProvider {
 
     val ytmPairingConfigured get() = google.configured
     val ytmSignedIn get() = google.signedIn
+    val ytmAuthorizationState get() = google.state
+    fun ytmAuthorizationCacheScope(): String = google.state.value.scope
+    fun cancelYtmPairing() = google.cancelPairing()
     suspend fun startYtmPairing(): GoogleTvPairing = google.startPairing()
     suspend fun awaitYtmPairing(pairing: GoogleTvPairing) = google.awaitPairing(pairing)
     fun signOutYtm() = google.signOut()
@@ -233,7 +261,7 @@ class MusicServices(context: Context) : RecommendationProvider {
                 } else shelf.songs
                 val tracks = songs.take(6).map { song ->
                     async { resolveRecommendation(song) }
-                }.awaitAll().filterNotNull()
+                }.awaitAll().filterNotNull().distinctBy { it.catalogId ?: it.id }
                 ContentShelf("ytm:$index", "YTM · ${shelf.title}", tracks)
             }
         }.awaitAll().filter { it.items.isNotEmpty() }
@@ -278,7 +306,7 @@ class MusicServices(context: Context) : RecommendationProvider {
         try {
             return withContext(Dispatchers.IO) {
                 PhoneMusicAuthorization(developerToken, BuildConfig.VERSION_NAME,
-                    appContext.resources.configuration.locales[0].toLanguageTag(),
+                    effectiveLanguageTag(),
                     advertisedAuthority = advertisedAuthority, port = port).also { created = it }
             }
         } catch (failure: Throwable) {
@@ -288,13 +316,25 @@ class MusicServices(context: Context) : RecommendationProvider {
         }
     }
 
-    /** Validate the new authorization before replacing the retained TV account. */
-    internal suspend fun completePhoneAuthentication(userToken: String) {
+    internal class ValidatedPhoneAuthentication internal constructor(
+        internal val userToken: String,
+        internal val previousToken: String?,
+    )
+
+    /** Candidate validation never changes the retained account. */
+    internal suspend fun validatePhoneAuthentication(userToken: String): ValidatedPhoneAuthentication {
         require(isPhoneMusicUserToken(userToken)) { AppText.text(R.string.services_auth_invalid_user_token) }
+        val previous = tokenStore.readUserToken()
         val candidate = AppleMusicApi(BuildConfig.APPLE_MUSIC_GUEST_STOREFRONT, developerTokens) { userToken }
+            .apply { language = ::effectiveLanguageTag }
         candidate.userStorefront()
         kotlinx.coroutines.currentCoroutineContext().ensureActive()
-        withContext(Dispatchers.IO) { tokenStore.writeUserToken(userToken) }
+        return ValidatedPhoneAuthentication(userToken, previous)
+    }
+
+    /** Called synchronously by the current main-thread attempt, immediately before UI handoff. */
+    internal fun completePhoneAuthentication(candidate: ValidatedPhoneAuthentication) {
+        check(tokenStore.replaceUserToken(candidate.previousToken, candidate.userToken)) { "Apple account changed" }
         mediaSession.clear()
         resetPlaybackEngines()
     }
@@ -343,10 +383,10 @@ class MusicServices(context: Context) : RecommendationProvider {
         }?.takeIf { it.matches(Regex("[1-9][0-9]*")) } ?: return profile
         if (profile.metadata.any { it.key.startsWith("credits:") }) return profile
         val storefront = api.cachedEffectiveStorefront()?.takeIf { it.matches(Regex("[a-z]{2}")) } ?: return profile
-        val language = appContext.resources.configuration.locales[0].toLanguageTag()
-        val encodedLanguage = java.net.URLEncoder.encode(language, Charsets.UTF_8.name())
+        val language = api.catalogLanguage(storefront)
         val path = "/v1/catalog/$storefront/songs/$songId?include=credits,albums,artists" +
-            "&format%5Bresources%5D=map&platform=web&l=$encodedLanguage"
+            "&format%5Bresources%5D=map&platform=web" +
+            (language?.let { "&l=${java.net.URLEncoder.encode(it, Charsets.UTF_8.name())}" } ?: "")
         return try {
             // Public names and roles need the web Origin contract, not an
             // account write or another player/client. Keep Library identity.
@@ -371,7 +411,7 @@ class MusicServices(context: Context) : RecommendationProvider {
         return try {
             webRequest.request(path, needsUserToken = false,
                 maxResponseBytes = PublicMusicBrowsePage.MAX_JSON_BYTES,
-                language = appContext.resources.configuration.locales[0].toLanguageTag())
+                language = effectiveLanguageTag())
         } catch (failure: CatalogRequestException) {
             // Anonymous editorial access uses the same Origin contract as the
             // existing lyrics client. Rejected access must not demand re-login.
@@ -399,50 +439,48 @@ class MusicServices(context: Context) : RecommendationProvider {
     suspend fun radioSectionPage(section: RadioCatalogSection, nextPage: String? = null): LibraryPage =
         api.radioCatalog.page(section, nextPage)
 
-    /** Fetch independent radio sources in parallel, then publish one ordered result. */
+    /** Independent sources publish successful-empty ownership as well as their rows. */
     suspend fun radioShelves(
         onPage: (String, LibraryPage) -> Unit = { _, _ -> },
         onFinished: (Boolean) -> Unit = {},
-    ): List<ContentShelf> = coroutineScope {
-        val sections = linkedMapOf<String, List<ContentShelf>>()
-        var firstFailure: Exception? = null
-        fun snapshot(): List<ContentShelf> = listOf("personal", "public", "recent")
-            .flatMap { sections[it].orEmpty() }
-        suspend fun read(key: String, operation: suspend () -> List<ContentShelf>) {
-            try {
-                sections[key] = operation()
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { if (firstFailure == null) firstFailure = failure }
+    ): RadioShelvesResult = coroutineScope {
+        val sections = linkedMapOf<RadioShelfSource, List<ContentShelf>>()
+        val failures = linkedMapOf<RadioShelfSource, Exception>()
+        suspend fun read(source: RadioShelfSource, operation: suspend () -> List<ContentShelf>) {
+            try { sections[source] = operation() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { failures[source] = failure }
         }
-        val publicRequest = async { read("public") {
+        val publicRequest = async { read(RadioShelfSource.Public) {
             try { publicBrowse.radioShelves(presentationCapabilities) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 val page = radioSectionPage(RadioCatalogSection.Live)
                 onPage("radio-live", page)
-                listOf(ContentShelf("radio-live", AppText.text(R.string.app_apple_music_radio), page.items))
-                    .filter { it.items.isNotEmpty() || page.nextPage != null }
+                listOf(ContentShelf("radio-live", AppText.text(R.string.app_apple_music_radio), page.items,
+                    hasMore = page.nextPage != null)).filter { it.items.isNotEmpty() || it.hasMore }
             }
         } }
-        val personal = async {
-            if (connectionState == MusicConnectionState.SignedIn) read("personal") {
+        val personal = async { read(RadioShelfSource.Personal) {
+            if (connectionState != MusicConnectionState.SignedIn) emptyList() else {
                 val page = radioSectionPage(RadioCatalogSection.Personal)
                 onPage("radio-personal", page)
-                listOf(ContentShelf("radio-personal", AppText.text(R.string.radio_for_you), page.items))
-                    .filter { it.items.isNotEmpty() || page.nextPage != null }
+                listOf(ContentShelf("radio-personal", AppText.text(R.string.radio_for_you), page.items,
+                    hasMore = page.nextPage != null)).filter { it.items.isNotEmpty() || it.hasMore }
             }
-        }
-        val recent = async {
-            if (connectionState == MusicConnectionState.SignedIn) read("recent") {
+        } }
+        val recent = async { read(RadioShelfSource.Recent) {
+            if (connectionState != MusicConnectionState.SignedIn) emptyList() else {
                 val page = radioSectionPage(RadioCatalogSection.Recent)
                 onPage("radio-recent", page)
-                listOf(ContentShelf("radio-recent", AppText.text(R.string.radio_recent), page.items))
-                    .filter { it.items.isNotEmpty() || page.nextPage != null }
+                listOf(ContentShelf("radio-recent", AppText.text(R.string.radio_recent), page.items,
+                    hasMore = page.nextPage != null)).filter { it.items.isNotEmpty() || it.hasMore }
             }
-        }
+        } }
         awaitAll(publicRequest, personal, recent)
-        onFinished(firstFailure == null)
-        snapshot().also { if (it.isEmpty()) firstFailure?.let { failure -> throw failure } }
+        onFinished(failures.isEmpty())
+        RadioShelvesResult(listOf(RadioShelfSource.Personal, RadioShelfSource.Public, RadioShelfSource.Recent)
+            .flatMap { sections[it].orEmpty() }, sections.keys.toSet(), failures.toMap())
     }
     override suspend fun createAmStation(songId: String): Pair<String?, List<Track>> =
         api.createContinuousStation(songId)
@@ -606,16 +644,12 @@ class MusicServices(context: Context) : RecommendationProvider {
         }
     }
 
-    fun setPlaybackListener(listener: ((PlaybackSnapshot) -> Unit)?) {
-        servicePlaybackListener = listener
-        updateEngineListeners()
-    }
     fun setRuntimePlaybackListener(listener: ((PlaybackSnapshot) -> Unit)?) {
         runtimePlaybackListener = listener
         updateEngineListeners()
     }
     private fun updateEngineListeners() {
-        val subscribed = servicePlaybackListener != null || runtimePlaybackListener != null
+        val subscribed = runtimePlaybackListener != null
         bridge.setPlaybackListener(if (!subscribed) null else { snapshot ->
             forwardPlaybackSnapshot(PlaybackEngine.Native, snapshot)
         })
@@ -632,7 +666,6 @@ class MusicServices(context: Context) : RecommendationProvider {
             snapshot.copy(requestGeneration = request.generation).also { serviceSnapshot = it }
         }
         runtimePlaybackListener?.invoke(mapped)
-        servicePlaybackListener?.invoke(mapped)
     }
     private fun resetPlaybackEngines() {
         synchronized(engineLock) {
@@ -644,21 +677,13 @@ class MusicServices(context: Context) : RecommendationProvider {
         stationPlayer.release()
         bridge.release()
     }
-    fun setSystemPlaybackCallbacks(callbacks: PlaybackMediaSession.Callbacks?) {
-        uiSystemCallbacks = callbacks
-        mediaSession.setCallbacks(uiSystemCallbacks ?: runtimeSystemCallbacks)
-    }
     fun setRuntimeSystemPlaybackCallbacks(callbacks: PlaybackMediaSession.Callbacks?) {
-        runtimeSystemCallbacks = callbacks
-        mediaSession.setCallbacks(uiSystemCallbacks ?: runtimeSystemCallbacks)
+        mediaSession.setCallbacks(callbacks)
     }
     fun publishSystemPlayback(snapshot: PlaybackSnapshot, canSkipNext: Boolean, canSkipPrevious: Boolean) =
         mediaSession.publish(snapshot, canSkipNext, canSkipPrevious)
     fun release() {
-        servicePlaybackListener = null
         runtimePlaybackListener = null
-        uiSystemCallbacks = null
-        runtimeSystemCallbacks = null
         attachPlaybackHost(null)
         songSpectrum.release()
         mediaSession.release()

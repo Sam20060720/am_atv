@@ -82,6 +82,20 @@ internal class BrowseInlineBrowser(
         } else cancel()
     }
 
+    private var freshnessScope: String? = null
+    fun invalidate(scopeKey: String) {
+        if (freshnessScope == scopeKey) return
+        val initial = freshnessScope == null
+        freshnessScope = scopeKey
+        if (initial && mutableState.value.pages.isEmpty()) return
+        cancel()
+        cursors.clear(); visited.clear()
+        mutableState.value = mutableState.value.copy(pages = mutableState.value.pages.mapValues {
+            it.value.copy(loaded = false, loading = false, failed = false, next = null)
+        })
+        if (visible) BrowseInlineSection.entries.forEach { request(it, append = false) }
+    }
+
     fun more(shelfId: String) {
         val section = BrowseInlineSection.entries.firstOrNull { it.shelfId == shelfId } ?: return
         val page = mutableState.value.pages[section]

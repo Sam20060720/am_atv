@@ -107,6 +107,16 @@ internal class DetailBrowser(
         return removed
     }
 
+    fun invalidateLibrary() {
+        artists.invalidateLibrary()
+        mutableVisits.value.forEach { visit ->
+            if (visit.source.resourceType?.startsWith("library-") == true || visit.source.catalogKind == CatalogKind.Playlist) {
+                visit.collection?.invalidate()
+                visit.page?.invalidate()
+            }
+        }
+    }
+
     fun setVisible(value: Boolean) {
         visible = value
         artists.setVisible(value && mutableVisits.value.lastOrNull()?.artistKey != null)

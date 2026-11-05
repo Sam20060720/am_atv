@@ -16,6 +16,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.VideoSize
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -353,7 +354,14 @@ internal object MotionPreviewCoordinator {
             clearOutputOnControl()
             if (releasing == null) runCatching { player?.apply { playWhenReady = false; stop(); clearMediaItems() } }
         } finally { handlingFailure = false }
-        Log.w("AMATV-Motion", "Editorial renderer failed: ${failure.javaClass.simpleName}")
+        val causes = generateSequence(failure as Throwable) { it.cause }.take(8).toList()
+        // Record transport identity without URLs, query strings, headers or error messages.
+        val host = runCatching {
+            causes.filterIsInstance<HttpDataSource.HttpDataSourceException>()
+                .firstOrNull()?.dataSpec?.uri?.host
+        }.getOrNull()?.takeIf { it.matches(Regex("[A-Za-z0-9.:-]{1,253}")) } ?: "unknown"
+        val chain = causes.joinToString(" -> ") { it.javaClass.simpleName.ifBlank { "Throwable" } }
+        Log.w("AMATV-Motion", "Editorial renderer failed host=$host causes=$chain")
         main.post {
             lease?.takeIf { it.mediaId == mediaId && desiredMediaId == mediaId }?.let { active ->
                 active.retainSurface?.invoke()

@@ -296,6 +296,7 @@ internal fun CatalogSearchScreen(
         if (!active) { pendingEntry = null; return@LaunchedEffect }
         if (pendingEntry != key || state.loading) return@LaunchedEffect
         if (items.isNotEmpty() || state.failed) requestResult()
+        else if (state.next == null) runCatching { field.requestFocus() }
         if (items.isNotEmpty() || state.failed || state.next == null) pendingEntry = null
     }
     LaunchedEffect(appendEntry, state.loading, state.failed, items.size, state.next, active) {
@@ -356,6 +357,7 @@ internal fun CatalogSearchScreen(
             TvTextField(
                 value = state.query, onValueChange = { cancelFocusIntent(); browser.setQuery(it) }, enabled = active, readOnly = !editing,
                 size = TvTextFieldSize.Search, placeholder = inputHint,
+                onActivate = { cancelFocusIntent(); runCatching { field.requestFocus() }; editing = true },
                 modifier = Modifier.weight(1f)
                     .automationId("search-field").focusRequester(field)
                     .semantics { if (!editing) stateDescription = remoteInputHint }
@@ -438,6 +440,9 @@ internal fun CatalogSearchScreen(
                     val requester = historyRequesters.getOrPut(query) { FocusRequester() }
                     FocusSurface({
                         cancelFocusIntent(); leaveEditing()
+                        // The history chip disappears synchronously when the query changes.
+                        runCatching { field.requestFocus() }
+                        zone = SearchZone.Field; retained.zone = zone
                         browser.restoreQuery(query)
                         pendingEntry = browser.state.value.resultKey
                     }, Modifier.widthIn(max = 260.dp).height(33.dp).automationId("search-history-$index")
@@ -670,7 +675,7 @@ private fun SearchCover(item: Track, modifier: Modifier, onOpen: () -> Unit) {
         onLongClick = actions?.let { { it(item) } }) { focused ->
         Column(horizontalAlignment = if (artist) Alignment.CenterHorizontally else Alignment.Start) {
             Box(Modifier.fillMaxWidth().aspectRatio(1f).coverShadow(focused, radius).coverHairline(radius)) {
-                if (item.artworkUrl.isNullOrBlank()) Box(Modifier.fillMaxSize().clip(shape).background(Color.White.copy(alpha = 0.045f)), Alignment.Center) {
+                if (item.posterForAspect().isNullOrBlank() && item.motionForAspect(1f) == null) Box(Modifier.fillMaxSize().clip(shape).background(Color.White.copy(alpha = 0.045f)), Alignment.Center) {
                     Icon(if (artist) Icons.Rounded.Person else if (item.catalogKind == CatalogKind.Page) Icons.Rounded.GridView else Icons.Rounded.Album,
                         null, Modifier.size(34.dp), tint = Color.White.copy(alpha = 0.3f))
                 } else MotionArtwork(item, Modifier.fillMaxSize().clip(shape), animate = rememberBrowseMotionReady(focused), cornerRadius = radius)
@@ -696,7 +701,7 @@ private fun SearchSong(item: Track, modifier: Modifier, onOpen: () -> Unit) {
         background = Color.Transparent, focusedBackground = Color.White.copy(alpha = if (classic) 0.12f else 0.85f), padding = PaddingValues(horizontal = 10.dp),
         onLongClick = actions?.let { { it(item) } }) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-            if (item.artworkUrl.isNullOrBlank()) Icon(Icons.Rounded.Album, null, Modifier.size(artworkSize), Color.White.copy(alpha = 0.3f))
+            if (item.posterForAspect().isNullOrBlank() && item.motionForAspect(1f) == null) Icon(Icons.Rounded.Album, null, Modifier.size(artworkSize), Color.White.copy(alpha = 0.3f))
             else MotionArtwork(item, Modifier.size(artworkSize), animate = false, cornerRadius = 4.dp)
             Column(Modifier.weight(1.15f)) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {

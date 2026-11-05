@@ -78,6 +78,8 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -97,13 +99,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
 
 /** The shelf retains its existing cards while one continuation page is requested. */
-data class LibraryShelfPagination(
+internal data class LibraryShelfPagination(
     val hasMore: Boolean,
     val loading: Boolean = false,
     val failed: Boolean = false,
     val total: Int? = null,
     val empty: Boolean = false,
     val loadedPages: Int = 0,
+    val failureReason: dev.amatv.integration.CatalogFailureReason? = null,
+    val refreshGeneration: Long = 0L,
 ) {
     val showAction: Boolean get() = hasMore || loading || failed || empty
 }
@@ -118,6 +122,7 @@ internal class HomeShelfRetention {
     val column = androidx.compose.foundation.lazy.LazyListState(
         cacheWindow = LazyLayoutCacheWindow(aheadFraction = 1f, behindFraction = 1f),
     )
+    val mountedCards = HomeCardMountHistory()
     val rows = mutableMapOf<String, androidx.compose.foundation.lazy.LazyListState>()
     var focused: ShelfFocusPosition? = null
     var focusAnchor: ShelfFocusAnchor? = null
@@ -164,7 +169,7 @@ internal fun homeShelfInsightsLink(shelfId: String, title: String? = null): Home
 }
 
 /** Geometry changes with the presentation; shelf identity and loading stay shared. */
-private class HomeShelfLayout(val classic: Boolean) {
+internal class HomeShelfLayout(val classic: Boolean) {
     val showcaseWidth = if (classic) ClassicBrowseVisuals.ShowcaseWidth else BrowseTokens.ShowcaseWidth
     val showcaseHeight = if (classic) ClassicBrowseVisuals.ShowcaseHeight else BrowseTokens.ShowcaseHeight
     val showcaseRadius = if (classic) ClassicBrowseVisuals.ShowcaseRadius else BrowseTokens.ShowcaseRadius
@@ -304,7 +309,7 @@ internal fun HomeScreen(
             }
 
             Destination.Library -> {
-                if (connectionState != MusicConnectionState.SignedIn) {
+                if (connectionState != MusicConnectionState.SignedIn && connectionState != MusicConnectionState.Demo) {
                     AccountScreen(
                         connectionState = connectionState,
                         setupMessage = setupMessage,
@@ -326,6 +331,7 @@ internal fun HomeScreen(
                         firstFocus = firstContentFocusRequester,
                         menuFocus = navigationFocusRequester,
                         onLibrarySearch = onLibrarySearch,
+                        onSignIn = onSignIn,
                     )
                 }
             }
@@ -387,8 +393,10 @@ private fun AccountScreen(
     val surface = if (classic) Color.White.copy(alpha = 0.14f) else BrowseTokens.Surface
     val controlHeight = if (classic) 46.dp else 48.dp
     val controlRadius = if (classic) 23.dp else 12.dp
+    val demo = connectionState == MusicConnectionState.Demo
     val phoneFocus = firstContentFocusRequester ?: remember { FocusRequester() }
     val primaryFocus = if (onPhoneSignIn == null) phoneFocus else remember { FocusRequester() }
+    val demoFirstFocus = firstContentFocusRequester ?: remember { FocusRequester() }
     val secondaryFocus = remember { FocusRequester() }
     val offsetFocus = remember { List(5) { FocusRequester() } }
     val autoplayFocus = remember { List(2) { FocusRequester() } }
@@ -450,7 +458,7 @@ private fun AccountScreen(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (connectionState != MusicConnectionState.Demo) {
+            if (!demo) {
                 FocusSurface(
                     onClick = if (connected) onRetry else onSignIn,
                     modifier = Modifier
@@ -527,8 +535,9 @@ private fun AccountScreen(
             )
             if (ytmPairingConfigured) {
                 FocusSurface(
-                    onClick = if (ytmSignedIn) onYtmSignOut else onYtmSignIn,
-                    modifier = Modifier.width(280.dp).height(controlHeight).focusProperties {
+                    onClick = { if (ytmSignedIn) onYtmSignOut() else if (ytmPairing == null) onYtmSignIn() },
+                    modifier = Modifier.width(280.dp).height(controlHeight)
+                        .then(if (demo) Modifier.focusRequester(demoFirstFocus) else Modifier).focusProperties {
                         if (navigationFocusRequester != null) left = navigationFocusRequester
                         right = FocusRequester.Cancel
                     },
@@ -565,7 +574,8 @@ private fun AccountScreen(
             ) {
                 FocusSurface(
                     onClick = { onLyricOffsetChange((lyricOffsetMs - 100L).coerceAtLeast(-3000L)) },
-                    modifier = Modifier.width(96.dp).height(controlHeight).focusRequester(offsetFocus[0]).focusProperties {
+                    modifier = Modifier.width(96.dp).height(controlHeight).focusRequester(offsetFocus[0])
+                        .then(if (demo && !ytmPairingConfigured) Modifier.focusRequester(demoFirstFocus) else Modifier).focusProperties {
                         if (navigationFocusRequester != null) left = navigationFocusRequester
                         right = offsetFocus[1]
                     },
@@ -793,6 +803,8 @@ private fun HomeShelves(
     onRequestNavigation: (() -> Unit)? = null,
 ) {
     val homeLayout = homeShelfLayout()
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    val leadingKey = if (isRtl) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT
     if (shelves.isEmpty()) {
         if (loading) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1013,7 +1025,7 @@ private fun HomeShelves(
             !columnState.isScrollInProgress && focusJob[0]?.isActive != true &&
             columnState.firstVisibleItemIndex == 0 && columnState.firstVisibleItemScrollOffset == 0
     }
-    rememberHomeArtworkPrefetch(shelves, columnState, rowStates, contentVisible && focusTargetsEnabled)
+    rememberHomeArtworkPrefetch(shelves, columnState, rowStates, homeLayout, contentVisible && focusTargetsEnabled)
     // A final one-item page replaces its continuation card without changing the
     // total slot count. Resource counts must still trigger focus restoration.
     LaunchedEffect(resourceCounts, shelfSizes, focusTargetsEnabled) {
@@ -1050,7 +1062,7 @@ private fun HomeShelves(
     }
     // Progressive sources change shelfKey. They must not revoke every mounted
     // card's permit and replace cached covers/labels with skeletons again.
-    val cardWarmup = remember(retained) { HomeCardWarmup() }
+    val cardWarmup = remember(retained) { HomeCardWarmup(retained.mountedCards) }
     DisposableEffect(cardWarmup) {
         onDispose { cardWarmup.close() }
     }
@@ -1127,7 +1139,7 @@ private fun HomeShelves(
         }
     }
 
-    fun handleLeftBoundary(): Boolean {
+    fun handleLeadingBoundary(): Boolean {
         if (!homeLayout.classic) return requestNavigationFocus()
         // The classic top bar is reached vertically. Left belongs to this row,
         // including repeats; keep a focused row's reveal settling in place.
@@ -1146,8 +1158,10 @@ private fun HomeShelves(
         shelves.getOrNull(shelf)?.let { row ->
             retained.focusAnchor = ShelfFocusAnchor(row.id, row.items.getOrNull(item)?.shelfFocusKey(), item)
         }
-        val returning = retained.activatedAnchor?.let { resolveShelfFocusAnchor(it, shelves, shelfSizes) }
-        if (focusTargetsEnabled && contentVisible && returning == ShelfFocusPosition(shelf, item)) {
+        val activated = retained.activatedAnchor
+        val returning = activated?.let { resolveShelfFocusAnchor(it, shelves, shelfSizes) }
+        if (focusTargetsEnabled && contentVisible && activated != null &&
+            (returning == null || returning == ShelfFocusPosition(shelf, item))) {
             retained.activatedAnchor = null
             contentEntry?.preferredReturnRequester = null
         }
@@ -1169,7 +1183,7 @@ private fun HomeShelves(
     LaunchedEffect(retained.activatedAnchor, shelves, focusTargetsEnabled, contentVisible) {
         val anchor = retained.activatedAnchor ?: return@LaunchedEffect
         if (!focusTargetsEnabled || !contentVisible) return@LaunchedEffect
-        val target = resolveShelfFocusAnchor(anchor, shelves, shelfSizes) ?: return@LaunchedEffect
+        val target = resolveShelfFocusAnchor(anchor, shelves, shelfSizes) ?: restoredFocus
         val row = columnState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == shelves[target.shelf].id }
         val item = rowStates[target.shelf].layoutInfo.visibleItemsInfo.firstOrNull { it.index == target.item }
         if (row == null) columnState.scrollToItem(target.shelf)
@@ -1444,9 +1458,9 @@ private fun HomeShelves(
                                 }
                                 return@onPreviewKeyEvent true
                             }
-                            KeyEvent.KEYCODE_DPAD_LEFT -> {
+                            leadingKey -> {
                                 val firstAction = header?.let { headerActions[it.first]?.firstOrNull() }
-                                return@onPreviewKeyEvent firstAction != null && firstAction.key == header?.second && handleLeftBoundary()
+                                return@onPreviewKeyEvent firstAction != null && firstAction.key == header?.second && handleLeadingBoundary()
                             }
                             else -> return@onPreviewKeyEvent false
                         }
@@ -1481,8 +1495,8 @@ private fun HomeShelves(
                         KeyEvent.KEYCODE_DPAD_LEFT,
                         KeyEvent.KEYCODE_DPAD_RIGHT -> {
                             pendingPageFocus = null
-                            if (event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_DPAD_LEFT &&
-                                navigationCursor.focused.item == 0 && handleLeftBoundary()) true
+                            if (event.nativeKeyEvent.keyCode == leadingKey &&
+                                navigationCursor.focused.item == 0 && handleLeadingBoundary()) true
                             else {
                                 cancelVerticalFocus(keepFocusedRowReveal = true)
                                 false
@@ -1548,10 +1562,10 @@ private fun HomeShelves(
                                             if (focusTargetsEnabled && contentVisible) contentEntry?.preferredReturnRequester = null
                                         } else if (focusedHeader == actionKey) focusedHeader = null
                                     }.focusProperties {
-                                        left = if (actionIndex > 0) headerRequesters.getValue(shelf.id to actions[actionIndex - 1].key)
+                                        start = if (actionIndex > 0) headerRequesters.getValue(shelf.id to actions[actionIndex - 1].key)
                                             else if (homeLayout.classic) FocusRequester.Cancel
                                             else navigationFocusRequester ?: FocusRequester.Cancel
-                                        right = if (actionIndex < actions.lastIndex) headerRequesters.getValue(shelf.id to actions[actionIndex + 1].key)
+                                        end = if (actionIndex < actions.lastIndex) headerRequesters.getValue(shelf.id to actions[actionIndex + 1].key)
                                             else FocusRequester.Cancel
                                     })
                             }
@@ -1589,11 +1603,11 @@ private fun HomeShelves(
                                 .then(if (firstContentFocusRequester != null && firstEntry == ShelfFocusPosition(shelfIndex, itemIndex))
                                     Modifier.focusRequester(firstContentFocusRequester) else Modifier)
                                 .focusProperties {
-                                    if (itemIndex == 0) left = if (homeLayout.classic) FocusRequester.Cancel
+                                    if (itemIndex == 0) start = if (homeLayout.classic) FocusRequester.Cancel
                                         else navigationFocusRequester ?: FocusRequester.Cancel
                                     if (itemIndex == shelf.items.lastIndex &&
                                         pagination[shelf.id]?.showAction != true
-                                    ) right = FocusRequester.Cancel
+                                    ) end = FocusRequester.Cancel
                                 }
                                 .onFocusChanged { state ->
                                     if (state.isFocused) {
@@ -1640,7 +1654,8 @@ private fun HomeShelves(
                                     compact = shelf.id == BrowseInlineSection.Genres.shelfId,
                                     reserveClassicEyebrow = reserveClassicEyebrow,
                                     onClick = {
-                                        if (!page.loading) {
+                                        if (page.failureReason == dev.amatv.integration.CatalogFailureReason.Authorization) onSignIn()
+                                        else if (!page.loading) {
                                             topEntryRequest = 0
                                             pendingPageFocus = ShelfFocusPosition(shelfIndex, shelf.items.size)
                                             onLoadMoreShelf(shelf.id)
@@ -1652,9 +1667,9 @@ private fun HomeShelves(
                                         .then(if (firstContentFocusRequester != null && firstEntry == ShelfFocusPosition(shelfIndex, shelf.items.size))
                                             Modifier.focusRequester(firstContentFocusRequester) else Modifier)
                                         .focusProperties {
-                                            if (shelf.items.isEmpty()) left = if (homeLayout.classic) FocusRequester.Cancel
+                                            if (shelf.items.isEmpty()) start = if (homeLayout.classic) FocusRequester.Cancel
                                                 else navigationFocusRequester ?: FocusRequester.Cancel
-                                            right = FocusRequester.Cancel
+                                            end = FocusRequester.Cancel
                                         }
                                         .onFocusChanged { state ->
                                             if (state.isFocused) {
@@ -1927,8 +1942,8 @@ private fun ClassicTopPick(
     mountPriority: () -> Int,
     reserveClassicEyebrow: Boolean,
 ) {
-    val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
-        listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
+    val mountKey = remember(track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId) {
+        track.homeCardMountKey()
     }
     val contentReady = rememberHomeCardMount(warmup, mountKey, mountPriority)
     val backdrop = LocalBrowseBackdropController.current
@@ -2007,14 +2022,13 @@ private fun TopPick(
         ClassicTopPick(label, track, onClick, focusModifier, warmup, mountPriority, reserveClassicEyebrow)
         return
     }
-    val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
-        listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
+    val mountKey = remember(track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId) {
+        track.homeCardMountKey()
     }
     val contentReady = rememberHomeCardMount(warmup, mountKey, mountPriority)
     val backdrop = LocalBrowseBackdropController.current
     val actionMenu = catalogMenuFor(track)
     val portraitAspect = BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value
-    val hasPortraitArtwork = track.motionForAspect(portraitAspect)?.aspectRatio?.let { it < 0.9f } == true
     FocusSurface(
         onClick = onClick,
         onLongClick = actionMenu?.let { open -> { open(track) } },
@@ -2036,6 +2050,11 @@ private fun TopPick(
     ) { focused ->
         HomeCardContent(contentReady, track, featured = true, staged = warmup != null,
             shadow = { Box(Modifier.fillMaxSize().coverShadow(focused, BrowseTokens.ShowcaseRadius, isolated = true)) }) {
+            val motionReady = rememberBrowseMotionReady(focused)
+            val presentationTrack = rememberEditorialArtwork(track, motionReady &&
+                android.animation.ValueAnimator.areAnimatorsEnabled() && LocalFocusTargetsEnabled.current &&
+                androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused)
+            val hasPortraitArtwork = presentationTrack.motionForAspect(portraitAspect)?.aspectRatio?.let { it < 0.9f } == true
             val shape = RoundedCornerShape(BrowseTokens.ShowcaseRadius)
             Box(
                 modifier = Modifier
@@ -2045,13 +2064,13 @@ private fun TopPick(
                     .background(Color.Black.copy(alpha = 0.24f)),
             ) {
                 MotionArtwork(
-                    track = track,
+                    track = presentationTrack,
                     // A square catalog cover often includes typography. Keep
                     // that image complete; only genuine portrait artwork may
                     // fill this tall editorial card.
                     modifier = if (hasPortraitArtwork) Modifier.fillMaxSize()
                         else Modifier.fillMaxWidth().aspectRatio(1f).align(Alignment.TopCenter),
-                    animate = rememberBrowseMotionReady(focused),
+                    animate = motionReady,
                     cornerRadius = if (hasPortraitArtwork) BrowseTokens.ShowcaseRadius else 0.dp,
                     artworkAspectRatio = if (hasPortraitArtwork) portraitAspect else 1f,
                 )
@@ -2113,8 +2132,8 @@ private fun RecentCard(
     mountPriority: () -> Int = { 1 },
 ) {
     val homeLayout = homeShelfLayout()
-    val mountKey = remember(track.id, track.artworkUrl, track.motionPreviewUrl) {
-        listOf(track.id, track.artworkUrl, track.motionPreviewUrl)
+    val mountKey = remember(track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId) {
+        track.homeCardMountKey()
     }
     val contentReady = rememberHomeCardMount(warmup, mountKey, mountPriority)
     val backdrop = LocalBrowseBackdropController.current

@@ -9,6 +9,9 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import dev.amatv.model.Track
 import dev.amatv.integration.ContentCache
 import dev.amatv.model.ContentShelf
 import kotlinx.coroutines.CancellationException
@@ -56,6 +59,23 @@ internal fun homeArtworkPrefetchWindow(
     return positions.toList()
 }
 
+internal data class HomeArtworkPrefetchGeometry(val url: String, val width: Dp, val height: Dp)
+
+internal fun homeArtworkPrefetchGeometry(track: Track, featured: Boolean, layout: HomeShelfLayout): HomeArtworkPrefetchGeometry? {
+    val width = if (featured) layout.showcaseWidth else layout.cardWidth
+    val portraitAspect = layout.showcaseWidth.value / layout.showcaseHeight.value
+    val portrait = !layout.classic && featured && track.motionForAspect(
+        portraitAspect,
+    )?.aspectRatio?.let { it < 0.9f } == true
+    val url = track.posterForAspect(if (portrait) portraitAspect else 1f) ?: return null
+    val height = when {
+        layout.classic && featured -> 184.dp
+        portrait -> layout.showcaseHeight
+        else -> width
+    }
+    return HomeArtworkPrefetchGeometry(url, width, height)
+}
+
 private data class HomeArtworkPrefetchRequest(val url: String, val width: Int, val height: Int)
 
 /**
@@ -67,6 +87,7 @@ internal fun rememberHomeArtworkPrefetch(
     shelves: List<ContentShelf>,
     columnState: LazyListState,
     rowStates: List<LazyListState>,
+    layout: HomeShelfLayout,
     enabled: Boolean,
 ) {
     val context = LocalContext.current.applicationContext
@@ -74,7 +95,7 @@ internal fun rememberHomeArtworkPrefetch(
     val cache = ContentCache.get(context)
     val settings by cache.settings.collectAsState()
     val active = enabled && LocalWindowInfo.current.isWindowFocused
-    LaunchedEffect(shelves, columnState, rowStates, density, active, settings) {
+    LaunchedEffect(shelves, columnState, rowStates, layout, density, active, settings) {
         if (!active || !settings.enabled || !settings.prefetchNextTwo || settings.clearing) return@LaunchedEffect
         val permits = Semaphore(2)
         snapshotFlow {
@@ -85,16 +106,16 @@ internal fun rememberHomeArtworkPrefetch(
                 val visible = column.visibleItemsInfo.filter {
                     it.offset < column.viewportEndOffset && it.offset + it.size > column.viewportStartOffset
                 }.mapNotNull { row ->
-                    val layout = rowStates.getOrNull(row.index)?.layoutInfo ?: return@mapNotNull null
-                    HomeArtworkViewportRow(row.index, layout.visibleItemsInfo.filter {
-                        it.offset < layout.viewportEndOffset && it.offset + it.size > layout.viewportStartOffset
+                    val rowLayout = rowStates.getOrNull(row.index)?.layoutInfo ?: return@mapNotNull null
+                    HomeArtworkViewportRow(row.index, rowLayout.visibleItemsInfo.filter {
+                        it.offset < rowLayout.viewportEndOffset && it.offset + it.size > rowLayout.viewportStartOffset
                     }.map { it.index })
                 }
                 val nextShelf = visible.maxOfOrNull { it.shelf }?.plus(1)
                 val nextFeatured = shelves.getOrNull(nextShelf ?: -1)?.featured == true
-                val nextCardWidth = if (nextFeatured) BrowseTokens.ShowcaseWidth else BrowseTokens.CardWidth
+                val nextCardWidth = if (nextFeatured) layout.showcaseWidth else layout.cardWidth
                 val nextVisibleCount = with(density) {
-                    ceil(column.viewportSize.width / (nextCardWidth + BrowseTokens.ColumnGap).toPx()).toInt()
+                    ceil(column.viewportSize.width / (nextCardWidth + layout.columnGap(nextFeatured)).toPx()).toInt()
                 }
                 val positions = homeArtworkPrefetchWindow(
                     itemCounts = shelves.map { if (it.id == BrowseInlineSection.Genres.shelfId) 0 else it.items.size },
@@ -105,15 +126,10 @@ internal fun rememberHomeArtworkPrefetch(
                 positions.mapNotNull { position ->
                     val shelf = shelves[position.shelf]
                     val track = shelf.items[position.item]
-                    val width = if (shelf.featured) BrowseTokens.ShowcaseWidth else BrowseTokens.CardWidth
-                    val portrait = shelf.featured && track.motionForAspect(
-                        BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value,
-                    )?.aspectRatio?.let { it < 0.9f } == true
-                    val url = track.posterForAspect(if (portrait)
-                        BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value else 1f)
+                    val geometry = homeArtworkPrefetchGeometry(track, shelf.featured, layout)
                         ?: return@mapNotNull null
-                    val height = if (portrait) BrowseTokens.ShowcaseHeight else width
-                    with(density) { HomeArtworkPrefetchRequest(url, width.roundToPx(), height.roundToPx()) }
+                    with(density) { HomeArtworkPrefetchRequest(geometry.url,
+                        geometry.width.roundToPx(), geometry.height.roundToPx()) }
                 }.distinctBy { it.url }
             }
         }.collectLatest { requests ->

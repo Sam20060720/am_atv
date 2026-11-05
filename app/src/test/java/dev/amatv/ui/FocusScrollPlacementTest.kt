@@ -23,6 +23,17 @@ class FocusScrollPlacementTest {
         assertEquals(0f, reachableFocusScroll(500f, null, 972, 1000, 28), 0f)
     }
 
+    @Test fun mirroredForecastClampsAtTheSameLogicalEndpoints() {
+        // In RTL, scrolling toward logical end moves the physical target right.
+        assertEquals(0f, reachableFocusScroll(300f, 0, null, 1000, 28, isRtl = true), 0f)
+        assertEquals(80f, reachableFocusScroll(300f, -80, null, 1000, 28, isRtl = true), 0f)
+        assertEquals(-148f, reachableFocusScroll(-500f, null, 1120, 1000, 28, isRtl = true), 0f)
+        for (requested in listOf(-500f, -80f, 0f, 40f, 500f)) {
+            assertEquals(-reachableFocusScroll(requested, -80, 1120, 1000, 28),
+                reachableFocusScroll(-requested, -80, 1120, 1000, 28, isRtl = true), 0f)
+        }
+    }
+
     @Test fun shortRowHasNoPredictedScrollInEitherDirection() {
         assertEquals(0f, reachableFocusScroll(450f, 0, 600, 1000, 28), 0f)
         assertEquals(0f, reachableFocusScroll(-300f, 0, 600, 1000, 28), 0f)

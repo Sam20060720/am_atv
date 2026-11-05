@@ -23,6 +23,24 @@ class LibraryBrowseToolsTest {
         LibraryBrowseTools(scope, load, retry, Locale.ENGLISH, Dispatchers.Unconfined,
             pageDelayMillis = 0, maxPagesPerBatch = maxPages)
 
+    @Test fun refreshRevisionInvalidatesAnAppliedIndexEvenWhenFallbackItemsAreIdentical() {
+        val scope = scope()
+        var reads = 0
+        val tools = tools(scope, { reads++ })
+        val fallback = listOf(track("old", "Zulu"))
+        try {
+            tools.update(fallback, page(false), true)
+            tools.request(LibrarySortOrder.Name)
+            assertEquals(listOf("old"), tools.state.value.indexedItems!!.map { it.id })
+            tools.update(fallback, page(true, pages = 0, loading = true), true, revision = 1L)
+            assertTrue(tools.state.value.preparing)
+            tools.update(fallback + track("new", "Alpha"), page(false), true, revision = 1L)
+            assertEquals(listOf("new", "old"), tools.state.value.indexedItems!!.map { it.id })
+            assertFalse(tools.state.value.preparing)
+            assertEquals(0, reads)
+        } finally { tools.cancel(); scope.cancel() }
+    }
+
     @Test fun originalBrowsingDoesNotFetchTheWholeLibrary() {
         val scope = scope(); var reads = 0
         val tools = tools(scope, { reads++ })

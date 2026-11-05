@@ -112,8 +112,18 @@ internal fun CollectionScreen(
     if (savedSongFocus < 0 && savedControlFocus == "more") SideEffect {
         focusEntry?.requester = if (openActions != null) moreFocus else actionEntryFocus
     }
-    if (savedSongFocus < 0 && savedControlFocus == "continuation") SideEffect {
-        focusEntry?.requester = continuationFocus
+    val contentTargetsEnabled = LocalFocusTargetsEnabled.current
+    val hasContinuation = state.next != null || state.loadingMore || state.error != null && state.tracks.isNotEmpty()
+    if (savedSongFocus < 0 && savedControlFocus == "continuation") {
+        val visibleSong = listState.layoutInfo.visibleItemsInfo.lastOrNull {
+            it.index - songHeaderCount in state.tracks.indices
+        }?.let { it.index - songHeaderCount }
+        val target = if (hasContinuation) continuationFocus else visibleSong?.let { songFocus[it] } ?: actionEntryFocus
+        SideEffect {
+            focusEntry?.requester = target
+            if (!hasContinuation && contentTargetsEnabled && (rightContentHasFocus || classicActionsHaveFocus))
+                runCatching { target.requestFocus() }
+        }
     }
     val duration = remember(state.tracks) { state.tracks.sumOf { it.durationMs }.coerceAtLeast(0L) }
     val durationComplete = remember(state.tracks) { state.tracks.isNotEmpty() && state.tracks.all { it.durationMs > 0L } }
@@ -358,8 +368,7 @@ internal fun CollectionScreen(
             },
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (showPlayControls) CollectionAction(
-                stringResource(when {
-                    initialEmptyError -> R.string.browse_reload
+                if (initialEmptyError) catalogRecoveryLabel(state.failureReason) else stringResource(when {
                     state.preparing -> R.string.collection_cancel_preparation
                     else -> R.string.browse_play
                 }),
@@ -534,8 +543,8 @@ internal fun CollectionScreen(
                                     }, onBeforeAction = { cancelPendingFocus() }, onClick = { onPlay(index, false) })
                         }
                     }
-                    if (state.next != null || state.loadingMore || (state.error != null && state.tracks.isNotEmpty())) item(key = "collection-continuation") {
-                        CollectionAction(stringResource(when {
+                    if (hasContinuation) item(key = "collection-continuation") {
+                        CollectionAction(if (state.error != null && !state.preparing && !state.loadingMore) catalogRecoveryLabel(state.failureReason, continuation = true) else stringResource(when {
                             state.preparing -> R.string.collection_preparing
                             state.loadingMore -> R.string.browse_tracks_loading
                             state.error != null -> R.string.browse_reload

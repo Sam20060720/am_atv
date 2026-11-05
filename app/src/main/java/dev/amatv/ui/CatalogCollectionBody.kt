@@ -92,12 +92,22 @@ internal fun CatalogCollectionBody(
         if (bodyKeys.isEmpty()) listOf("status") else bodyKeys + if (hasFooter) listOf("more") else emptyList()
     }
     var selectedKey by rememberSaveable { mutableStateOf<String?>(null) }
-    val retainedKey = selectedKey?.takeIf(availableKeys::contains) ?: availableKeys.first()
+    val retainedKey = selectedKey?.takeIf(availableKeys::contains)
+        ?: (grid.layoutInfo.visibleItemsInfo.lastOrNull { it.key in availableKeys }?.key as? String)
+        ?: availableKeys.first()
     val requesters = remember { mutableMapOf<String, FocusRequester>() }
     var bodyHasFocus by remember { mutableStateOf(false) }
     var wantsStatusEntry by remember { mutableStateOf(false) }
     var appendFrom by remember { mutableStateOf<Int?>(null) }
     val entry = LocalContentFocusEntry.current
+    SideEffect {
+        val target = requesters[retainedKey]
+        if (target != null) {
+            entry?.requester = target
+            if (contentActive && bodyHasFocus && selectedKey != null && selectedKey !in availableKeys)
+                runCatching { target.requestFocus() }
+        }
+    }
     val columns by remember(grid, songs) { derivedStateOf { if (songs) 1 else grid.layoutInfo.maxSpan.coerceAtLeast(1) } }
     val rows = groups.size + (items.size + columns - 1) / columns + if (hasFooter || bodyKeys.isEmpty()) 1 else 0
     val latestMore by rememberUpdatedState(onMore)

@@ -4,8 +4,24 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import dev.amatv.model.Track
+import dev.amatv.model.EditorialMotionAsset
+import androidx.compose.ui.unit.dp
 
 class HomeArtworkPrefetchTest {
+    @Test fun prefetchUsesTheActualStyleCoverAndChosenPosterGeometry() {
+        val square = EditorialMotionAsset("square", "https://example.test/square.m3u8", "https://example.test/square.jpg", 600, 600)
+        val portrait = EditorialMotionAsset("portrait", "https://example.test/portrait.m3u8", "https://example.test/portrait.jpg", 600, 800)
+        val track = Track("123", "Album", "Artist", "", 0L, emptyList(), emptyList(),
+            motionArtworkVariants = listOf(square, portrait))
+        assertEquals(HomeArtworkPrefetchGeometry(square.previewUrl!!, 168.dp, 168.dp),
+            homeArtworkPrefetchGeometry(track, false, HomeShelfLayout(classic = true)))
+        assertEquals(HomeArtworkPrefetchGeometry(square.previewUrl!!, 210.dp, 184.dp),
+            homeArtworkPrefetchGeometry(track, true, HomeShelfLayout(classic = true)))
+        assertEquals(HomeArtworkPrefetchGeometry(portrait.previewUrl!!, 200.dp, 278.dp),
+            homeArtworkPrefetchGeometry(track, true, HomeShelfLayout(classic = false)))
+    }
+
     @Test fun visibleCoversPrecedeSpeculationEvenWhenTheAllowanceIsSmall() {
         val window = homeArtworkPrefetchWindow(
             listOf(20, 20, 20),

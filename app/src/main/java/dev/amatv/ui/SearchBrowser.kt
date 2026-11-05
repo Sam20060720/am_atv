@@ -273,6 +273,15 @@ internal class SearchBrowser(
         request(first = page?.loaded != true)
     }
 
+    fun invalidateLibrary() {
+        if (requestKey?.scope == SearchScope.Library) cancelRequest()
+        pages.keys.removeAll { it.scope == SearchScope.Library }
+        if (mutableState.value.scope == SearchScope.Library) {
+            publish()
+            ensureResults()
+        }
+    }
+
     fun dispose() {
         visible = false
         queryGeneration++

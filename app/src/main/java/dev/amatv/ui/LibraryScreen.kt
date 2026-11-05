@@ -119,6 +119,7 @@ internal fun LibraryScreen(
     firstFocus: FocusRequester?,
     menuFocus: FocusRequester?,
     onLibrarySearch: () -> Unit = {},
+    onSignIn: () -> Unit = {},
 ) {
     val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
     var selected by rememberSaveable { mutableStateOf(LibrarySection.Recent) }
@@ -146,16 +147,21 @@ internal fun LibraryScreen(
     val workScope = rememberCoroutineScope()
     val latestLoadMore by rememberUpdatedState(onLoadMore)
     val latestRetry by rememberUpdatedState(onSelectSection)
+    val latestSignIn by rememberUpdatedState(onSignIn)
     val latestPagination by rememberUpdatedState(pagination)
     val locale = LocalConfiguration.current.locales[0]
     val tools = remember(selected, locale) {
         val sectionId = selected.shelfId
-        LibraryBrowseTools(workScope, { latestLoadMore(sectionId) }, {
-            // Existing content means a failed continuation, not a cold category.
-            // Selecting an already-loaded category is intentionally a no-op in
-            // the host, so retry its actual retained cursor instead.
-            if ((latestPagination[sectionId]?.loadedPages ?: 0) > 0) latestLoadMore(sectionId)
-            else latestRetry(sectionId)
+        LibraryBrowseTools(workScope, {
+            if (latestPagination[sectionId]?.failureReason == dev.amatv.integration.CatalogFailureReason.Authorization) latestSignIn()
+            else latestLoadMore(sectionId)
+        }, {
+            if (latestPagination[sectionId]?.failureReason == dev.amatv.integration.CatalogFailureReason.Authorization) latestSignIn()
+            else {
+                // An already-loaded category retries its retained continuation.
+                if ((latestPagination[sectionId]?.loadedPages ?: 0) > 0) latestLoadMore(sectionId)
+                else latestRetry(sectionId)
+            }
         }, locale)
     }
     val toolsState by tools.state.collectAsState()
@@ -189,7 +195,7 @@ internal fun LibraryScreen(
         hasMore = false, loading = false, failed = false, total = displayed.size, empty = false) else page
     DisposableEffect(tools) { onDispose { tools.cancel() } }
     LaunchedEffect(tools, shelf?.items, page, workActive) {
-        tools.update(shelf?.items.orEmpty(), LibraryPagingSnapshot(page.hasMore, page.loading, page.failed, page.loadedPages), workActive)
+        tools.update(shelf?.items.orEmpty(), LibraryPagingSnapshot(page.hasMore, page.loading, page.failed, page.loadedPages), workActive, page.refreshGeneration)
         if (workActive && !restoredTools) {
             restoredTools = true
             if (retainedSort != LibrarySortOrder.Original || retainedFilter.isNotEmpty()) tools.request(retainedSort, retainedFilter)
@@ -223,7 +229,7 @@ internal fun LibraryScreen(
                 }
             }
         }
-        if (displayed.isEmpty() && !displayedPage.loading) {
+        if (displayed.isEmpty() && !displayedPage.loading && (!displayedPage.hasMore || displayedPage.failed)) {
             runCatching { toolsFocus.requestFocus() }
             pendingEntry = null
         }
@@ -340,9 +346,10 @@ internal fun LibraryScreen(
                     songs = selected == LibrarySection.Songs,
                     firstFocus = firstItem, returnFocus = sectionFocus.getValue(selected),
                     entry = gridEntry,
-                    onLoadMore = { onLoadMore(selected.shelfId) },
+                    onLoadMore = { if (page.failureReason == dev.amatv.integration.CatalogFailureReason.Authorization) onSignIn() else onLoadMore(selected.shelfId) },
                     onRetry = {
-                        if (page.loadedPages > 0) onLoadMore(selected.shelfId)
+                        if (page.failureReason == dev.amatv.integration.CatalogFailureReason.Authorization) onSignIn()
+                        else if (page.loadedPages > 0) onLoadMore(selected.shelfId)
                         else onSelectSection(selected.shelfId)
                     }, onOpen = onOpen,
                     aboveFocus = toolsFocus, transformRevision = toolsState.revision,
@@ -606,7 +613,7 @@ private fun LibraryCover(track: Track, modifier: Modifier, onClick: () -> Unit) 
             Box(Modifier.fillMaxWidth().aspectRatio(1f)
                 .coverShadow(focused, if (artist) 96.dp else radius)
                 .coverHairline(if (artist) 96.dp else radius)) {
-                if (track.artworkUrl.isNullOrBlank()) {
+                if (track.posterForAspect().isNullOrBlank() && track.motionForAspect(1f) == null) {
                     Box(Modifier.fillMaxSize().clip(shape).background(Color.White.copy(alpha = 0.055f)), Alignment.Center) {
                         Icon(if (artist) Icons.Rounded.Person else if (track.resourceType == "library-playlist-folders") Icons.Rounded.Folder else Icons.Rounded.Album, null,
                             tint = Color.White.copy(alpha = 0.32f), modifier = Modifier.size(34.dp))
@@ -635,7 +642,7 @@ private fun LibrarySong(track: Track, modifier: Modifier, onClick: () -> Unit) {
         padding = PaddingValues(horizontal = 9.dp)) {
         Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (track.artworkUrl.isNullOrBlank()) Icon(Icons.Rounded.Album, null, Modifier.size(artworkSize), Color.White.copy(alpha = 0.3f))
+            if (track.posterForAspect().isNullOrBlank() && track.motionForAspect(1f) == null) Icon(Icons.Rounded.Album, null, Modifier.size(artworkSize), Color.White.copy(alpha = 0.3f))
             else MotionArtwork(track, Modifier.size(artworkSize), animate = false, cornerRadius = 4.dp)
             Column(Modifier.weight(1f)) {
                 Text(track.title, color = Color.White.copy(alpha = 0.92f), fontSize = if (classic) 16.sp else 13.sp, lineHeight = if (classic) 20.sp else 17.sp, fontWeight = FontWeight.Medium,
@@ -658,7 +665,7 @@ private fun LibraryPageAction(page: LibraryShelfPagination, onClick: () -> Unit,
         interactionFeedbackEnabled = !page.loading, cornerRadius = 19.dp, focusedScale = 1f,
         background = Color.White.copy(alpha = 0.04f), focusedBackground = Color.White.copy(alpha = 0.13f)) {
         if (page.loading) Box(Modifier.fillMaxSize(), Alignment.Center) { AppleLoadingIndicator(Modifier.size(18.dp)) }
-        else Text(stringResource(if (page.failed) R.string.browse_load_more_retry else R.string.browse_load_more),
+        else Text(if (page.failed) catalogRecoveryLabel(page.failureReason) else stringResource(R.string.browse_load_more),
             color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp, lineHeight = 17.sp, modifier = Modifier.align(Alignment.Center))
     }
 }
@@ -703,6 +710,14 @@ private fun LibraryToolsBar(
         if (state.preparing || state.phase == LibraryToolsPhase.Paused || state.phase == LibraryToolsPhase.Failed)
             runCatching { progressActionFocus.requestFocus() }
         else onEnterContent()
+    }
+    val progressVisible = state.preparing || state.phase == LibraryToolsPhase.Paused || state.phase == LibraryToolsPhase.Failed
+    SideEffect {
+        if (!progressVisible && progressActionFocused) {
+            runCatching { firstFocus.requestFocus() }
+            progressActionFocused = false
+            onProgressFocus(false)
+        }
     }
     LaunchedEffect(state.filter) { if (!editing) draft = state.filter }
     LaunchedEffect(editing, active) {
@@ -750,6 +765,7 @@ private fun LibraryToolsBar(
         }, toolModifier().focusRequester(artistFocus).automationId("library-sort-artist"), chosen = state.sort == LibrarySortOrder.Artist)
         TvTextField(draft, onValueChange = { draft = it.take(200) }, enabled = active, readOnly = !editing,
             placeholder = stringResource(R.string.library_tools_filter), singleLine = true,
+            onActivate = { runCatching { filterFocus.requestFocus() }; editing = true },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { finishEditing(true); runCatching { filterFocus.requestFocus() } }),
             modifier = Modifier.width(170.dp).height(33.dp).automationId("library-filter")

@@ -78,6 +78,33 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
+/** One presentation owner can use the same enrichment for geometry and artwork. */
+@Composable
+internal fun rememberEditorialArtwork(track: Track, loadAllowed: Boolean): Track {
+    val loader = LocalEditorialArtworkLoader.current
+    var supplementalArtwork by remember(loader, track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId) {
+        // Lazy disposal drops remember state. Restore the existing metadata LRU
+        // synchronously, including the matching poster, without fetching idle cards.
+        mutableStateOf(if (track.canLoadEditorialArtwork()) loader?.cached?.invoke(track)?.takeIf {
+            it.motionArtworkUrl != null || it.motionArtworkVariants.isNotEmpty()
+        } else null)
+    }
+    if (loadAllowed && loader != null && track.canLoadEditorialArtwork() && supplementalArtwork == null) {
+        LaunchedEffect(track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId, loader) {
+            try {
+                val loaded = loader(track)
+                currentCoroutineContext().ensureActive()
+                val merged = track.withEditorialMotionFrom(loaded)
+                if (merged.motionArtworkUrl != null || merged.motionArtworkVariants.isNotEmpty()) supplementalArtwork = merged
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { currentCoroutineContext().ensureActive() }
+        }
+    }
+    return remember(track, supplementalArtwork) {
+        if (track.canLoadEditorialArtwork()) supplementalArtwork?.let(track::withEditorialMotionFrom) ?: track else track
+    }
+}
+
 @Composable
 fun MotionArtwork(
     track: Track,
@@ -103,28 +130,7 @@ fun MotionArtwork(
     // a loader job. The focused browse card qualifies without an added delay.
     val motionAllowed = if (motionEligible) rememberMotionLifecycleStarted() else false
     val videoAllowed = motionAllowed && LocalBrowseMotionEnabled.current
-    val loader = LocalEditorialArtworkLoader.current
-    var supplementalArtwork by remember(loader, track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId) {
-        // Lazy disposal drops remember state. Restore the existing metadata LRU
-        // synchronously, including the matching poster, without fetching idle cards.
-        mutableStateOf(if (track.canLoadEditorialArtwork()) loader?.cached?.invoke(track)?.takeIf {
-            it.motionArtworkUrl != null || it.motionArtworkVariants.isNotEmpty()
-        } else null)
-    }
-    if (motionAllowed && loader != null && track.canLoadEditorialArtwork() && supplementalArtwork == null) {
-        LaunchedEffect(track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId, loader) {
-            try {
-                val loaded = loader(track)
-                currentCoroutineContext().ensureActive()
-                val merged = track.withEditorialMotionFrom(loaded)
-                if (merged.motionArtworkUrl != null || merged.motionArtworkVariants.isNotEmpty()) supplementalArtwork = merged
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { currentCoroutineContext().ensureActive() }
-        }
-    }
-    val presentationTrack = remember(track, supplementalArtwork) {
-        if (track.canLoadEditorialArtwork()) supplementalArtwork?.let(track::withEditorialMotionFrom) ?: track else track
-    }
+    val presentationTrack = rememberEditorialArtwork(track, motionAllowed)
     val asset = remember(presentationTrack.motionArtworkVariants, presentationTrack.motionArtworkUrl, presentationTrack.motionPreviewUrl, artworkAspectRatio) {
         presentationTrack.motionForAspect(artworkAspectRatio)
     }
@@ -709,6 +715,9 @@ internal fun rememberArtworkPalette(url: String?, fallback: List<Color>): List<C
             .ifEmpty { List(5) { Color(0xFF233645) } }
     }
     return produceState(initialValue = url?.let(paletteCache::get) ?: default, url, default) {
+        // produceState retains its previous value when a key changes. Establish
+        // the new artwork's own fallback before a decode can fail or suspend.
+        value = url?.let(paletteCache::get) ?: default
         if (url == null || !url.startsWith("https://")) {
             value = default
             return@produceState

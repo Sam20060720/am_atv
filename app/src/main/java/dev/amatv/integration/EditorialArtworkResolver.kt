@@ -11,6 +11,7 @@ internal class EditorialArtworkResolver(
     private val scopeKey: suspend () -> String,
     private val albumForSong: suspend (Track) -> Track?,
     private val publicArtwork: suspend (Track) -> Track,
+    private val cacheGeneration: () -> Long = { 0L },
 ) {
     private val albums = EditorialLookupCache<Track?> { if (it == null) 15 * 60_000L else 6 * 60 * 60_000L }
 
@@ -19,7 +20,7 @@ internal class EditorialArtworkResolver(
         if (item.catalogKind != CatalogKind.Song) return publicArtwork(item)
         val id = item.catalogId?.takeIf { it.matches(Regex("[0-9]+")) } ?: return item
         return try {
-            val key = "${scopeKey()}:$id"
+            val key = "${cacheGeneration()}:${scopeKey()}:$id"
             val album = albums.get(key) {
                 albumForSong(item)?.takeIf { it.catalogKind == CatalogKind.Album }
             } ?: return item

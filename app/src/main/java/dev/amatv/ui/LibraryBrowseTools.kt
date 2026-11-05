@@ -126,8 +126,10 @@ internal class LibraryBrowseTools(
 
     init { require(maxPagesPerBatch > 0 && maxBatchMillis > 0 && pageDelayMillis >= 0) }
 
-    fun update(items: List<Track>, paging: LibraryPagingSnapshot, visible: Boolean) {
-        val changed = items !== raw
+    private var contentRevision = 0L
+    fun update(items: List<Track>, paging: LibraryPagingSnapshot, visible: Boolean, revision: Long = 0L) {
+        val changed = items !== raw || revision != contentRevision
+        contentRevision = revision
         raw = items; page = paging; active = visible
         if (changed && mutableState.value.indexedItems != null) indexDirty = true
         mutableState.value = mutableState.value.copy(loadedCount = items.size)

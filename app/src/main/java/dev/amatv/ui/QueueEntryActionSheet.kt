@@ -40,6 +40,8 @@ internal fun QueueEntryActionSheet(
     canSleepAtTrackEnd: Boolean = false,
     canSleepAtContextEnd: Boolean = false,
     onResourceDeleted: ((Track) -> Unit)? = null,
+    accountScopeKey: String = services.authorizationCacheScope(),
+    onRegisterBackHandler: ((() -> Unit)?) -> Unit = {},
 ) {
     val future = queue.upNext + queue.autoplay
     val index = future.indexOfFirst { it.entryId == entry.entryId }
@@ -88,6 +90,8 @@ internal fun QueueEntryActionSheet(
             canSleepAtTrackEnd = canSleepAtTrackEnd,
             canSleepAtContextEnd = canSleepAtContextEnd,
             onResourceDeleted = onResourceDeleted,
+            accountScopeKey = accountScopeKey,
+            onRegisterBackHandler = onRegisterBackHandler,
         )
     }
 }

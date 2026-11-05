@@ -30,6 +30,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
@@ -57,7 +58,16 @@ import kotlinx.coroutines.flow.first
 
 /** Keep entry on an actual card/control, rather than a lazy container. */
 internal class ContentFocusEntry {
+    var targetReadyRevision by mutableIntStateOf(0)
+        private set
     var requester: FocusRequester? = null
+        set(value) {
+            if (field === value) return
+            field = value
+            if (value != null) targetReady()
+        }
+    // Hosts observe this only while an explicit content-entry intent is pending.
+    fun targetReady() { targetReadyRevision++ }
     // Read synchronously at the start of an Up press, before a child advances
     // its requested cursor or cancels its still-running reveal.
     var navigationUpReady: (() -> Boolean)? = null
@@ -196,6 +206,7 @@ fun FocusSurface(
     val scrollPlacement = LocalFocusScrollPlacement.current
     val frameKey = remember { Any() }
     val contentEntry = LocalContentFocusEntry.current
+    val entryPlacementReported = remember(contentEntry) { booleanArrayOf(false) }
     val contentRequester = remember { FocusRequester() }
     val frameGeometry = remember { FocusFrameGeometry() }
     val placedCoordinates = remember { arrayOfNulls<androidx.compose.ui.layout.LayoutCoordinates>(1) }
@@ -297,8 +308,9 @@ fun FocusSurface(
     val restingElevationPx = with(density) { restingElevation.toPx() }
     val focusedElevationPx = with(density) { focusedElevation.toPx() }
     val liftPx = with(density) { focusedLift.toPx() }
-    val frameTransform = remember(scale, focusProgress, liftPx, focusedScale) {
-        FocusFrameTransform(scale, focusProgress, liftPx, focusedScale)
+    val frameTransform = remember(scale, focusProgress, liftPx, focusedScale, motionStyle) {
+        FocusFrameTransform(scale, focusProgress, liftPx, focusedScale,
+            followImmediately = motionStyle == FocusMotionStyle.Immediate)
     }
     if (visualsStarted) SideEffect {
         if (inputFocused) contentEntry?.requester = contentRequester
@@ -340,6 +352,12 @@ fun FocusSurface(
                 else Modifier.zIndex(if (active) 1f else 0f))
             // Measure the layout box before the animated layer. Its visual scale
             // must never feed back into the overlay's spring target.
+            .onPlaced {
+                if (!entryPlacementReported[0]) {
+                    entryPlacementReported[0] = true
+                    contentEntry?.targetReady()
+                }
+            }
             .then(if (frameEnabled) Modifier.onGloballyPositioned { coordinates ->
                 placedCoordinates[0] = coordinates
                 val bounds = coordinates.focusFrameBounds()

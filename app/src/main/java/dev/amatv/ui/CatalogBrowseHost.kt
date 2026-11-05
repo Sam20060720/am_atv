@@ -26,8 +26,10 @@ import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
 import dev.amatv.R
@@ -107,6 +109,10 @@ internal fun BrowseShell(
     deletedResource: CatalogResourceRef? = null,
     onDeletedResourceHandled: () -> Unit = {},
     interfaceStyleFocusPending: Boolean = false,
+    accountScopeKey: String = searchHistoryScopeKey,
+    libraryRevision: Long = 0L,
+    browseRefreshRevision: Long = 0L,
+    onEnsureRecentTracks: () -> Unit = {},
 ) {
     val interfaceStyle = LocalInterfaceStyle.current
     val classicInterface = interfaceStyle == InterfaceStyle.Classic
@@ -158,7 +164,8 @@ internal fun BrowseShell(
     var contentEntryEpoch by remember { mutableLongStateOf(0L) }
     var playerReturnPending by remember { mutableStateOf(!isBrowseVisible) }
     val focusManager = LocalFocusManager.current
-    val tabSessions = remember(services, connectionState) { mutableMapOf<Destination, BrowseTabSession>() }
+    val inputModeManager = LocalInputModeManager.current
+    val tabSessions = remember(services, connectionState, accountScopeKey) { mutableMapOf<Destination, BrowseTabSession>() }
     val tab = tabSessions.getOrPut(destination) { BrowseTabSession(scope, services, capabilities, destination) }
     // Own initial Home entry before native auto-focus can land on navigation.
     // Replacing a tab's targets during an account transition needs the same
@@ -189,6 +196,16 @@ internal fun BrowseShell(
                 search.selectScope(SearchScope.Library)
             }
         }
+    }
+    LaunchedEffect(tabSessions, tab, libraryRevision) {
+        tabSessions.values.forEach { it.invalidateLibrary(libraryRevision) }
+    }
+    val localeTag = androidx.compose.ui.platform.LocalConfiguration.current.locales[0].toLanguageTag()
+    LaunchedEffect(tabSessions, tab, browseRefreshRevision, localeTag) {
+        tabSessions.values.forEach { it.inlineBrowse.invalidate("$browseRefreshRevision:$localeTag") }
+    }
+    LaunchedEffect(destination, accountScopeKey, isBrowseVisible) {
+        if (destination == Destination.Search && isBrowseVisible) onEnsureRecentTracks()
     }
     val insights = tab.insights
     val genres = tab.genres
@@ -281,13 +298,13 @@ internal fun BrowseShell(
     val artist = detail?.takeIf { it.artistKey != null }?.source
     val currentArtistVisit = artistVisits.firstOrNull { it.key == detail?.artistKey }
     val resourceState = detail?.page?.state?.collectAsState()?.value
-    val rootStateHolder = key(services, connectionState) { rememberSaveableStateHolder() }
+    val rootStateHolder = key(services, connectionState, accountScopeKey) { rememberSaveableStateHolder() }
     // Navigation visits are remember-only. Keep their saved UI state in this
     // session too, so recreated ordinal visit keys cannot restore another item.
     // The root holder above still saves its viewport through the Activity.
     CompositionLocalProvider(LocalSaveableStateRegistry provides null) {
-    val detailStateHolder = key(services, connectionState) { rememberSaveableStateHolder() }
-    val auxiliaryStateHolder = key(services, connectionState) { rememberSaveableStateHolder() }
+    val detailStateHolder = key(services, connectionState, accountScopeKey) { rememberSaveableStateHolder() }
+    val auxiliaryStateHolder = key(services, connectionState, accountScopeKey) { rememberSaveableStateHolder() }
     val savedDetailKeys = tab.savedDetailKeys
     LaunchedEffect(tab, detailVisits.map { it.key }) {
         val keys = detailVisits.mapTo(mutableSetOf()) { it.key }
@@ -376,11 +393,15 @@ internal fun BrowseShell(
         upBoundary.release()
         enterNavigation()
     }
-    LaunchedEffect(isBrowseVisible) {
+    LaunchedEffect(isBrowseVisible, windowFocused) {
         if (!isBrowseVisible) {
             playerReturnPending = true
-        } else if (playerReturnPending) {
+        } else if (playerReturnPending && windowFocused) {
             playerReturnPending = false
+            // The player's Always-focusable root can own focus in touch mode;
+            // clickable cards cannot. Back/pointer return does not itself
+            // leave touch mode, so establish keyboard eligibility before entry.
+            inputModeManager.requestInputMode(InputMode.Keyboard)
             // The player and its source stay composed through their crossfade.
             // Release the old native owner before restoring the actual source;
             // a retained group's hasFocus flag is not a completed handoff.
@@ -475,7 +496,7 @@ internal fun BrowseShell(
             contentEntryPending = true
         } else runCatching { menuRequester.requestFocus() }
     }
-    LaunchedEffect(destination, tab, contentEntryEpoch, contentEntryPending, contentFocusEntry.preferredReturnRequester, currentContentHasFocus, navigationExpanded, isBrowseVisible, detail?.key, loading, shelves, connectionState, contextMenuVisible, auxiliaryPage, switchingTab, windowFocused, collectionState.loading, collectionState.error, currentArtistVisit?.profile, currentArtistVisit?.failed, resourceState?.profile, resourceState?.failed, interfaceStyle, interfaceStyleFocusPending) {
+    LaunchedEffect(destination, tab, contentEntryEpoch, contentEntryPending, contentFocusEntry.preferredReturnRequester, if (contentEntryPending) contentFocusEntry.targetReadyRevision else 0L, if (contentEntryPending) detail?.focus?.targetReadyRevision else 0L, if (contentEntryPending) auxiliaryFocus.targetReadyRevision else 0L, currentContentHasFocus, navigationExpanded, isBrowseVisible, detail?.key, loading, shelves, connectionState, contextMenuVisible, auxiliaryPage, switchingTab, windowFocused, collectionState.loading, collectionState.error, currentArtistVisit?.profile, currentArtistVisit?.failed, resourceState?.profile, resourceState?.failed, interfaceStyle, interfaceStyleFocusPending) {
         if (!contentEntryPending || navigationExpanded || !isBrowseVisible || !windowFocused || contextMenuVisible || switchingTab || resetRootPending ||
             settingsFocusPending || observedInterfaceStyle != interfaceStyle) return@LaunchedEffect
         val requestEpoch = contentEntryEpoch
@@ -805,7 +826,7 @@ internal fun BrowseShell(
                         else CollectionScreen(
                             state = collectionState, currentTrack = currentTrack, isPlaying = isPlaying,
                             firstFocus = visit.firstFocus, navigationFocus = menuRequester,
-                            onRetry = { visit.collection?.retry() },
+                            onRetry = { if (collectionState.failureReason == CatalogFailureReason.Authorization) onSignIn() else visit.collection?.retry() },
                             onLoadMore = { visit.collection?.more() },
                             onOpenArtist = { details.open(it) },
                             onPlay = { index, shuffle ->

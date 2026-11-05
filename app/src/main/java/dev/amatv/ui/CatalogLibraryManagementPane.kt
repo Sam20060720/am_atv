@@ -27,17 +27,22 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
+internal data class PendingLibraryManagementRead(val check: suspend () -> Boolean, val deletesResource: Boolean)
+internal class CatalogLibraryManagementPending {
+    var operation by mutableStateOf<PendingLibraryManagementRead?>(null)
+}
+
 private enum class ManagementPage { Actions, Name, Order, Entry, Folders, Delete }
 
 /** Content of the existing action sheet: no second window or independent menu style. */
 @Composable
 internal fun CatalogLibraryManagementPane(
     item: Track, services: MusicServices, manager: CatalogLibraryManagement,
-    firstRequester: FocusRequester, onChanged: () -> Unit, onDeleted: () -> Unit,
+    firstRequester: FocusRequester, pending: CatalogLibraryManagementPending, accountScopeKey: String, onChanged: () -> Unit, onDeleted: () -> Unit,
     onBusyChanged: (Boolean) -> Unit, onBackHandlerChanged: ((() -> Boolean)?) -> Unit, onCancel: () -> Unit,
 ) {
-    key(item.resourceId, services.authorizationCacheScope()) {
-        CatalogLibraryManagementContent(item, services, manager, firstRequester, onChanged, onDeleted,
+    key(item.resourceId, accountScopeKey) {
+        CatalogLibraryManagementContent(item, services, manager, firstRequester, pending, accountScopeKey, onChanged, onDeleted,
             onBusyChanged, onBackHandlerChanged, onCancel)
     }
 }
@@ -45,7 +50,7 @@ internal fun CatalogLibraryManagementPane(
 @Composable
 private fun CatalogLibraryManagementContent(
     item: Track, services: MusicServices, manager: CatalogLibraryManagement,
-    firstRequester: FocusRequester, onChanged: () -> Unit, onDeleted: () -> Unit,
+    firstRequester: FocusRequester, pending: CatalogLibraryManagementPending, accountScopeKey: String, onChanged: () -> Unit, onDeleted: () -> Unit,
     onBusyChanged: (Boolean) -> Unit, onBackHandlerChanged: ((() -> Boolean)?) -> Unit, onCancel: () -> Unit,
 ) {
     val menuMetrics = tvMenuMetrics()
@@ -64,8 +69,7 @@ private fun CatalogLibraryManagementContent(
     var conflict by remember { mutableStateOf(false) }
     var loadJob by remember { mutableStateOf<Job?>(null) }
     val loadGeneration = remember { longArrayOf(0L) }
-    var pendingRead by remember { mutableStateOf<(suspend () -> Boolean)?>(null) }
-    var pendingDone by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val pendingRead = pending.operation
     var focusedId by remember { mutableStateOf<String?>(null) }
     var lastFocusVisit by remember { mutableStateOf<String?>(null) }
     val requesters = remember { mutableMapOf<String, FocusRequester>() }
@@ -75,6 +79,7 @@ private fun CatalogLibraryManagementContent(
     var folderStack by remember { mutableStateOf(listOf(rootFolder)) }
     var folderNext by remember { mutableStateOf<String?>(null) }
     val folderPages = remember { mutableSetOf<String>() }
+    suspend fun <T> accountRead(operation: suspend () -> T): T = services.withAuthorizationScope(accountScopeKey, operation)
     fun cancelLoad() { loadGeneration[0]++; loadJob?.cancel(); loadJob = null; loading = false }
     fun navigate(target: ManagementPage) {
         cancelLoad()
@@ -84,7 +89,7 @@ private fun CatalogLibraryManagementContent(
     fun loadMetadata() {
         cancelLoad(); val ticket = loadGeneration[0]; loading = true; failed = false
         loadJob = scope.launch {
-            try { val loaded = manager.resource(item); if (ticket == loadGeneration[0]) metadata = loaded }
+            try { val loaded = accountRead { manager.resource(item) }; if (ticket == loadGeneration[0]) metadata = loaded }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { if (ticket == loadGeneration[0]) failed = true }
             finally { if (ticket == loadGeneration[0]) loading = false }
@@ -94,7 +99,7 @@ private fun CatalogLibraryManagementContent(
         navigate(ManagementPage.Order); val ticket = loadGeneration[0]; loading = true; conflict = false
         selectedOccurrence = -1; lastFocusVisit = null
         loadJob = scope.launch {
-            try { val loaded = manager.playlist(item); if (ticket == loadGeneration[0]) {
+            try { val loaded = accountRead { manager.playlist(item) }; if (ticket == loadGeneration[0]) {
                 snapshot = loaded; order = loaded.entries.indices.toList()
             } } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { if (ticket == loadGeneration[0]) failed = true }
@@ -108,8 +113,8 @@ private fun CatalogLibraryManagementContent(
         if (!append) { folders = emptyList(); folderNext = null; folderPages.clear() }
         loadJob = scope.launch {
             try {
-                val loaded = services.catalogPages.sectionPage(CatalogResourceRef(checkNotNull(folder.resourceId), "library-playlist-folders"),
-                    CatalogResourceSection("children", resourceTypes = setOf("library-playlist-folders", "library-playlists"), pageSize = 100), cursor)
+                val loaded = accountRead { services.catalogPages.sectionPage(CatalogResourceRef(checkNotNull(folder.resourceId), "library-playlist-folders"),
+                    CatalogResourceSection("children", resourceTypes = setOf("library-playlist-folders", "library-playlists"), pageSize = 100), cursor) }
                 if (ticket != loadGeneration[0]) return@launch
                 check(folderPages.add(loaded.requestedPage) && loaded.nextPage !in folderPages)
                 val children = loaded.items.filter { it.resourceType == "library-playlist-folders" && it.resourceId != item.resourceId }
@@ -131,16 +136,16 @@ private fun CatalogLibraryManagementContent(
         } else navigate(if (page == ManagementPage.Entry) ManagementPage.Order else ManagementPage.Actions)
         return true
     }
-    fun write(check: suspend () -> Boolean, done: () -> Unit, operation: suspend () -> Boolean) {
+    fun write(check: suspend () -> Boolean, done: () -> Unit, deletesResource: Boolean = false, operation: suspend () -> Boolean) {
         if (busy || pendingRead != null || conflict) return
-        busy = true; failed = false; pendingRead = check; pendingDone = done
+        busy = true; failed = false; pending.operation = PendingLibraryManagementRead(check, deletesResource)
         scope.launch {
             try {
-                if (operation()) { pendingRead = null; pendingDone = null; onChanged(); done() }
+                if (services.withAuthorizationScope(accountScopeKey) { operation() }) { pending.operation = null; onChanged(); done() }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: LibraryManagementUnconfirmed) { /* Only a read may resolve this operation. */ }
-            catch (_: LibraryPlaylistConflict) { pendingRead = null; pendingDone = null; conflict = true }
-            catch (_: Exception) { pendingRead = null; pendingDone = null; failed = true }
+            catch (_: LibraryPlaylistConflict) { pending.operation = null; conflict = true }
+            catch (_: Exception) { pending.operation = null; failed = true }
             finally { busy = false }
         }
     }
@@ -210,12 +215,22 @@ private fun CatalogLibraryManagementContent(
         if (pendingRead != null) {
             item("pending") { Text(stringResource(R.string.library_management_pending), color = Color.White.copy(alpha = .65f),
                 fontSize = 11.sp, modifier = Modifier.padding(10.dp)) }
+            if (failed) item("readback-error") {
+                Text(stringResource(R.string.library_management_failed), color = Color(0xFFFFB6B8),
+                    fontSize = 11.sp, modifier = Modifier.padding(10.dp))
+            }
             item("check") { CatalogSheetRow(stringResource(R.string.library_management_check), rowModifier("check", true),
                 enabled = !busy, icon = Icons.Rounded.Refresh) {
-                val check = pendingRead ?: return@CatalogSheetRow
-                busy = true
+                val operation = pending.operation ?: return@CatalogSheetRow
+                busy = true; failed = false
                 scope.launch {
-                    try { if (check()) { val done = pendingDone; pendingRead = null; pendingDone = null; onChanged(); done?.invoke() } }
+                    try {
+                        if (services.withAuthorizationScope(accountScopeKey) { operation.check() }) {
+                            pending.operation = null; onChanged()
+                            if (operation.deletesResource) onDeleted()
+                            else { navigate(ManagementPage.Actions); loadMetadata() }
+                        } else failed = true
+                    }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { failed = true }
                     finally { busy = false }
@@ -245,7 +260,7 @@ private fun CatalogLibraryManagementContent(
                 item("confirm-delete") { CatalogSheetRow(stringResource(if (song) R.string.library_management_remove_song else if (folder) R.string.library_management_delete_folder else R.string.library_management_delete_playlist),
                     rowModifier("confirm-delete"), enabled = deletable && !busy, icon = Icons.Rounded.Delete) {
                     var pending: PendingLibraryDeletion? = null
-                    write({ pending?.let { manager.confirmDeletion(it) } == true }, onDeleted) {
+                    write({ pending?.let { manager.confirmDeletion(it) } == true }, onDeleted, deletesResource = true) {
                         val prepared = manager.prepareDeletion(item)
                         pending = prepared
                         manager.submitDeletion(prepared)

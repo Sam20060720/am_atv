@@ -65,6 +65,13 @@ internal class BrowseTabSession(scope: CoroutineScope, services: MusicServices, 
         search.setVisible(visible && !hasDetail && auxiliary.value == null && isSearch)
         inlineBrowse.setVisible(visible && !hasDetail && auxiliary.value == null && isNew && hasEditorial && catalogConfigured)
     }
+    private var libraryRevision = 0L
+    fun invalidateLibrary(revision: Long) {
+        if (libraryRevision == revision) return
+        libraryRevision = revision
+        details.invalidateLibrary()
+        search.invalidateLibrary()
+    }
     fun clearFocusIntents() {
         // These entries bridge mounted views. A style may reuse the same data
         // visit while its old exact-return target is no longer attached.
