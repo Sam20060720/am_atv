@@ -9,6 +9,19 @@ import dev.amatv.model.EditorialMotionAsset
 import androidx.compose.ui.unit.dp
 
 class HomeArtworkPrefetchTest {
+    @Test fun playlistPrefetchDoesNotWarmATextFreePortraitInsteadOfTheRenderedCover() {
+        val square = EditorialMotionAsset("motionDetailSquare", "https://example.test/square.m3u8",
+            "https://example.test/square.jpg", 3840, 3840)
+        val background = EditorialMotionAsset("motionDetailTall", "https://example.test/background.m3u8",
+            "https://example.test/background.jpg", 2048, 2732)
+        val playlist = Track("playlist", "Playlist", "Artist", "", 0L, emptyList(), emptyList(),
+            catalogKind = dev.amatv.model.CatalogKind.Playlist, motionArtworkVariants = listOf(background, square))
+        assertEquals(HomeArtworkPrefetchGeometry(square.previewUrl!!, 200.dp, 200.dp),
+            homeArtworkPrefetchGeometry(playlist, true, HomeShelfLayout(classic = false)))
+        assertEquals(HomeArtworkPrefetchGeometry(square.previewUrl!!, 210.dp, 184.dp),
+            homeArtworkPrefetchGeometry(playlist, true, HomeShelfLayout(classic = true)))
+    }
+
     @Test fun prefetchUsesTheActualStyleCoverAndChosenPosterGeometry() {
         val square = EditorialMotionAsset("square", "https://example.test/square.m3u8", "https://example.test/square.jpg", 600, 600)
         val portrait = EditorialMotionAsset("portrait", "https://example.test/portrait.m3u8", "https://example.test/portrait.jpg", 600, 800)

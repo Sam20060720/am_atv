@@ -64,10 +64,11 @@ internal data class HomeArtworkPrefetchGeometry(val url: String, val width: Dp, 
 internal fun homeArtworkPrefetchGeometry(track: Track, featured: Boolean, layout: HomeShelfLayout): HomeArtworkPrefetchGeometry? {
     val width = if (featured) layout.showcaseWidth else layout.cardWidth
     val portraitAspect = layout.showcaseWidth.value / layout.showcaseHeight.value
-    val portrait = !layout.classic && featured && track.motionForAspect(
+    val artwork = track.forHomePlaylistArtwork()
+    val portrait = !layout.classic && featured && track.catalogKind != dev.amatv.model.CatalogKind.Playlist && artwork.motionForAspect(
         portraitAspect,
     )?.aspectRatio?.let { it < 0.9f } == true
-    val url = track.posterForAspect(if (portrait) portraitAspect else 1f) ?: return null
+    val url = artwork.posterForAspect(if (portrait) portraitAspect else 1f) ?: return null
     val height = when {
         layout.classic && featured -> 184.dp
         portrait -> layout.showcaseHeight

@@ -78,9 +78,15 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 
+internal data class EditorialArtworkPresentation(val track: Track, val ready: Boolean)
+
 /** One presentation owner can use the same enrichment for geometry and artwork. */
 @Composable
-internal fun rememberEditorialArtwork(track: Track, loadAllowed: Boolean): Track {
+internal fun rememberEditorialArtwork(track: Track, loadAllowed: Boolean): Track =
+    rememberEditorialArtworkPresentation(track, loadAllowed).track
+
+@Composable
+internal fun rememberEditorialArtworkPresentation(track: Track, loadAllowed: Boolean): EditorialArtworkPresentation {
     val loader = LocalEditorialArtworkLoader.current
     var supplementalArtwork by remember(loader, track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId) {
         // Lazy disposal drops remember state. Restore the existing metadata LRU
@@ -89,20 +95,26 @@ internal fun rememberEditorialArtwork(track: Track, loadAllowed: Boolean): Track
             it.motionArtworkUrl != null || it.motionArtworkVariants.isNotEmpty()
         } else null)
     }
-    if (loadAllowed && loader != null && track.canLoadEditorialArtwork() && supplementalArtwork == null) {
+    val needsLookup = loader != null && track.canLoadEditorialArtwork() && supplementalArtwork == null
+    var completed by remember(loader, track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId, loadAllowed) {
+        mutableStateOf(!needsLookup)
+    }
+    if (loadAllowed && needsLookup && !completed) {
         LaunchedEffect(track.id, track.catalogKind, track.catalogId, track.resourceType, track.resourceId, loader) {
             try {
-                val loaded = loader(track)
+                val loaded = checkNotNull(loader)(track)
                 currentCoroutineContext().ensureActive()
                 val merged = track.withEditorialMotionFrom(loaded)
                 if (merged.motionArtworkUrl != null || merged.motionArtworkVariants.isNotEmpty()) supplementalArtwork = merged
+                completed = true
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { currentCoroutineContext().ensureActive() }
+            catch (_: Exception) { currentCoroutineContext().ensureActive(); completed = true }
         }
     }
-    return remember(track, supplementalArtwork) {
+    val presentation = remember(track, supplementalArtwork) {
         if (track.canLoadEditorialArtwork()) supplementalArtwork?.let(track::withEditorialMotionFrom) ?: track else track
     }
+    return EditorialArtworkPresentation(presentation, !needsLookup || completed)
 }
 
 @Composable
@@ -114,6 +126,7 @@ fun MotionArtwork(
     crossfadeTrackChanges: Boolean = false,
     artworkAspectRatio: Float = 1f,
     onlyWhileVisible: Boolean = false,
+    resolveEditorialArtwork: Boolean = true,
 ) {
     // Only scrollable heroes need this observer. Store a Boolean at the visibility
     // boundary, rather than geometry state that recomposes every scrolling frame.
@@ -130,7 +143,7 @@ fun MotionArtwork(
     // a loader job. The focused browse card qualifies without an added delay.
     val motionAllowed = if (motionEligible) rememberMotionLifecycleStarted() else false
     val videoAllowed = motionAllowed && LocalBrowseMotionEnabled.current
-    val presentationTrack = rememberEditorialArtwork(track, motionAllowed)
+    val presentationTrack = if (resolveEditorialArtwork) rememberEditorialArtwork(track, motionAllowed) else track
     val asset = remember(presentationTrack.motionArtworkVariants, presentationTrack.motionArtworkUrl, presentationTrack.motionPreviewUrl, artworkAspectRatio) {
         presentationTrack.motionForAspect(artworkAspectRatio)
     }

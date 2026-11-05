@@ -282,7 +282,6 @@ internal fun TvNavigation(
             },
         )
         CompositionLocalProvider(
-            LocalContentFocusEntry provides null,
             LocalFocusFrameEnabled provides false,
             LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Television,
         ) {

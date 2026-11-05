@@ -30,6 +30,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -299,13 +300,19 @@ internal fun ResourceReadingSurface(
     var focused by remember { mutableStateOf(false) }
     val focusFrameKey = remember { Any() }
     val targetsEnabled = active && LocalFocusTargetsEnabled.current
+    val entry = LocalContentFocusEntry.current
+    val placed = remember(entry) { booleanArrayOf(false) }
+    SideEffect { entry?.targetFocused(requester, focused && targetsEnabled) }
+    DisposableEffect(entry, requester) { onDispose { entry?.targetDetached(requester) } }
     val scope = rememberCoroutineScope()
     val scrollJob = remember { arrayOfNulls<Job>(1) }
     val margin = with(LocalDensity.current) { 16.dp.toPx() }
     DisposableEffect(targetsEnabled) { onDispose { scrollJob[0]?.cancel() } }
     Box(modifier.fillMaxWidth().padding(horizontal = 14.dp).automationId("catalog-reading-$key").pageTopRevealTarget()
+        .onPlaced { if (!placed[0]) { placed[0] = true; entry?.targetReady() } }
         .focusRequester(requester).onFocusChanged {
             focused = it.isFocused
+            entry?.targetFocused(requester, it.isFocused && targetsEnabled)
             if (it.isFocused) onFocused() else scrollJob[0]?.cancel()
         }.focusProperties {
             left = menuFocus; right = FocusRequester.Cancel

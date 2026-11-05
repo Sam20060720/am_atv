@@ -13,6 +13,40 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class MotionArtworkPolicyTest {
+    @Test fun homePlaylistUsesTheCompleteSquareCoverAndItsMatchingStillInBothLayouts() {
+        val square = EditorialMotionAsset("motionDetailSquare", "https://example.test/square.m3u8",
+            "https://example.test/one-line-poster.jpg", 3840, 3840)
+        val background = EditorialMotionAsset("motionDetailTall", "https://example.test/background.m3u8",
+            "https://example.test/no-title-poster.jpg", 2048, 2732)
+        val source = track().copy(catalogKind = CatalogKind.Playlist,
+            artworkUrl = "https://example.test/catalog-two-lines.jpg", motionArtworkUrl = background.videoUrl,
+            motionPreviewUrl = background.previewUrl, motionArtworkVariants = listOf(background, square))
+
+        val shown = source.forHomePlaylistArtwork()
+
+        assertEquals(listOf(square), shown.motionArtworkVariants)
+        assertEquals(square.videoUrl, shown.motionArtworkUrl)
+        assertEquals(square.previewUrl, shown.posterForAspect(1f))
+        assertEquals(square.previewUrl, shown.posterForAspect(.75f))
+        assertEquals(source.title, shown.title)
+        assertEquals(source.artworkUrl, shown.artworkUrl)
+    }
+
+    @Test fun aTextFreeTallBackgroundCannotReplaceAPlaylistCover() {
+        val background = EditorialMotionAsset("motionDetailTall", "https://example.test/background.m3u8",
+            "https://example.test/no-title.jpg", 2048, 2732)
+        val source = track().copy(catalogKind = CatalogKind.Playlist,
+            artworkUrl = "https://example.test/complete-cover.jpg", motionArtworkUrl = background.videoUrl,
+            motionPreviewUrl = background.previewUrl, motionArtworkVariants = listOf(background))
+
+        val shown = source.forHomePlaylistArtwork()
+
+        assertNull(shown.motionArtworkUrl)
+        assertEquals(source.artworkUrl, shown.posterForAspect())
+        val album = source.copy(catalogKind = CatalogKind.Album)
+        assertSame(album, album.forHomePlaylistArtwork())
+    }
+
     @Test fun stillUsesTheChosenVideoLayoutRatherThanTheDifferentCatalogCover() {
         val square = EditorialMotionAsset("square", "https://example.test/square.m3u8", "https://example.test/square-poster.jpg", 600, 600)
         val tall = EditorialMotionAsset("tall", "https://example.test/tall.m3u8", "https://example.test/tall-poster.jpg", 600, 800)

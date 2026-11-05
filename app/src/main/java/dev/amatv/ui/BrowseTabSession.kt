@@ -1,6 +1,5 @@
 package dev.amatv.ui
 
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.focus.FocusRequester
 import dev.amatv.integration.*
@@ -49,12 +48,8 @@ internal class BrowseTabSession(scope: CoroutineScope, services: MusicServices, 
     val insightsFirstFocus = FocusRequester()
     val genresFocus = ContentFocusEntry()
     val genresFirstFocus = FocusRequester()
-    val returnCount = mutableIntStateOf(0)
     val firstFocus = FocusRequester()
     val contentFocus = ContentFocusEntry()
-    // A first visit may begin on the page pill; a returning visit belongs to
-    // its previous card/control even when a lazy requester was recreated.
-    var rootHasBeenFocused = false
     val savedDetailKeys = mutableSetOf<Long>()
 
     init { details.setVisible(false); search.setVisible(false) }
@@ -72,15 +67,6 @@ internal class BrowseTabSession(scope: CoroutineScope, services: MusicServices, 
         libraryRevision = revision
         details.invalidateLibrary()
         search.invalidateLibrary()
-    }
-    fun clearFocusIntents() {
-        // These entries bridge mounted views. A style may reuse the same data
-        // visit while its old exact-return target is no longer attached.
-        val entries = listOf(contentFocus, insightsFocus, genresFocus) + details.visits.value.map { it.focus }
-        entries.forEach { entry ->
-            entry.requester = null
-            entry.preferredReturnRequester = null
-        }
     }
     fun close() { details.close(); search.dispose(); insights.close(); genres.close(); inlineBrowse.close() }
 }

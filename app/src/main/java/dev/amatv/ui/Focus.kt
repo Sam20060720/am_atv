@@ -58,6 +58,19 @@ import kotlinx.coroutines.flow.first
 
 /** Keep entry on an actual card/control, rather than a lazy container. */
 internal class ContentFocusEntry {
+    private var focusedRequester by mutableStateOf<FocusRequester?>(null)
+    val hasFocusedTarget by derivedStateOf { focusedRequester != null }
+
+    fun targetFocused(target: FocusRequester, focused: Boolean) {
+        if (focused) focusedRequester = target
+        else if (focusedRequester === target) focusedRequester = null
+    }
+
+    fun targetDetached(target: FocusRequester) {
+        targetFocused(target, false)
+        if (requester === target) requester = null
+    }
+
     var targetReadyRevision by mutableIntStateOf(0)
         private set
     var requester: FocusRequester? = null
@@ -218,7 +231,7 @@ fun FocusSurface(
             onDispose { frameController?.clear(frameKey) }
         }
         DisposableEffect(contentEntry, contentRequester) {
-            onDispose { if (contentEntry?.requester === contentRequester) contentEntry.requester = null }
+            onDispose { contentEntry?.targetDetached(contentRequester) }
         }
     }
     val targetScale = if (motionStyle == FocusMotionStyle.Spring) {
@@ -313,6 +326,7 @@ fun FocusSurface(
             followImmediately = motionStyle == FocusMotionStyle.Immediate)
     }
     if (visualsStarted) SideEffect {
+        contentEntry?.targetFocused(contentRequester, inputFocused)
         if (inputFocused) contentEntry?.requester = contentRequester
         if (inputFocused && frameEnabled) frameGeometry.bounds?.let { bounds ->
             frameController?.report(
@@ -429,6 +443,7 @@ fun FocusSurface(
             .focusRequester(contentRequester)
             .onFocusChanged {
                 focused = it.isFocused
+                contentEntry?.targetFocused(contentRequester, it.isFocused && interactive)
                 if (it.isFocused && interactive) {
                     reportMenuAnchor()
                     deferredInteraction?.activate()

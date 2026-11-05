@@ -35,6 +35,17 @@ internal fun Track.posterForAspect(aspectRatio: Float = 1f): String? =
         ?: artworkUrl?.takeIf { it.startsWith("https://") }
         ?: motionPreviewUrl?.takeIf { it.startsWith("https://") }
 
+/** Playlist tall assets may be text-free backgrounds, not complete cover art. */
+internal fun Track.forHomePlaylistArtwork(): Track {
+    if (catalogKind != CatalogKind.Playlist || motionArtworkVariants.isEmpty()) return this
+    val covers = motionArtworkVariants.filter {
+        it.aspectRatio?.let { aspect -> abs(aspect - 1f) < 0.05f } == true &&
+            !it.flavor.startsWith("background", ignoreCase = true)
+    }
+    val first = covers.firstOrNull()
+    return copy(motionArtworkUrl = first?.videoUrl, motionPreviewUrl = first?.previewUrl, motionArtworkVariants = covers)
+}
+
 internal data class MotionDecodeBounds(val width: Int, val height: Int)
 
 /** The official ladder starts at 360 square / 480x270 wide, even for a small TV tile. */

@@ -28,7 +28,6 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalWindowInfo
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
@@ -38,7 +37,6 @@ import dev.amatv.i18n.AppText
 import dev.amatv.integration.*
 import dev.amatv.model.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 
 internal data class CatalogDetailIntent(val item: Track, val metadata: Boolean = false, val returnToPlayer: Boolean = false)
 
@@ -120,7 +118,6 @@ internal fun BrowseShell(
     val contentTop = if (classicInterface) {
         if (destination == Destination.Home) 100.dp else 88.dp
     } else BrowseTokens.ContentTop
-    var observedInterfaceStyle by remember { mutableStateOf(interfaceStyle) }
     val capabilities = remember(services) { services.presentationCapabilities }
     val navigationDestinations = remember {
         listOf(
@@ -160,17 +157,13 @@ internal fun BrowseShell(
             pendingExpandedBack = false
         }
     }
-    var enterContentAfterNavigation by remember { mutableStateOf(false) }
-    var contentEntryEpoch by remember { mutableLongStateOf(0L) }
     var playerReturnPending by remember { mutableStateOf(!isBrowseVisible) }
-    val focusManager = LocalFocusManager.current
     val inputModeManager = LocalInputModeManager.current
     val tabSessions = remember(services, connectionState, accountScopeKey) { mutableMapOf<Destination, BrowseTabSession>() }
     val tab = tabSessions.getOrPut(destination) { BrowseTabSession(scope, services, capabilities, destination) }
     // Own initial Home entry before native auto-focus can land on navigation.
     // Replacing a tab's targets during an account transition needs the same
     // intent; explicit remote navigation can still cancel it synchronously.
-    var contentEntryPending by remember(destination, tab) { mutableStateOf(destination == Destination.Home) }
     DisposableEffect(tabSessions) { onDispose { tabSessions.values.forEach(BrowseTabSession::close) } }
     val deckOpacity = remember { Animatable(1f) }
     var switchingTab by remember { mutableStateOf(false) }
@@ -178,10 +171,7 @@ internal fun BrowseShell(
     val currentlyBrowseVisible by rememberUpdatedState(isBrowseVisible)
     var resetRootPending by remember(destination) { mutableStateOf(false) }
     var resetRootStarted by remember(destination) { mutableStateOf(false) }
-    var rootContentHasFocus by remember(destination) { mutableStateOf(false) }
-    var browseHasFocus by remember { mutableStateOf(false) }
     val windowFocused = LocalWindowInfo.current.isWindowFocused
-    var modalReturnPending by remember { mutableStateOf(false) }
     val backdropController = tab.backdrop
     val browseLayer = rememberGraphicsLayer()
     val details = tab.details
@@ -253,51 +243,22 @@ internal fun BrowseShell(
     // before Right can hand focus into it; gating on sidebar closure deadlocks.
     SideEffect { onRootVisibleChange(isBrowseVisible && detail == null && !auxiliaryOpen &&
         !modalVisible && windowFocused) }
-    var detailContentHasFocus by remember(destination, detail?.key) { mutableStateOf(false) }
-    var auxiliaryContentHasFocus by remember(destination, auxiliaryPage) { mutableStateOf(false) }
-    val currentContentHasFocus = when {
-        detail != null -> detailContentHasFocus
-        auxiliaryOpen -> auxiliaryContentHasFocus
-        else -> rootContentHasFocus
+    val activeContentEntry = detail?.focus ?: if (auxiliaryOpen) auxiliaryFocus else tab.contentFocus
+    val activeFirstFocus = detail?.firstFocus ?: if (auxiliaryOpen) auxiliaryFirstFocus else tab.firstFocus
+    val navigationEntry = remember(interfaceStyle) { ContentFocusEntry() }
+    // Classic's topbar does not cover content. Only Apple's open sidebar
+    // suspends the targets behind it; visible Classic cards stay clickable.
+    val navigationCoversContent = navigationExpanded && !classicInterface
+    val focusHandoff = remember(services, connectionState, accountScopeKey, interfaceStyle) {
+        BrowseFocusHandoff(activeContentEntry)
     }
-    // The key/focus callbacks run before the next composition. Keep the active
-    // page selection current, but read its mutable focus state at call time.
-    val contentHasFocusNow by rememberUpdatedState<() -> Boolean>({
-        when {
-            detail != null -> detailContentHasFocus
-            auxiliaryOpen -> auxiliaryContentHasFocus
-            else -> rootContentHasFocus
-        }
-    })
+    val contentEntryPending = focusHandoff.request.pending && focusHandoff.request.owner !== navigationEntry
+    val contentHasFocusNow = { activeContentEntry.hasFocusedTarget }
     val upBoundary = remember(interfaceStyle) { BrowseUpBoundary() }
     LaunchedEffect(windowFocused, isBrowseVisible, modalVisible, tab) {
         // A Dialog/Activity can consume the release of a held Up. Its old
         // edge guard must not veto the next window's focus transaction.
         upBoundary.release()
-    }
-    LaunchedEffect(interfaceStyle) {
-        if (observedInterfaceStyle == interfaceStyle) return@LaunchedEffect
-        observedInterfaceStyle = interfaceStyle
-        // A style setting changes only the active chrome. Existing tab data,
-        // detail visits and playback remain owned by the same session. Cancel
-        // the replaced navigation's intents and let the setting restore focus.
-        tabSessions.values.forEach(BrowseTabSession::clearFocusIntents)
-        contentEntryEpoch++
-        contentEntryPending = false
-        enterContentAfterNavigation = false
-        expandedBackHeld = false
-        pendingExpandedBack = false
-        navigationExpanded = false
-        navigationPanelVisible = false
-        resetRootStarted = false
-        resetRootPending = false
-    }
-    // A native Dialog releases window focus separately from its composition.
-    // Keep the pill's auto-open timer suspended until real content wins focus
-    // in the returned window, rather than trusting requestFocus's return value.
-    SideEffect {
-        if (modalVisible) modalReturnPending = true
-        else if (!isBrowseVisible || (windowFocused && currentContentHasFocus)) modalReturnPending = false
     }
     val collectionState = detail?.collection?.state?.collectAsState()?.value ?: CollectionBrowserState()
     val collection = collectionState.collection
@@ -336,14 +297,12 @@ internal fun BrowseShell(
             onDetailHandled()
         }
     }
-    var returnToContent by tab.returnCount
     val firstContentFocus = tab.firstFocus
     val contentFocusEntry = tab.contentFocus
     var rootReturnToTop by remember(destination) { mutableStateOf<(() -> Boolean)?>(null) }
     val registerRootReturnToTop = remember(destination) { { handler: (() -> Boolean)? -> rootReturnToTop = handler } }
     fun closeDetail() {
         val removed = details.pop() ?: return
-        returnToContent++
         if (removed.returnToPlayer) onReturnToPlayer()
     }
     LaunchedEffect(deletedResource, tabSessions) {
@@ -354,7 +313,6 @@ internal fun BrowseShell(
             if (session === tab) currentRemoved = removed
         }
         if (currentRemoved.isNotEmpty()) {
-            returnToContent++
             if (currentRemoved.any { it.returnToPlayer }) onReturnToPlayer()
         }
         onDeletedResourceHandled()
@@ -362,7 +320,6 @@ internal fun BrowseShell(
     fun backAuxiliary() {
         if (auxiliaryPage != BrowseAuxiliaryPage.Insights || !insights.back()) {
             auxiliaryPage = null
-            returnToContent++
         }
     }
     fun openBrowseItem(item: Track, queue: List<Track>) {
@@ -374,27 +331,19 @@ internal fun BrowseShell(
     }
     fun enterContent() {
         if (switchingTab) return
-        contentEntryEpoch++
         navigationExpanded = false
-        contentEntryPending = true
         resetRootStarted = false
         resetRootPending = false
+        focusHandoff.enter(activeContentEntry)
     }
     fun enterNavigation(expand: Boolean = true) {
         if (switchingTab || !isBrowseVisible || isModalOpen() || !upBoundary.allowsMenuFocus()) return
-        // A content edge is an explicit ownership handoff, not a geometric
-        // search that can race an old card-restoration coroutine.
-        modalReturnPending = false
-        contentEntryEpoch++
-        contentEntryPending = false
-        enterContentAfterNavigation = false
         resetRootStarted = false
         resetRootPending = false
         navigationExpanded = expand
-        if (!expand) runCatching { menuRequester.requestFocus() }
+        focusHandoff.enter(navigationEntry)
     }
     fun handleRootBack() {
-        modalReturnPending = false
         if (rootReturnToTop?.invoke() == true) return
         upBoundary.release()
         enterNavigation()
@@ -408,11 +357,8 @@ internal fun BrowseShell(
             // clickable cards cannot. Back/pointer return does not itself
             // leave touch mode, so establish keyboard eligibility before entry.
             inputModeManager.requestInputMode(InputMode.Keyboard)
-            // The player and its source stay composed through their crossfade.
-            // Release the old native owner before restoring the actual source;
-            // a retained group's hasFocus flag is not a completed handoff.
-            focusManager.clearFocus(force = true)
-            enterContentAfterNavigation = true
+            // The active page will acknowledge its own control; a retained
+            // player/root group cannot complete this return on its behalf.
             enterContent()
         }
     }
@@ -435,10 +381,10 @@ internal fun BrowseShell(
         if (rootReturnToTop?.invoke() == true) resetRootStarted = true
         else enterContent()
     }
-    LaunchedEffect(resetRootPending, resetRootStarted, rootContentHasFocus) {
+    LaunchedEffect(resetRootPending, resetRootStarted, tab.contentFocus.hasFocusedTarget) {
         // The scroll callback starts asynchronously. A pill taking transient
         // focus must not restart its sidebar timer before real content wins it.
-        if (resetRootPending && resetRootStarted && rootContentHasFocus) {
+        if (resetRootPending && resetRootStarted && tab.contentFocus.hasFocusedTarget) {
             resetRootStarted = false
             resetRootPending = false
         }
@@ -474,119 +420,64 @@ internal fun BrowseShell(
     BackHandler(enabled = isBrowseVisible && !switchingTab && detail != null && !navigationExpanded && !modalVisible) {
         if (isModalOpen()) onDismissPendingModal() else closeDetail()
     }
-    // Losing content focus can mean the collapsed pill legitimately took over.
-    // It must not trigger re-entry during the pill's existing expansion dwell.
-    LaunchedEffect(destination, tab, browseHasFocus, isBrowseVisible, detail?.key, collectionState.loading, collectionState.error, returnToContent, auxiliaryPage, modalVisible, modalExitToken, switchingTab, windowFocused, interfaceStyle, interfaceStyleFocusPending) {
-        if (!isBrowseVisible || !windowFocused || modalVisible || switchingTab || resetRootPending ||
-            settingsFocusPending || observedInterfaceStyle != interfaceStyle) return@LaunchedEffect
-        val entry = when {
-            detail != null -> detail.focus
-            auxiliaryOpen -> auxiliaryFocus
-            else -> contentFocusEntry
+    LaunchedEffect(activeContentEntry, focusHandoff) {
+        navigationExpanded = false
+        resetRootStarted = false
+        resetRootPending = false
+        focusHandoff.enter(activeContentEntry)
+    }
+    val focusRequest = focusHandoff.request
+    // One event-driven handoff worker. It wakes on route, placement, window,
+    // input eligibility or an actual target focus event, never by polling frames.
+    LaunchedEffect(focusRequest, activeContentEntry, activeContentEntry.hasFocusedTarget,
+        navigationEntry.hasFocusedTarget, focusRequest.owner.preferredReturnRequester,
+        if (focusRequest.pending) focusRequest.owner.targetReadyRevision else 0,
+        isBrowseVisible, windowFocused, modalVisible, switchingTab, resetRootPending,
+        settingsFocusPending, navigationExpanded, inputModeManager.inputMode) {
+        if (!isBrowseVisible || !windowFocused || modalVisible || switchingTab || resetRootPending || settingsFocusPending) return@LaunchedEffect
+        if (focusRequest.owner !== activeContentEntry && focusRequest.owner !== navigationEntry) return@LaunchedEffect
+        if (!focusRequest.pending) {
+            // Geometric/remote movement may legitimately move between content
+            // and navigation. Re-enter only if neither has an actual target.
+            when {
+                activeContentEntry.hasFocusedTarget -> {
+                    navigationExpanded = false
+                    if (focusRequest.owner !== activeContentEntry) focusHandoff.claim(activeContentEntry)
+                }
+                navigationEntry.hasFocusedTarget -> if (focusRequest.owner !== navigationEntry) focusHandoff.claim(navigationEntry)
+                else -> focusHandoff.enter(focusRequest.owner)
+            }
+            return@LaunchedEffect
         }
-        // Observe both content and navigation. A temporary target disappearing
-        // needs re-entry; a pill/topbar that actually owns focus must keep it.
-        // Recheck after the frame too, when a replacement may already have won.
-        fun hasSettledOwner() = browseHasFocus && !contentEntryPending &&
-            !enterContentAfterNavigation && entry.preferredReturnRequester == null
-        if (hasSettledOwner()) return@LaunchedEffect
-        val requestEpoch = contentEntryEpoch
+        if (focusHandoff.acknowledge(focusRequest)) return@LaunchedEffect
+        inputModeManager.requestInputMode(InputMode.Keyboard)
+        if (!activeContentEntry.hasFocusedTarget && !navigationEntry.hasFocusedTarget) upBoundary.release()
         withFrameNanos { }
-        if (requestEpoch != contentEntryEpoch || navigationExpanded || hasSettledOwner()) return@LaunchedEffect
-        // Returning from the player changes visibility without popping a
-        // detail or incrementing returnToContent. The old default requested the
-        // pill here, and its dwell then opened the sidebar over the source card.
-        // Home and every content return use the same placed-target retry path,
-        // including loading details. Other fresh roots may start in navigation.
-        if (destination == Destination.Home || detail != null || auxiliaryOpen || tab.rootHasBeenFocused ||
-            returnToContent > 0 || enterContentAfterNavigation || modalExitToken > 0) {
-            contentEntryPending = true
-        } else {
-            inputModeManager.requestInputMode(InputMode.Keyboard)
-            upBoundary.release()
+        if (!focusHandoff.isCurrent(focusRequest)) return@LaunchedEffect
+        if (focusRequest.owner === navigationEntry) {
+            val first = if (navigationExpanded) navigationFocus.getValue(destination) else menuRequester
+            navigationEntry.requestFocus(first)
+        } else activeContentEntry.requestFocus(activeFirstFocus)
+        withFrameNanos { }
+        if (!focusHandoff.isCurrent(focusRequest) || focusHandoff.acknowledge(focusRequest)) return@LaunchedEffect
+        // A source with only a spinner keeps its content request. Navigation is
+        // usable until placement announces a real target or a remote claims it.
+        if (!activeContentEntry.hasFocusedTarget && !navigationEntry.hasFocusedTarget)
             runCatching { menuRequester.requestFocus() }
-        }
-    }
-    LaunchedEffect(destination, tab, contentEntryEpoch, contentEntryPending, contentFocusEntry.preferredReturnRequester, if (contentEntryPending) contentFocusEntry.targetReadyRevision else 0L, if (contentEntryPending) detail?.focus?.targetReadyRevision else 0L, if (contentEntryPending) auxiliaryFocus.targetReadyRevision else 0L, currentContentHasFocus, navigationExpanded, isBrowseVisible, detail?.key, loading, shelves, connectionState, modalVisible, auxiliaryPage, switchingTab, windowFocused, collectionState.loading, collectionState.error, currentArtistVisit?.profile, currentArtistVisit?.failed, resourceState?.profile, resourceState?.failed, interfaceStyle, interfaceStyleFocusPending) {
-        if (!contentEntryPending || navigationExpanded || !isBrowseVisible || !windowFocused || modalVisible || switchingTab || resetRootPending ||
-            settingsFocusPending || observedInterfaceStyle != interfaceStyle) return@LaunchedEffect
-        inputModeManager.requestInputMode(InputMode.Keyboard)
-        if (!browseHasFocus) upBoundary.release()
-        val requestEpoch = contentEntryEpoch
-        fun completeEntry(): Boolean {
-            // A requester can accept a transaction while a lazy target or its
-            // native window is being replaced. Only the visible content owner
-            // winning actual focus completes this navigation intent.
-            if (!contentHasFocusNow()) return false
-            if (detail == null && !auxiliaryOpen && contentFocusEntry.preferredReturnRequester != null) return false
-            enterContentAfterNavigation = false
-            contentEntryPending = false
-            return true
-        }
-        fun ownsEntry() = requestEpoch == contentEntryEpoch && contentEntryPending && !navigationExpanded
-        // Data can finish before a lazy/native target is attached. No further
-        // feed state needs to change after that placement, so three frames
-        // cannot be the final readiness signal. Retry only this entry intent,
-        // with a real time bound even if its window stops delivering frames.
-        val completed = withTimeoutOrNull(2_000L) {
-            while (ownsEntry()) {
-                withFrameNanos { }
-                if (!ownsEntry()) return@withTimeoutOrNull false
-                val entered = when {
-                    detail != null -> detail.focus.requestFocus(detail.firstFocus)
-                    auxiliaryOpen -> auxiliaryFocus.requestFocus(auxiliaryFirstFocus)
-                    else -> contentFocusEntry.requestFocus(firstContentFocus)
-                }
-                if (entered) {
-                    withFrameNanos { }
-                    if (!ownsEntry()) return@withTimeoutOrNull false
-                    if (completeEntry()) return@withTimeoutOrNull true
-                }
-                if (!browseHasFocus) {
-                    // A spinner is not a remote target. Keep navigation usable
-                    // during the same pending entry, without a two-second gap.
-                    runCatching { menuRequester.requestFocus() }
-                }
-            }
-            false
-        } == true
-        if (completed || !ownsEntry()) return@LaunchedEffect
-        if (completeEntry()) return@LaunchedEffect
-        // A cold catalog page may still have only a spinner. Keep the request
-        // pending until content arrives, and leave a usable menu in the meantime.
-        runCatching { menuRequester.requestFocus() }
-    }
-    // Expanded is an intent, not proof that a navigation control still owns
-    // focus. Account replacement and native Dialog dismissal can remove it.
-    LaunchedEffect(navigationExpanded, browseHasFocus, windowFocused, modalVisible, isBrowseVisible, tab, interfaceStyle, switchingTab, settingsFocusPending) {
-        if (!navigationExpanded || browseHasFocus || !isBrowseVisible || !windowFocused || modalVisible || switchingTab || settingsFocusPending) return@LaunchedEffect
-        inputModeManager.requestInputMode(InputMode.Keyboard)
-        val requestEpoch = contentEntryEpoch
-        withTimeoutOrNull(2_000L) {
-            while (navigationExpanded && !browseHasFocus && requestEpoch == contentEntryEpoch) {
-                withFrameNanos { }
-                runCatching { menuRequester.requestFocus() }
-            }
-        }
     }
     Box(
         Modifier
             .fillMaxSize()
-            .onFocusChanged { browseHasFocus = it.hasFocus }
-            .focusGroup()
             .onPreviewKeyEvent { event ->
                 val native = event.nativeKeyEvent
                 if (switchingTab) return@onPreviewKeyEvent true
-                if (contentEntryPending && !contentHasFocusNow() && !navigationExpanded &&
+                if (contentEntryPending && navigationEntry.hasFocusedTarget && !contentHasFocusNow() &&
                     native.action == KeyEvent.ACTION_DOWN && native.repeatCount == 0 &&
                     native.keyCode in setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
                         KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
-                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_BACK)) {
-                    // Cold Home may temporarily focus navigation while its
-                    // first card is loading. A fresh remote action owns that
-                    // fallback; later data must not pull focus away from it.
+                        KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER)) {
                     upBoundary.release()
-                    enterNavigation()
+                    focusHandoff.claim(navigationEntry)
                 }
                 // Snapshot the actual origin before Home/sections advance a
                 // pending cursor. A fast next press during reveal is not a new
@@ -611,9 +502,8 @@ internal fun BrowseShell(
                         KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_MENU)) {
                     // A new remote action now owns the content. A late entry
                     // coroutine must not pull it back to its previous target.
-                    contentEntryEpoch++
-                    contentEntryPending = false
-                    enterContentAfterNavigation = false
+                    activeContentEntry.preferredReturnRequester = null
+                    focusHandoff.claim(activeContentEntry)
                 }
                 if (native.keyCode == KeyEvent.KEYCODE_BACK) {
                     if (expandedBackHeld) {
@@ -684,19 +574,15 @@ internal fun BrowseShell(
             LocalBrowseBackdropController provides backdropController.takeUnless { classicInterface },
             LocalFocusFrameEnabled provides classicInterface,
             LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Television,
-            LocalFocusTargetsEnabled provides (detail == null && !auxiliaryOpen && isBrowseVisible && !switchingTab && !navigationExpanded && !modalVisible),
+            LocalFocusTargetsEnabled provides (detail == null && !auxiliaryOpen && isBrowseVisible && !switchingTab && !navigationCoversContent && !modalVisible),
             // Visible fades still mount one artwork card per frame. Input,
             // browser requests and motion keep their separate switching gates.
             LocalBrowseContentVisible provides (detail == null && !auxiliaryOpen && isBrowseVisible && !modalVisible),
-            LocalBrowseMotionEnabled provides (detail == null && !auxiliaryOpen && isBrowseVisible && !switchingTab && !navigationExpanded && !modalVisible && !lowPerformanceMode),
+            LocalBrowseMotionEnabled provides (detail == null && !auxiliaryOpen && isBrowseVisible && !switchingTab && !navigationCoversContent && !modalVisible && !lowPerformanceMode),
         ) {
         Column(
             Modifier
                 .fillMaxSize()
-                .onFocusChanged {
-                    rootContentHasFocus = it.hasFocus
-                    if (it.hasFocus) tab.rootHasBeenFocused = true
-                }
                 .focusGroup()
                 .then(if (detail != null || auxiliaryOpen) Modifier.clearAndSetSemantics {} else Modifier)
                 .graphicsLayer { alpha = if (detail == null && !auxiliaryOpen) 1f else 0f },
@@ -734,7 +620,6 @@ internal fun BrowseShell(
                                     session.auxiliary.value = null
                                 }
                                 pendingLibrarySearch = true
-                                enterContentAfterNavigation = true
                                 onDestination(Destination.Search)
                             },
                             homeLoading = loading,
@@ -785,7 +670,7 @@ internal fun BrowseShell(
         }
         if (auxiliaryOpen) {
             Box(Modifier.fillMaxSize()
-                .onFocusChanged { auxiliaryContentHasFocus = it.hasFocus }.focusGroup()
+                .focusGroup()
                 .onPreviewKeyEvent { event ->
                     if (detail == null && isBrowseVisible && !switchingTab && !navigationExpanded && !isModalOpen() &&
                         event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
@@ -798,13 +683,13 @@ internal fun BrowseShell(
                 .graphicsLayer { alpha = if (detail == null) 1f else 0f }) {
                 CompositionLocalProvider(
                     LocalContentFocusEntry provides auxiliaryFocus,
-                    LocalFocusTargetsEnabled provides (detail == null && isBrowseVisible && !switchingTab && !navigationExpanded && !modalVisible),
-                    LocalBrowseMotionEnabled provides (detail == null && isBrowseVisible && !switchingTab && !navigationExpanded && !modalVisible && !lowPerformanceMode),
+                    LocalFocusTargetsEnabled provides (detail == null && isBrowseVisible && !switchingTab && !navigationCoversContent && !modalVisible),
+                    LocalBrowseMotionEnabled provides (detail == null && isBrowseVisible && !switchingTab && !navigationCoversContent && !modalVisible && !lowPerformanceMode),
                     LocalFocusFrameEnabled provides classicInterface,
                     LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Television,
                 ) {
-                    val active = detail == null && isBrowseVisible && !switchingTab && !navigationExpanded && !modalVisible
-                    val onBack = { auxiliaryPage = null; returnToContent++; Unit }
+                    val active = detail == null && isBrowseVisible && !switchingTab && !navigationCoversContent && !modalVisible
+                    val onBack = { auxiliaryPage = null; Unit }
                     auxiliaryStateHolder.SaveableStateProvider("${interfaceStyle.name}:${destination.name}:aux:${auxiliaryPage?.name}") {
                         when (auxiliaryPage) {
                             BrowseAuxiliaryPage.Insights -> ListeningInsightsScreen(insights, active,
@@ -819,7 +704,7 @@ internal fun BrowseShell(
         }
         detail?.let { visit ->
             Box(Modifier.fillMaxSize()
-                .onFocusChanged { detailContentHasFocus = it.hasFocus }.focusGroup()
+                .focusGroup()
                 .onPreviewKeyEvent { event ->
                     if (isBrowseVisible && !switchingTab && !navigationExpanded && !isModalOpen() && event.nativeKeyEvent.keyCode == KeyEvent.KEYCODE_BACK) {
                         if (event.nativeKeyEvent.action == KeyEvent.ACTION_UP) closeDetail()
@@ -830,16 +715,16 @@ internal fun BrowseShell(
                 CompositionLocalProvider(
                     LocalContentFocusEntry provides visit.focus,
                     LocalBrowseBackdropController provides backdropController.takeUnless { classicInterface },
-                    LocalFocusTargetsEnabled provides (isBrowseVisible && !switchingTab && !navigationExpanded && !modalVisible),
-                    LocalBrowseContentVisible provides (isBrowseVisible && !switchingTab && !navigationExpanded && !modalVisible),
-                    LocalBrowseMotionEnabled provides (isBrowseVisible && !switchingTab && !navigationExpanded && !modalVisible && !lowPerformanceMode),
+                    LocalFocusTargetsEnabled provides (isBrowseVisible && !switchingTab && !navigationCoversContent && !modalVisible),
+                    LocalBrowseContentVisible provides (isBrowseVisible && !switchingTab && !navigationCoversContent && !modalVisible),
+                    LocalBrowseMotionEnabled provides (isBrowseVisible && !switchingTab && !navigationCoversContent && !modalVisible && !lowPerformanceMode),
                     LocalFocusFrameEnabled provides classicInterface,
                     LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Television,
                 ) {
                     detailStateHolder.SaveableStateProvider("${interfaceStyle.name}:${destination.name}:${visit.key}") {
                         if (visit.artistKey != null) {
                             artistVisits.firstOrNull { it.key == visit.artistKey }?.let { state ->
-                                ArtistScreen(state, active = isBrowseVisible && !switchingTab && !navigationExpanded,
+                                ArtistScreen(state, active = isBrowseVisible && !switchingTab && !navigationCoversContent,
                                     firstFocus = visit.firstFocus, menuFocus = menuRequester,
                                     capabilities = capabilities,
                                     onRetry = details.artists::retryProfile,
@@ -849,7 +734,7 @@ internal fun BrowseShell(
                                     onSignIn = onSignIn)
                             }
                         } else if (visit.page != null) CatalogResourceScreen(
-                            source = visit.source, browser = visit.page, onSignIn = onSignIn, active = isBrowseVisible && !switchingTab && !navigationExpanded,
+                            source = visit.source, browser = visit.page, onSignIn = onSignIn, active = isBrowseVisible && !switchingTab && !navigationCoversContent,
                             firstFocus = visit.firstFocus, menuFocus = menuRequester, capabilities = capabilities,
                             onOpen = ::openBrowseItem,
                             onOpenLink = { link ->
@@ -885,12 +770,8 @@ internal fun BrowseShell(
             }
             val selectNavigationDestination: (Destination) -> Unit = destinationSelection@{ next ->
                 if (switchingTab) return@destinationSelection
-                modalReturnPending = false
                 resetRootStarted = false
                 resetRootPending = false
-                contentEntryEpoch++
-                contentEntryPending = false
-                enterContentAfterNavigation = false
                 navigationExpanded = false
                 if (next == destination) {
                     // Confirming the current tab resets its vertical root;
@@ -899,7 +780,6 @@ internal fun BrowseShell(
                     auxiliaryPage = null
                     resetRootPending = true
                 } else if (next == Destination.NowPlaying || lowPerformanceMode) {
-                    enterContentAfterNavigation = next != Destination.NowPlaying
                     onDestination(next)
                 } else {
                     switchingTab = true
@@ -909,7 +789,6 @@ internal fun BrowseShell(
                             // the arriving tab until the departing fade ends.
                             deckOpacity.animateTo(0f, tween(150, easing = LinearEasing))
                             if (currentDestination != destination || !currentlyBrowseVisible) return@launch
-                            enterContentAfterNavigation = true
                             onDestination(next)
                             withFrameNanos { }
                             deckOpacity.animateTo(1f, tween(150, easing = LinearEasing))
@@ -920,7 +799,8 @@ internal fun BrowseShell(
                     }
                 }
             }
-            CompositionLocalProvider(LocalFocusTargetsEnabled provides !modalVisible) {
+            CompositionLocalProvider(LocalFocusTargetsEnabled provides !modalVisible,
+                LocalContentFocusEntry provides navigationEntry) {
             if (classicInterface) {
                 ClassicNavigation(
                     selected = destination,
@@ -949,7 +829,7 @@ internal fun BrowseShell(
                     hasCurrentTrack = hasCurrentTrack,
                     connectionState = connectionState,
                     lowPerformanceMode = lowPerformanceMode,
-                    autoExpandOnFocus = windowFocused && !modalReturnPending && !contentEntryPending && !enterContentAfterNavigation && !modalVisible &&
+                    autoExpandOnFocus = windowFocused && !contentEntryPending && !modalVisible &&
                         !switchingTab && !resetRootPending,
                     backdropLayer = browseLayer.takeIf { captureForGlass },
                     menuRequester = menuRequester,

@@ -1841,6 +1841,25 @@ private fun CachedHomeCard(content: @Composable () -> Unit) {
     }) { content() }
 }
 
+/** Resolve a visible playlist's paired still before drawing its baked-in title. */
+@Composable
+private fun rememberHomePlaylistArtwork(track: Track, mounted: State<Boolean>): EditorialArtworkPresentation {
+    if (track.catalogKind != CatalogKind.Playlist) return EditorialArtworkPresentation(track, true)
+    val presentation = rememberEditorialArtworkPresentation(track,
+        mounted.value && LocalBrowseContentVisible.current &&
+            androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused)
+    return remember(presentation) { presentation.copy(track = presentation.track.forHomePlaylistArtwork()) }
+}
+
+@Composable
+private fun HomeArtworkLayer(presentation: EditorialArtworkPresentation, modifier: Modifier,
+    animate: Boolean, cornerRadius: androidx.compose.ui.unit.Dp, aspect: Float = 1f) {
+    if (presentation.ready) MotionArtwork(presentation.track, modifier, animate = animate,
+        cornerRadius = cornerRadius, artworkAspectRatio = aspect,
+        resolveEditorialArtwork = presentation.track.catalogKind != CatalogKind.Playlist)
+    else Box(modifier.clip(RoundedCornerShape(cornerRadius)).background(Brush.linearGradient(presentation.track.palette)))
+}
+
 /** No font shaping or image request before the grant; cached covers remain visible. */
 @Composable
 internal fun HomeCardPlaceholder(track: Track, featured: Boolean) {
@@ -1849,12 +1868,13 @@ internal fun HomeCardPlaceholder(track: Track, featured: Boolean) {
         return
     }
     val context = LocalContext.current
-    val portrait = featured && track.motionForAspect(
+    val portrait = featured && track.catalogKind != CatalogKind.Playlist && track.motionForAspect(
         BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value,
     )?.aspectRatio?.let { it < 0.9f } == true
     val url = track.posterForAspect(if (portrait)
         BrowseTokens.ShowcaseWidth.value / BrowseTokens.ShowcaseHeight.value else 1f)
-    val cached = remember(url) { ArtworkImages.cachedImage(context, url)?.asPainter(context) }
+    val matchingPosterKnown = track.catalogKind != CatalogKind.Playlist || track.motionForAspect(1f)?.previewUrl != null
+    val cached = remember(url, matchingPosterKnown) { if (matchingPosterKnown) ArtworkImages.cachedImage(context, url)?.asPainter(context) else null }
     Box(Modifier.fillMaxSize()) {
         if (cached != null) Image(
             painter = cached,
@@ -1903,7 +1923,8 @@ internal fun HomeCardPlaceholder(track: Track, featured: Boolean) {
 private fun ClassicHomeCardPlaceholder(track: Track, featured: Boolean) {
     val context = LocalContext.current
     val url = track.posterForAspect(1f)
-    val cached = remember(url) { ArtworkImages.cachedImage(context, url)?.asPainter(context) }
+    val matchingPosterKnown = track.catalogKind != CatalogKind.Playlist || track.motionForAspect(1f)?.previewUrl != null
+    val cached = remember(url, matchingPosterKnown) { if (matchingPosterKnown) ArtworkImages.cachedImage(context, url)?.asPainter(context) else null }
     val coverHeight = if (featured) 184.dp else ClassicBrowseVisuals.CardWidth
     Box(Modifier.fillMaxSize().clip(RoundedCornerShape(ClassicBrowseVisuals.CardRadius))) {
         Canvas(Modifier.fillMaxSize()) {
@@ -1980,12 +2001,13 @@ private fun ClassicTopPick(
         ) { focused ->
             HomeCardContent(contentReady, track, featured = true, staged = warmup != null,
                 shadow = { Box(Modifier.fillMaxSize().coverShadow(focused, ClassicBrowseVisuals.ShowcaseRadius, isolated = true)) }) {
+                val artwork = rememberHomePlaylistArtwork(track, contentReady)
                 Column(Modifier.fillMaxSize().clip(RoundedCornerShape(ClassicBrowseVisuals.CardRadius))
                     .background(track.palette.last().copy(alpha = 0.58f))) {
                     Box(Modifier.weight(1f)) {
-                        MotionArtwork(track, Modifier.fillMaxSize(),
+                        HomeArtworkLayer(artwork, Modifier.fillMaxSize(),
                             animate = rememberBrowseMotionReady(focused), cornerRadius = 0.dp,
-                            artworkAspectRatio = 1f)
+                            aspect = 1f)
                     }
                     Column(Modifier.fillMaxWidth().height(72.dp)
                         .background(Brush.verticalGradient(listOf(
@@ -2052,10 +2074,11 @@ private fun TopPick(
         HomeCardContent(contentReady, track, featured = true, staged = warmup != null,
             shadow = { Box(Modifier.fillMaxSize().coverShadow(focused, BrowseTokens.ShowcaseRadius, isolated = true)) }) {
             val motionReady = rememberBrowseMotionReady(focused)
-            val presentationTrack = rememberEditorialArtwork(track, motionReady &&
+            val playlistArtwork = rememberHomePlaylistArtwork(track, contentReady)
+            val presentationTrack = if (track.catalogKind == CatalogKind.Playlist) playlistArtwork.track else rememberEditorialArtwork(track, motionReady &&
                 android.animation.ValueAnimator.areAnimatorsEnabled() && LocalFocusTargetsEnabled.current &&
                 androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused)
-            val hasPortraitArtwork = presentationTrack.motionForAspect(portraitAspect)?.aspectRatio?.let { it < 0.9f } == true
+            val hasPortraitArtwork = track.catalogKind != CatalogKind.Playlist && presentationTrack.motionForAspect(portraitAspect)?.aspectRatio?.let { it < 0.9f } == true
             val shape = RoundedCornerShape(BrowseTokens.ShowcaseRadius)
             Box(
                 modifier = Modifier
@@ -2064,8 +2087,8 @@ private fun TopPick(
                     .clip(shape)
                     .background(Color.Black.copy(alpha = 0.24f)),
             ) {
-                MotionArtwork(
-                    track = presentationTrack,
+                HomeArtworkLayer(
+                    presentation = playlistArtwork.copy(track = presentationTrack),
                     // A square catalog cover often includes typography. Keep
                     // that image complete; only genuine portrait artwork may
                     // fill this tall editorial card.
@@ -2073,7 +2096,7 @@ private fun TopPick(
                         else Modifier.fillMaxWidth().aspectRatio(1f).align(Alignment.TopCenter),
                     animate = motionReady,
                     cornerRadius = if (hasPortraitArtwork) BrowseTokens.ShowcaseRadius else 0.dp,
-                    artworkAspectRatio = if (hasPortraitArtwork) portraitAspect else 1f,
+                    aspect = if (hasPortraitArtwork) portraitAspect else 1f,
                 )
                 Box(Modifier.fillMaxSize().background(
                     Brush.verticalGradient(
@@ -2158,11 +2181,12 @@ private fun RecentCard(
     ) { focused ->
         HomeCardContent(contentReady, track, featured = false, staged = warmup != null,
             shadow = { Box(Modifier.size(homeLayout.cardWidth).coverShadow(focused, homeLayout.cardRadius, isolated = true)) }) {
+            val artwork = rememberHomePlaylistArtwork(track, contentReady)
             Column {
                 Box(Modifier.size(homeLayout.cardWidth)
                     .coverHairline(homeLayout.cardRadius)) {
-                    MotionArtwork(
-                        track = track,
+                    HomeArtworkLayer(
+                        presentation = artwork,
                         modifier = Modifier.fillMaxSize(),
                         animate = rememberBrowseMotionReady(focused),
                         cornerRadius = homeLayout.cardRadius,
