@@ -43,15 +43,15 @@ internal class AuthLoopbackServer(page: (GeckoAuthOrigin) -> String) : Closeable
         if (!client.inetAddress.isLoopbackAddress) return
         // Limit an individual HTTP request, not the time a user can spend logging in.
         client.soTimeout = 5_000
-        val reader = client.getInputStream().bufferedReader(Charsets.US_ASCII)
-        val request = reader.readLine()?.takeIf { it.length <= 4_096 } ?: return
+        val input = client.getInputStream()
+        val request = boundedHttpLine(input, 4_096) ?: return
         val parts = request.split(' ')
         if (parts.size != 3) return
         var host: String? = null
         var headerBytes = request.length
         while (true) {
-            val line = reader.readLine() ?: return
-            headerBytes += line.length
+            val line = boundedHttpLine(input, (16_384 - headerBytes).coerceAtMost(4_096)) ?: return
+            headerBytes += line.length + 2
             if (headerBytes > 16_384) return
             if (line.isEmpty()) break
             if (line.startsWith("Host:", ignoreCase = true)) host = line.substringAfter(':').trim()

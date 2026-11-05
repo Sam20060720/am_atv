@@ -11,7 +11,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.Message
 import android.view.KeyEvent
-import android.util.Base64
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -30,7 +29,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import dev.amatv.R
-import org.json.JSONObject
 
 /**
  * TV-friendly MusicKit Web authorization surface.
@@ -433,13 +431,7 @@ class MusicKitWebAuthActivity : Activity() {
         if (uri?.scheme != "https" || uri.host != "am-atv.local") return false
         val fragment = uri.encodedFragment?.let(Uri::decode).orEmpty()
         if (fragment.isBlank()) return false
-        val callbackValue = fragment
-            .substringAfter("music-user-token=", fragment)
-            .substringAfter("musicUserToken=", fragment)
-            .substringBefore('&')
-            .trim()
-        val token = extractMusicUserToken(callbackValue)
-        if (token.length <= 20 || token.any(Char::isWhitespace)) return false
+        val token = webMusicAuthorizationCallback(fragment) ?: return false
         runOnUiThread {
             popupWebView?.let(::closePopupWebView)
             webView.stopLoading()
@@ -448,13 +440,6 @@ class MusicKitWebAuthActivity : Activity() {
         }
         return true
     }
-
-    private fun extractMusicUserToken(callbackValue: String): String = runCatching {
-        val decoded = String(Base64.decode(callbackValue, Base64.DEFAULT), Charsets.UTF_8)
-        JSONObject(decoded).optString("musicUserToken")
-            .takeIf { it.length > 20 && it.none(Char::isWhitespace) }
-            ?: callbackValue
-    }.getOrDefault(callbackValue)
 
     private fun finishWithError(message: String) {
         setResult(RESULT_CANCELED, Intent().putExtra(EXTRA_ERROR, message))

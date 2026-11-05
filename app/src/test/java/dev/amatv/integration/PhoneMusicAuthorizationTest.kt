@@ -102,4 +102,36 @@ class PhoneMusicAuthorizationTest {
         assertFalse(isPhoneMusicUserToken("T".repeat(40) + "\n"))
         assertFalse(isPhoneMusicUserToken("T".repeat(40) + " "))
     }
+    @Test fun closingServerClosesAcceptedAndQueuedClientsImmediately() {
+        val server = server()
+        val clients = (1..6).map { Socket("127.0.0.1", server.pairing.port).apply {
+            soTimeout = 1_000
+            getOutputStream().apply { write('G'.code); flush() }
+        } }
+        try {
+            server.close()
+            clients.forEach { client ->
+                // Closing a socket with unread data may emit FIN or RST. Both
+                // terminate the request; an idle-timeout exception is a failure.
+                try { assertEquals(-1, client.getInputStream().read()) }
+                catch (_: java.net.SocketException) { }
+            }
+        } finally { clients.forEach { it.close() }; server.close() }
+    }
+
+    @Test fun requestLineStopsReadingAtItsBound() {
+        val input = java.io.ByteArrayInputStream("A".repeat(100_000).toByteArray())
+        assertNull(boundedHttpLine(input, 128))
+        assertTrue(input.available() >= 100_000 - 129)
+    }
+
+    @Test fun phonePageUsesSimplifiedAndTraditionalChineseIndependently() {
+        val simplified = phoneMusicAuthorizationPage("developer", "test", "zh-CN", "/pair/nonce/")
+        assertTrue(simplified.contains("lang=\"zh-Hans\""))
+        assertTrue(simplified.contains("在手机登录 Apple Music"))
+        val traditional = phoneMusicAuthorizationPage("developer", "test", "zh-Hant-TW", "/pair/nonce/")
+        assertTrue(traditional.contains("lang=\"zh-Hant\""))
+        assertTrue(traditional.contains("在手機登入 Apple Music"))
+    }
+
 }

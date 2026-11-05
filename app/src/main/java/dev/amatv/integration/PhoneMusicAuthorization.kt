@@ -44,6 +44,7 @@ internal class PhoneMusicAuthorization(
     private val timer = Executors.newSingleThreadScheduledExecutor { action -> Thread(action, "AMATV-phone-auth-expiry").apply { isDaemon = true } }
     @Volatile private var closed = false
     private var accepted = false
+    private val acceptedSockets = mutableSetOf<Socket>()
     private val authority: String
     private val origin: String
     private val path = "/pair/$nonce/"
@@ -67,8 +68,18 @@ internal class PhoneMusicAuthorization(
                 while (!closed) {
                     try {
                         val client = socket.accept()
-                        try { connections.execute { client.use { serve(it) } } }
-                        catch (_: Exception) { runCatching { client.close() } }
+                        val owned = synchronized(this@PhoneMusicAuthorization) {
+                            if (closed) false else { acceptedSockets += client; true }
+                        }
+                        if (!owned) { runCatching { client.close() }; continue }
+                        try { connections.execute {
+                            try { client.use { serve(it) } }
+                            finally { synchronized(this@PhoneMusicAuthorization) { acceptedSockets -= client } }
+                        } }
+                        catch (_: Exception) {
+                            synchronized(this@PhoneMusicAuthorization) { acceptedSockets -= client }
+                            runCatching { client.close() }
+                        }
                     } catch (_: SocketException) { if (!closed) close() }
                     catch (_: Exception) { if (!closed) close() }
                 }
@@ -197,6 +208,8 @@ internal class PhoneMusicAuthorization(
     private fun shutdown() {
         closed = true
         runCatching { socket.close() }
+        acceptedSockets.forEach { runCatching { it.close() } }
+        acceptedSockets.clear()
         connections.shutdownNow()
         timer.shutdownNow()
     }
@@ -213,7 +226,7 @@ internal fun phoneAuthorizationLanAddress(): String? = NetworkInterface.getNetwo
     .filterIsInstance<Inet4Address>()
     .firstOrNull { !it.isLoopbackAddress && !it.isLinkLocalAddress && it.isSiteLocalAddress }?.hostAddress
 
-private fun boundedHttpLine(input: InputStream, limit: Int): String? {
+internal fun boundedHttpLine(input: InputStream, limit: Int): String? {
     if (limit <= 0) return null
     val out = StringBuilder()
     while (out.length <= limit) {
@@ -227,18 +240,22 @@ private fun boundedHttpLine(input: InputStream, limit: Int): String? {
 }
 
 internal fun phoneMusicAuthorizationPage(developerToken: String, appBuild: String, languageTag: String, path: String): String {
-    val chinese = languageTag.startsWith("zh", ignoreCase = true)
-    val title = if (chinese) "在手機登入 Apple Music" else "Sign in to Apple Music"
-    val explanation = if (chinese) "使用 Apple 登入，完成後會自動連接電視。請保持此頁開啟。" else "Sign in with Apple to connect your TV. Keep this page open until it finishes."
-    val button = if (chinese) "繼續登入" else "Continue"
-    val preparing = if (chinese) "準備中⋯" else "Preparing…"
-    val waiting = if (chinese) "請在 Apple 登入頁完成授權" else "Complete sign-in in the Apple window"
-    val success = if (chinese) "登入結果已送到電視，請查看電視上的完成狀態。" else "Your sign-in result was sent. Check your TV for confirmation."
-    val failed = if (chinese) "登入未完成，請重試。若未開啟 Apple 頁面，請允許彈出式視窗。" else "Sign-in did not finish. Try again and allow the Apple sign-in window."
-    val expired = if (chinese) "連結已失效，請回到電視重新掃碼。" else "This link has expired. Scan the new code on your TV."
+    val locale = java.util.Locale.forLanguageTag(languageTag)
+    val chinese = locale.language == "zh"
+    val simplified = chinese && (locale.script == "Hans" || locale.script != "Hant" && locale.country in setOf("CN", "SG"))
+    fun text(traditional: String, simple: String, english: String): String =
+        if (!chinese) english else if (simplified) simple else traditional
+    val title = text("在手機登入 Apple Music", "在手机登录 Apple Music", "Sign in to Apple Music")
+    val explanation = text("使用 Apple 登入，完成後會自動連接電視。請保持此頁開啟。", "使用 Apple 登录，完成后会自动连接电视。请保持此页开启。", "Sign in with Apple to connect your TV. Keep this page open until it finishes.")
+    val button = text("繼續登入", "继续登录", "Continue")
+    val preparing = text("準備中⋯", "准备中⋯", "Preparing…")
+    val waiting = text("請在 Apple 登入頁完成授權", "请在 Apple 登录页完成授权", "Complete sign-in in the Apple window")
+    val success = text("登入結果已送到電視，請查看電視上的完成狀態。", "登录结果已送到电视，请查看电视上的完成状态。", "Your sign-in result was sent. Check your TV for confirmation.")
+    val failed = text("登入未完成，請重試。若未開啟 Apple 頁面，請允許彈出式視窗。", "登录未完成，请重试。若未开启 Apple 页面，请允许弹出式窗口。", "Sign-in did not finish. Try again and allow the Apple sign-in window.")
+    val expired = text("連結已失效，請回到電視重新掃碼。", "链接已失效，请回到电视重新扫码。", "This link has expired. Scan the new code on your TV.")
     val nonce = path.trimEnd('/').substringAfterLast('/')
     return """
-        <!doctype html><html lang="${if (chinese) "zh-Hant" else "en"}"><head><meta charset="utf-8">
+        <!doctype html><html lang="${if (!chinese) "en" else if (simplified) "zh-Hans" else "zh-Hant"}"><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1"><title>$title</title>
         <style>html{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100svh;display:grid;place-items:center;background:radial-gradient(at 40% 0%,#391326,#0b0b0e 65%);color:#f5f5f7;font:17px -apple-system,BlinkMacSystemFont,sans-serif}main{width:min(88vw,420px);padding:40px 0}h1{font-size:32px;letter-spacing:-.7px;line-height:1.2}p{line-height:1.6;color:#aaa}button{width:100%;padding:17px;border:0;border-radius:18px;background:#fa355a;color:white;font:600 17px -apple-system,BlinkMacSystemFont,sans-serif;margin:20px 0}button:disabled{opacity:.45}#status{min-height:80px}a{color:#ff6c85}</style></head>
         <body><main><h1>$title</h1><p>$explanation</p><button id="signin" disabled>$preparing</button><p id="status" role="status"></p></main>

@@ -4,17 +4,21 @@ import dev.amatv.R
 import dev.amatv.i18n.AppText
 
 import dev.amatv.BuildConfig
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaType
+import java.security.MessageDigest
+import java.util.UUID
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URI
 import java.net.URLEncoder
-import kotlin.coroutines.coroutineContext
 
 data class GoogleTvPairing(
     val userCode: String,
@@ -22,18 +26,33 @@ data class GoogleTvPairing(
     val deviceCode: String,
     val expiresAtMs: Long,
     val pollIntervalSeconds: Int,
+    internal val authorizationGeneration: Long = 0L,
 )
 
+data class GoogleTvAuthorizationState(val signedIn: Boolean, val scope: String)
+
 /** Official limited-input OAuth flow; tokens are encrypted by SecureTokenStore. */
-class GoogleTvAuthorization(private val store: SecureTokenStore) {
-    private val io = Dispatchers.IO.limitedParallelism(2)
+class GoogleTvAuthorization internal constructor(
+    private val persistence: GoogleAuthorizationPersistence,
+    private val post: suspend (String, Map<String, String>) -> GoogleOAuthResponse = ::postGoogleOAuth,
+    private val oauthConfigured: () -> Boolean = { BuildConfig.YTM_OAUTH_CLIENT_ID.isNotBlank() &&
+        BuildConfig.YTM_OAUTH_CLIENT_SECRET.isNotBlank() },
+    private val pollDelay: suspend (Long) -> Unit = { delay(it) },
+) {
+    constructor(store: SecureTokenStore) : this(GoogleAuthorizationPersistence(
+        store::readYtmSession, store::writeYtmSession, store::clearYtmSession,
+    ))
+    private val authorizationLock = Any()
+    private var generation = 0L
+    private val mutableState = MutableStateFlow(sessionState(persistence.read()))
+    val state = mutableState.asStateFlow()
     private val refreshMutex = Mutex()
-    val configured get() = BuildConfig.YTM_OAUTH_CLIENT_ID.isNotBlank() &&
-        BuildConfig.YTM_OAUTH_CLIENT_SECRET.isNotBlank()
-    val signedIn get() = store.readYtmSession() != null
+    val configured get() = oauthConfigured()
+    val signedIn get() = state.value.signedIn
 
     suspend fun startPairing(): GoogleTvPairing {
         check(configured) { AppText.text(R.string.services_google_not_configured) }
+        val attempt = synchronized(authorizationLock) { ++generation }
         val response = post(
             "https://oauth2.googleapis.com/device/code",
             mapOf(
@@ -42,6 +61,8 @@ class GoogleTvAuthorization(private val store: SecureTokenStore) {
             ),
         )
         check(response.status in 200..299) { AppText.text(R.string.services_google_pairing_start_failed, response.status) }
+        currentCoroutineContext().ensureActive()
+        synchronized(authorizationLock) { checkGeneration(attempt) }
         val json = response.body
         return GoogleTvPairing(
             userCode = json.getString("user_code"),
@@ -50,13 +71,16 @@ class GoogleTvAuthorization(private val store: SecureTokenStore) {
             deviceCode = json.getString("device_code"),
             expiresAtMs = System.currentTimeMillis() + json.getLong("expires_in") * 1_000L,
             pollIntervalSeconds = json.optInt("interval", 5).coerceAtLeast(5),
+            authorizationGeneration = attempt,
         )
     }
 
     suspend fun awaitPairing(pairing: GoogleTvPairing) {
         var interval = pairing.pollIntervalSeconds
         while (System.currentTimeMillis() < pairing.expiresAtMs) {
-            delay(interval * 1_000L)
+            synchronized(authorizationLock) { checkGeneration(pairing.authorizationGeneration) }
+            pollDelay(interval * 1_000L)
+            synchronized(authorizationLock) { checkGeneration(pairing.authorizationGeneration) }
             val response = post(
                 "https://oauth2.googleapis.com/token",
                 mapOf(
@@ -66,11 +90,17 @@ class GoogleTvAuthorization(private val store: SecureTokenStore) {
                     "grant_type" to "urn:ietf:params:oauth:grant-type:device_code",
                 ),
             )
+            currentCoroutineContext().ensureActive()
+            synchronized(authorizationLock) { checkGeneration(pairing.authorizationGeneration) }
             val body = response.body
             if (response.status in 200..299) {
                 val refresh = body.optString("refresh_token")
                 check(refresh.isNotBlank()) { AppText.text(R.string.services_google_refresh_token_missing) }
-                saveTokens(body, refresh)
+                synchronized(authorizationLock) {
+                    checkGeneration(pairing.authorizationGeneration)
+                    saveTokens(body, refresh, UUID.randomUUID().toString())
+                    generation++
+                }
                 return
             }
             when (body.optString("error")) {
@@ -85,9 +115,14 @@ class GoogleTvAuthorization(private val store: SecureTokenStore) {
     }
 
     suspend fun accessToken(): String? = refreshMutex.withLock {
-        val saved = store.readYtmSession()?.let(::JSONObject) ?: return@withLock null
+        val (attempt, saved) = synchronized(authorizationLock) {
+            generation to (persistence.read()?.let(::JSONObject) ?: return@withLock null)
+        }
         if (saved.optLong("expires_at_ms") > System.currentTimeMillis() + 60_000L) {
-            return@withLock saved.optString("access_token").takeIf(String::isNotBlank)
+            return@withLock synchronized(authorizationLock) {
+                checkGeneration(attempt)
+                saved.optString("access_token").takeIf(String::isNotBlank)
+            }
         }
         if (!configured) return@withLock null
         val refresh = saved.optString("refresh_token").takeIf(String::isNotBlank)
@@ -101,47 +136,73 @@ class GoogleTvAuthorization(private val store: SecureTokenStore) {
                 "grant_type" to "refresh_token",
             ),
         )
-        if (response.status !in 200..299) {
-            if (response.body.optString("error") == "invalid_grant") store.clearYtmSession()
-            return@withLock null
+        currentCoroutineContext().ensureActive()
+        synchronized(authorizationLock) {
+            checkGeneration(attempt)
+            if (response.status !in 200..299) {
+                if (response.body.optString("error") == "invalid_grant") {
+                    generation++
+                    persistence.clear()
+                    mutableState.value = GoogleTvAuthorizationState(false, "guest")
+                }
+                return@withLock null
+            }
+            saveTokens(response.body, response.body.optString("refresh_token").ifBlank { refresh },
+                sessionState(saved.toString()).scope)
+            response.body.optString("access_token").takeIf(String::isNotBlank)
         }
-        saveTokens(response.body, refresh)
-        response.body.optString("access_token").takeIf(String::isNotBlank)
     }
 
-    fun signOut() = store.clearYtmSession()
+    /** Also invalidates in-flight refreshes and any previous device-code attempt. */
+    fun cancelPairing() = synchronized(authorizationLock) { generation++; Unit }
 
-    private fun saveTokens(body: JSONObject, refresh: String) {
-        store.writeYtmSession(JSONObject()
+    fun signOut() = synchronized(authorizationLock) {
+        generation++
+        persistence.clear()
+        mutableState.value = GoogleTvAuthorizationState(false, "guest")
+    }
+
+    private fun checkGeneration(expected: Long) {
+        if (generation != expected) throw CancellationException("Google authorization changed")
+    }
+
+    private fun saveTokens(body: JSONObject, refresh: String, scope: String) {
+        persistence.write(JSONObject()
             .put("access_token", body.getString("access_token"))
             .put("refresh_token", refresh)
+            .put("authorization_scope", scope)
             .put("expires_at_ms", System.currentTimeMillis() +
                 body.optLong("expires_in", 3_600L) * 1_000L)
             .toString())
+        mutableState.value = GoogleTvAuthorizationState(true, scope)
     }
 
-    private data class Response(val status: Int, val body: JSONObject)
+}
 
-    private suspend fun post(url: String, form: Map<String, String>): Response = withContext(io) {
-        coroutineContext.ensureActive()
-        val connection = URI(url).toURL().openConnection() as HttpURLConnection
-        try {
-            connection.requestMethod = "POST"
-            connection.connectTimeout = 6_000
-            connection.readTimeout = 10_000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
-            val encoded = form.entries.joinToString("&") { (key, value) ->
-                "${URLEncoder.encode(key, "UTF-8")}" +
-                    "=${URLEncoder.encode(value, "UTF-8")}" 
-            }
-            connection.outputStream.use { it.write(encoded.toByteArray(Charsets.UTF_8)) }
-            val status = connection.responseCode
-            val text = (if (status in 200..299) connection.inputStream else connection.errorStream)
-                ?.bufferedReader()?.use { it.readText() }.orEmpty()
-            Response(status, JSONObject(text))
-        } finally {
-            connection.disconnect()
-        }
+internal data class GoogleAuthorizationPersistence(
+    val read: () -> String?, val write: (String) -> Unit, val clear: () -> Unit,
+)
+internal data class GoogleOAuthResponse(val status: Int, val body: JSONObject)
+
+private suspend fun postGoogleOAuth(url: String, form: Map<String, String>): GoogleOAuthResponse = withCatalogRequestDeadline {
+    currentCoroutineContext().ensureActive()
+    val encoded = form.entries.joinToString("&") { (key, value) ->
+        "${URLEncoder.encode(key, "UTF-8")}=${URLEncoder.encode(value, "UTF-8")}"
     }
+    val reply = CatalogHttpTransport().execute(Request.Builder().url(url)
+        .post(encoded.toRequestBody("application/x-www-form-urlencoded".toMediaType()))
+        .build(), maxResponseBytes = 128 * 1024)
+    GoogleOAuthResponse(reply.status, JSONObject(reply.body))
+}
+
+/** Legacy sessions derive identity from the stable refresh credential, never the rotating access token. */
+internal fun sessionState(session: String?): GoogleTvAuthorizationState {
+    val saved = session?.let { runCatching { JSONObject(it) }.getOrNull() }
+        ?: return GoogleTvAuthorizationState(false, "guest")
+    val refresh = saved.optString("refresh_token").takeIf(String::isNotBlank)
+        ?: return GoogleTvAuthorizationState(false, "guest")
+    val scope = saved.optString("authorization_scope").takeIf(String::isNotBlank)
+        ?: MessageDigest.getInstance("SHA-256").digest(refresh.toByteArray(Charsets.UTF_8))
+            .take(16).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    return GoogleTvAuthorizationState(true, scope)
 }

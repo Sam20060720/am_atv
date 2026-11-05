@@ -23,55 +23,62 @@ class SecureTokenStore(context: Context) {
         Context.MODE_PRIVATE,
     )
 
-    fun readUserToken(): String? = readRecoverableToken(
+    fun readUserToken(): String? = synchronized(tokenLock) { readRecoverableToken(
         readEncrypted = { readEncrypted(KEY_USER_TOKEN_CIPHERTEXT) },
         readSdkFallback = { sdkAuthPreferences.getString("user-token", null) },
         normalize = ::normalizeMusicUserToken,
         isValid = { it.length > 20 && it.none(Char::isWhitespace) },
         repairEncrypted = ::writeUserToken,
-    )
+    ) }
 
-    fun writeUserToken(token: String) {
+    fun writeUserToken(token: String) = synchronized(tokenLock) {
         val normalized = normalizeMusicUserToken(token)
         writeEncrypted(KEY_USER_TOKEN_CIPHERTEXT, normalized)
         sdkAuthPreferences.edit().putString("user-token", normalized).apply()
     }
 
-    fun readDeveloperToken(): String? = readRecoverableToken(
+    fun readDeveloperToken(): String? = synchronized(tokenLock) { readRecoverableToken(
         readEncrypted = { readEncrypted(KEY_DEV_TOKEN_CIPHERTEXT) },
         readSdkFallback = { sdkAuthPreferences.getString("developer-token", null) },
         normalize = String::trim,
         isValid = ::isValidNonExpiredJwt,
         repairEncrypted = ::writeDeveloperToken,
-    )
+    ) }
 
-    fun writeDeveloperToken(token: String) {
+    fun writeDeveloperToken(token: String) = synchronized(tokenLock) {
         val trimmed = token.trim()
         require(trimmed.count { it == '.' } == 2) { AppText.text(R.string.services_developer_token_invalid) }
         writeEncrypted(KEY_DEV_TOKEN_CIPHERTEXT, trimmed)
         sdkAuthPreferences.edit().putString("developer-token", trimmed).apply()
     }
 
-    fun clearDeveloperToken() {
+    fun clearDeveloperToken() = synchronized(tokenLock) {
         preferences.edit().remove(KEY_DEV_TOKEN_CIPHERTEXT).apply()
         sdkAuthPreferences.edit().remove("developer-token").apply()
     }
 
-    fun clear() {
+    fun clear() = synchronized(tokenLock) {
         preferences.edit().remove(KEY_USER_TOKEN_CIPHERTEXT).apply()
         sdkAuthPreferences.edit().remove("user-token").apply()
     }
 
-    fun readYtmSession(): String? = runCatching {
+    fun readYtmSession(): String? = synchronized(tokenLock) { runCatching {
         readEncrypted(KEY_YTM_SESSION_CIPHERTEXT)
-    }.getOrNull()
+    }.getOrNull() }
 
-    fun writeYtmSession(json: String) {
+    fun writeYtmSession(json: String) = synchronized(tokenLock) {
         writeEncrypted(KEY_YTM_SESSION_CIPHERTEXT, json)
     }
 
-    fun clearYtmSession() {
+    fun clearYtmSession() = synchronized(tokenLock) {
         preferences.edit().remove(KEY_YTM_SESSION_CIPHERTEXT).apply()
+    }
+
+    /** Compare and commit under the same process-wide read/repair/clear boundary. */
+    internal fun replaceUserToken(expected: String?, token: String): Boolean = synchronized(tokenLock) {
+        if (readUserToken() != expected) return@synchronized false
+        writeUserToken(token)
+        true
     }
 
     private fun readEncrypted(key: String): String? {
@@ -141,6 +148,8 @@ class SecureTokenStore(context: Context) {
     }
 
     private companion object {
+        // All store instances address the same preferences and Keystore alias.
+        val tokenLock = Any()
         const val KEY_ALIAS = "dev.amatv.music-user-token"
         const val KEY_USER_TOKEN_CIPHERTEXT = "music_user_token_encrypted"
         const val KEY_DEV_TOKEN_CIPHERTEXT = "music_developer_token_encrypted"
