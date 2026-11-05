@@ -3,11 +3,9 @@ package dev.amatv.integration
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.EditorialMotionAsset
 import dev.amatv.model.Track
-import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.File
 import java.security.MessageDigest
-import java.net.HttpURLConnection
 import java.net.URI
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
@@ -221,39 +219,5 @@ private fun publicMotionId(type: String, id: String): Boolean = when (type) {
     else -> false
 }
 
-private suspend fun fetchPublicEditorialMotion(address: String, language: String): String = withContext(Dispatchers.IO) {
-    var uri = URI(address)
-    val country = uri.path.split('/').getOrNull(1) ?: throw IOException()
-    repeat(4) {
-        currentCoroutineContext().ensureActive()
-        require(uri.scheme == "https" && uri.host == "music.apple.com" && uri.port == -1 &&
-            uri.rawUserInfo == null && uri.fragment == null && uri.path.startsWith("/$country/"))
-        val connection = uri.toURL().openConnection() as HttpURLConnection
-        connection.instanceFollowRedirects = false
-        connection.connectTimeout = 6_000
-        connection.readTimeout = 6_000
-        connection.setRequestProperty("Accept", "text/html")
-        connection.setRequestProperty("Accept-Language", language)
-        try {
-            val status = connection.responseCode
-            if (status in setOf(301, 302, 303, 307, 308)) {
-                uri = uri.resolve(connection.getHeaderField("Location") ?: throw IOException())
-            } else {
-                if (status != 200 || connection.contentLengthLong > MAX_MOTION_HTML_BYTES) throw IOException()
-                return@withContext connection.inputStream.use { input ->
-                    val output = ByteArrayOutputStream(64 * 1024)
-                    val buffer = ByteArray(16 * 1024)
-                    while (true) {
-                        currentCoroutineContext().ensureActive()
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (output.size() + count > MAX_MOTION_HTML_BYTES) throw IOException()
-                        output.write(buffer, 0, count)
-                    }
-                    output.toString(Charsets.UTF_8.name())
-                }
-            }
-        } finally { connection.disconnect() }
-    }
-    throw IOException()
-}
+private suspend fun fetchPublicEditorialMotion(address: String, language: String): String =
+    fetchPublicMusicHtml(address, language, MAX_MOTION_HTML_BYTES)

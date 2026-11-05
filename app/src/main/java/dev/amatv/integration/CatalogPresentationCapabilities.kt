@@ -44,6 +44,6 @@ data class CatalogPresentationCapabilities(
 
     fun filterShelves(shelves: List<ContentShelf>): List<ContentShelf> = shelves.mapNotNull { shelf ->
         val supported = filterTracks(shelf.items)
-        shelf.copy(items = supported).takeIf { supported.isNotEmpty() }
+        shelf.copy(items = supported).takeIf { supported.isNotEmpty() || shelf.items.isEmpty() && shelf.hasMore }
     }
 }

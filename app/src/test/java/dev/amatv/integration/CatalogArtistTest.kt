@@ -63,6 +63,18 @@ class CatalogArtistTest {
         assertEquals(listOf(ArtistSection.LibraryAlbums), profile.applicableSections)
     }
 
+    @Test fun unavailableCatalogCounterpartPreservesSavedArtistAndLibraryAlbums() = runBlocking {
+        val profile = api.artistProfile(item("r.saved", CatalogKind.Artist, "library-artists"), "tw") { _, user ->
+            if (user) JSONObject("""{"data":[{"id":"r.saved","type":"library-artists","attributes":{"name":"Saved performer"},
+              "relationships":{"catalog":{"data":[{"id":"123","type":"artists"}]}}}]}""")
+            else throw CatalogRequestException(CatalogFailureReason.Unavailable, "No longer available", 404)
+        }
+        assertEquals("Saved performer", profile.artist.title)
+        assertEquals("r.saved", profile.artist.resourceId)
+        assertNull(profile.catalogArtist)
+        assertEquals(listOf(ArtistSection.LibraryAlbums), profile.applicableSections)
+    }
+
     @Test fun artistViewsKeepEncodedCursorAndIgnoreUnrelatedNestedResources() = runBlocking {
         val artist = item("123", CatalogKind.Artist, "artists")
         val cursor = "/v1/catalog/tw/artists/123/view/similar-artists?offset=2&cursor=a%2Fb&with=attributes"

@@ -25,10 +25,12 @@ internal class AppleMusicWebRequest(
         require(path.startsWith("/v1/") && endpoint.scheme == "https" && endpoint.host == "amp-api.music.apple.com" &&
             endpoint.port == -1 && endpoint.userInfo == null && endpoint.fragment == null)
         require(method in setOf("GET", "POST", "PATCH", "PUT", "DELETE"))
-        val account = userToken()?.takeIf(String::isNotBlank)
+        val owner = currentCoroutineContext()[AppleAuthorizationScope]
+        val account = scopedAppleToken(userToken)?.takeIf(String::isNotBlank)
         if (needsUserToken && account == null) throw CatalogRequestException(CatalogFailureReason.Authorization,
             AppText.text(R.string.services_sign_in_apple_music))
         fun checkAccount() {
+            owner?.checkCurrent(userToken)
             if (needsUserToken && userToken() != account) throw CancellationException("Account changed")
         }
         suspend fun execute(refresh: Boolean): CatalogHttpReply {

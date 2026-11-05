@@ -105,6 +105,29 @@ class AppleMusicApi(
     private val userToken: () -> String?,
 ) {
     private data class UserStorefrontCache(val userToken: String, val storefront: String)
+    internal var language: () -> String = { Locale.getDefault().toLanguageTag() }
+    private val storefrontLocalizations = java.util.concurrent.ConcurrentHashMap<String, StorefrontLocalization>()
+    private val localizationMutex = Mutex()
+
+    internal suspend fun <T> withCurrentAuthorization(operation: suspend () -> T): T {
+        val owner = AppleAuthorizationScope(scopedAppleToken(userToken))
+        return withContext(owner) { operation().also { owner.checkCurrent(userToken) } }
+    }
+
+    internal suspend fun resolutionCacheScope(): String =
+        "${appleAuthorizationCacheScope(scopedAppleToken(userToken))}:${effectiveStorefront()}:${language()}"
+
+    internal suspend fun catalogLanguage(region: String): String? {
+        val metadata = storefrontLocalizations[region] ?: localizationMutex.withLock {
+            storefrontLocalizations[region] ?: run {
+                val root = try { requestRoot("/v1/storefronts/$region", false, localize = false) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { return@withLock null }
+                parseStorefrontLocalization(root)?.also { storefrontLocalizations[region] = it }
+            }
+        } ?: return null
+        return selectCatalogLanguage(language(), metadata.supported, metadata.default)
+    }
 
     private val parseDispatcher = Dispatchers.Default.limitedParallelism(2)
     private val userStorefrontMutex = Mutex()
@@ -145,7 +168,7 @@ class AppleMusicApi(
     }
 
     suspend fun userStorefront(): String {
-        val currentUserToken = userToken()?.takeIf(String::isNotBlank)
+        val currentUserToken = scopedAppleToken(userToken)?.takeIf(String::isNotBlank)
             ?: throw CatalogRequestException(CatalogFailureReason.Authorization,
                 AppText.text(R.string.services_sign_in_apple_music))
         userStorefrontCache?.takeIf { it.userToken == currentUserToken }?.let { return it.storefront }
@@ -159,14 +182,15 @@ class AppleMusicApi(
                 ?: error(AppText.text(R.string.services_user_storefront_missing))
             currentCoroutineContext().ensureActive()
             if (userToken() != currentUserToken) throw CancellationException("Apple account changed during storefront resolution")
+            parseStorefrontLocalization(root)?.let { storefrontLocalizations[resolved] = it }
             userStorefrontCache = UserStorefrontCache(currentUserToken, resolved)
-            Log.i(TAG, "Apple user storefront=$resolved")
+            runCatching { Log.i(TAG, "Apple user storefront=$resolved") }
             resolved
         }
     }
 
     suspend fun effectiveStorefront(): String {
-        val currentUserToken = userToken()?.takeIf(String::isNotBlank)
+        val currentUserToken = scopedAppleToken(userToken)?.takeIf(String::isNotBlank)
         if (currentUserToken == null) return storefront
         return userStorefront()
     }
@@ -293,13 +317,20 @@ class AppleMusicApi(
             // Verified against the shipped public Apple Music web artist/bio requests.
             // Optional web extensions enrich one opened profile, never every card.
             val extended = "$base?extend=artistBio,bornOrFormed,origin,isGroup,editorialArtwork,editorialVideo,extendedAssetUrls,plainEditorialNotes"
-            val root = try { fetch(extended, false) }
-            catch (error: CatalogRequestException) {
-                if (error.httpStatus !in setOf(400, 403)) throw error
-                // API credentials/regions need not support every web extension.
-                fetch(base, false)
+            try {
+                val root = try { fetch(extended, false) }
+                catch (error: CatalogRequestException) {
+                    if (error.httpStatus !in setOf(400, 403)) throw error
+                    // API credentials/regions need not support every web extension.
+                    fetch(base, false)
+                }
+                resource(root, id, "artists")
+            } catch (error: CatalogRequestException) {
+                // The saved artist still owns Library Albums if its catalog
+                // counterpart is unavailable in this account's storefront.
+                if (!library || error.reason != CatalogFailureReason.Unavailable) throw error
+                null
             }
-            resource(root, id, "artists")
         }
         val catalogAttributes = catalogResource?.optJSONObject("attributes")
         val catalogArtist = catalogAttributes?.toTrack(checkNotNull(catalogId), CatalogKind.Artist, resourceType = "artists")
@@ -622,6 +653,7 @@ class AppleMusicApi(
             needsUserToken = true,
             method = "POST",
             postBody = "{}",
+            playback = true,
         )
         return withContext(parseDispatcher) { parseStationTracks(root) }
     }
@@ -779,12 +811,21 @@ class AppleMusicApi(
         postBody: String? = null,
         playback: Boolean = false,
         requestUserToken: String? = null,
+        localize: Boolean = true,
     ): JSONObject = withContext(Dispatchers.IO) { withCatalogRequestDeadline {
-        val endpoint = URI("https://api.music.apple.com$path")
+        val capturedScope = currentCoroutineContext()[AppleAuthorizationScope]
+        val musicUserToken = requestUserToken ?: scopedAppleToken(userToken)
+        val account = AppleAuthorizationScope(musicUserToken)
+        capturedScope?.checkCurrent(userToken)
+        val region = if (method == "GET" && localize) {
+            Regex("^/v1/catalog/([a-z]{2})/").find(path)?.groupValues?.get(1)
+                ?: if (path.startsWith("/v1/me/") && !path.startsWith("/v1/me/storefront")) effectiveStorefront() else null
+        } else null
+        val localizedPath = region?.let { country -> catalogLanguage(country)?.let { withCatalogLanguage(path, it) } } ?: path
+        val endpoint = URI("https://api.music.apple.com$localizedPath")
         require(path.startsWith("/v1/") && endpoint.scheme == "https" && endpoint.host == "api.music.apple.com" &&
             endpoint.port == -1 && endpoint.userInfo == null && endpoint.fragment == null)
         require(method in setOf("GET", "POST", "PUT", "DELETE"))
-        val musicUserToken = requestUserToken ?: userToken()
         if (needsUserToken) {
             if (musicUserToken.isNullOrBlank()) {
                 throw CatalogRequestException(CatalogFailureReason.Authorization,
@@ -794,6 +835,10 @@ class AppleMusicApi(
 
         suspend fun execute(forceTokenRefresh: Boolean): CatalogHttpReply {
             val developerToken = developerTokens.token(forceRefresh = forceTokenRefresh)
+            currentCoroutineContext().ensureActive()
+            // Credentials are captured before any suspending dependency. A chain
+            // started by A cannot dispatch a later write using B's account.
+            account.checkCurrent(userToken)
             val requestBody = (postBody ?: if (method == "POST" || method == "PUT") "" else null)
                 ?.toRequestBody("application/json; charset=utf-8".toMediaType())
             val request = Request.Builder().url(endpoint.toString())
@@ -803,7 +848,9 @@ class AppleMusicApi(
             return CatalogHttpTransport(httpCalls ?: if (playback) playbackCatalogHttpClient else catalogHttpClient).execute(request)
         }
 
-        val (status, body) = catalogRequestWithTokenRefresh(::execute)
+        val first = execute(false)
+        val (status, body) = if (method == "GET" && first.status == 401) execute(true) else first
+        account.checkCurrent(userToken)
         if (status !in 200..299) {
             val message = when (status) {
                 HttpURLConnection.HTTP_UNAUTHORIZED,

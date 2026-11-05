@@ -9,11 +9,8 @@ import dev.amatv.model.CatalogResourceRef
 import dev.amatv.model.CatalogResourceSection
 import dev.amatv.model.Track
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.net.HttpURLConnection
 import java.net.URI
-import java.net.URL
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -110,43 +107,10 @@ internal class PublicMusicBrowseClient(
         }
     }
 
-    private suspend fun html(region: String, path: String): String = withContext(Dispatchers.IO) {
-            var url = URL("https://music.apple.com$path")
-            repeat(3) {
-                currentCoroutineContext().ensureActive()
-                val connection = url.openConnection() as HttpURLConnection
-                connection.instanceFollowRedirects = false
-                connection.connectTimeout = 10_000
-                connection.readTimeout = 10_000
-                connection.setRequestProperty("Accept", "text/html")
-                connection.setRequestProperty("Accept-Language", language())
-                try {
-                    val status = connection.responseCode
-                    if (status in setOf(301, 302, 303, 307, 308)) {
-                        val next = URI(url.toString()).resolve(connection.getHeaderField("Location") ?: throw IOException()).toURL()
-                        require(next.protocol == "https" && next.host == "music.apple.com" && next.userInfo == null &&
-                            next.port == -1 && next.ref == null && next.path.startsWith("/$region/"))
-                        url = next
-                    } else {
-                        if (status != 200) throw IOException()
-                        if (connection.contentLengthLong > MAX_HTML_BYTES) throw IOException()
-                        return@withContext connection.inputStream.use { input ->
-                            val output = ByteArrayOutputStream(connection.contentLength.takeIf { it in 1..MAX_HTML_BYTES } ?: 64 * 1024)
-                            val buffer = ByteArray(16 * 1024)
-                            while (true) {
-                                currentCoroutineContext().ensureActive()
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                if (output.size() + count > MAX_HTML_BYTES) throw IOException()
-                                output.write(buffer, 0, count)
-                            }
-                            output.toString(Charsets.UTF_8.name())
-                        }
-                    }
-                } finally { connection.disconnect() }
-            }
-            throw IOException()
-        }
+    private suspend fun html(region: String, path: String): String {
+        require(path.startsWith("/$region/"))
+        return fetchPublicMusicHtml("https://music.apple.com$path", language(), MAX_HTML_BYTES, maxRequests = 3)
+    }
 
     private companion object { const val MAX_HTML_BYTES = 4 * 1024 * 1024 }
 }

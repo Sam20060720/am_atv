@@ -19,18 +19,20 @@ class CrossCatalogResolver(private val apple: AppleMusicApi) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Track?>) = size > 256
     }
 
-    suspend fun resolve(song: YtmSong): Track? {
-        val key = "${song.videoId}:${song.title}:${song.artist}:${song.durationMs}"
+    suspend fun resolve(song: YtmSong): Track? = apple.withCurrentAuthorization {
+        val scope = apple.resolutionCacheScope()
+        val key = "$scope:${song.videoId}:${song.title}:${song.artist}:${song.durationMs}"
         synchronized(cache) {
-            if (cache.containsKey(key)) return cache[key]?.asYtm(song)
+            if (cache.containsKey(key)) return@withCurrentAuthorization cache[key]?.asYtm(song)
         }
         val result = requests.withPermit {
             val query = "${song.title} ${song.artist}".take(150)
             val candidates = apple.searchSongs(query)
             withContext(cpu) { select(song, candidates) }
         }
+        if (scope != apple.resolutionCacheScope()) throw kotlinx.coroutines.CancellationException("Catalog scope changed")
         synchronized(cache) { cache[key] = result }
-        return result?.asYtm(song)
+        result?.asYtm(song)
     }
 
     private fun Track.asYtm(song: YtmSong): Track = copy(
