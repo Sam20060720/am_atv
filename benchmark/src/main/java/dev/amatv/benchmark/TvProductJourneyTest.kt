@@ -45,7 +45,7 @@ class TvProductJourneyTest {
     @Test fun collectionSongsAndSingleBackReturnToBrowse() {
         coldLaunchPreservingAccount()
         ui.browseTab("library")
-        ui.right(0)
+        ui.enterContent()
         ui.id("library-browser")
         ui.focusUi("library-category-albums")
         ui.center(0)
@@ -55,7 +55,7 @@ class TvProductJourneyTest {
         ui.awaitFocused("library-item-0-album")
         ui.center()
         ui.id("collection-screen")
-        assertTrue("Collection detail must retain global navigation", ui.has("nav-menu"))
+        assertTrue("Collection detail must retain global navigation", (ui.isClassic() || ui.has("nav-menu")))
         ui.requireObject(By.res("collection-play").enabled(true), 60_000)
         // The play action deliberately keeps input focus while data is loading.
         // Real song content, rather than its focusable wrapper, signals readiness.
@@ -71,7 +71,7 @@ class TvProductJourneyTest {
         ui.settle(600)
         assertTrue("Song list must retain DPAD focus", ui.id("collection-song-0").isFocused)
         device.pressBack()
-        ui.id("nav-menu")
+        ui.navigation()
         assertFalse("One Back must close collection", ui.has("collection-screen"))
         ui.awaitFocused("library-item-0-album")
     }

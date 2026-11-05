@@ -240,7 +240,10 @@ class PlayingRenderingSurveyTest {
             }
             val before = ui.snapshot()
             if (id == "playing_queue_cursor") assertQueueFocus(before)
-            if (id == "playing_controls") check(before.selected.any { it.startsWith("player-") && it != "player-progress" })
+            if (id == "playing_controls") check(before.focused.any {
+                it in setOf("player-previous", "player-play-pause", "player-next", "player-lyrics-display",
+                    "player-lyrics", "player-queue", "player-more", "player-radio")
+            })
             capturePng(prefix + "-setup.png", record, "setup_png")
             record.put("start", before.json()).put("progress_start_ms", startProgress.first)
                 .put("remaining_start_ms", startProgress.second).put("proof", JSONObject().put("track_identity", identity)
@@ -407,11 +410,11 @@ class PlayingRenderingSurveyTest {
         val controls = setOf("player-previous", "player-play-pause", "player-next", "player-lyrics-display",
             "player-lyrics", "player-queue", "player-more", "player-radio")
         val freshProgressSelected = selectedNow("player-progress")
-        val freshControlsSelected = controls.filter(::selectedNow)
+        val freshControlsFocused = controls.filter(::controlFocusedNow)
         probe.put("fresh_before_progress_selected", freshProgressSelected)
-            .put("fresh_before_controls_selected", JSONArray(freshControlsSelected))
+            .put("fresh_before_controls_focused", JSONArray(freshControlsFocused))
         if (!freshProgressSelected) {
-            if (freshControlsSelected.isEmpty()) {
+            if (freshControlsFocused.isEmpty()) {
                 click("player-queue"); awaitId("queue-panel")
                 click("player-queue"); awaitGone("queue-panel"); ui.settle(420)
             }
@@ -620,7 +623,7 @@ class PlayingRenderingSurveyTest {
             wake()
             val controls = setOf("player-previous", "player-play-pause", "player-next", "player-lyrics-display",
                 "player-lyrics", "player-queue", "player-more", "player-radio")
-            if (!selectedNow("player-progress") && controls.any(::selectedNow)) {
+            if (!selectedNow("player-progress") && controls.any(::controlFocusedNow)) {
                 // Focus-only movement refreshes controlsActivity; no transport activates.
                 ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 35); ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 35)
             }
@@ -677,8 +680,8 @@ class PlayingRenderingSurveyTest {
         if (root.packageName?.toString() != TARGET) { root.recycle(); throw SurveyUnsafe("Player lost foreground ownership") }
         fun find(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
             if (node.viewIdResourceName.orEmpty().substringAfter(":id/") == id) {
-                // Compose custom cursors are selected but deliberately not Android focusable.
-                // Their cached selected flag must be refreshed just like focused nodes.
+                // Refresh both control focus and queue/progress selection;
+                // each is an independent cursor contract on the player root.
                 if (!node.refresh()) throw SurveyUnavailable("Player target became obsolete: " + id)
                 if (node.isVisibleToUser && node.packageName?.toString() == TARGET &&
                     node.viewIdResourceName.orEmpty().substringAfter(":id/") == id)
@@ -693,6 +696,8 @@ class PlayingRenderingSurveyTest {
         val node = try { find(root) } finally { root.recycle() } ?: throw SurveyUnavailable("Missing " + id)
         return try { action(node) } finally { node.recycle() }
     }
+    private fun controlFocusedNow(id: String): Boolean = try { withNode(id) { it.isFocused } }
+        catch (_: SurveyUnavailable) { false }
     private fun selectedNow(id: String): Boolean = try { withNode(id) { it.isSelected || it.isChecked } }
         catch (_: SurveyUnavailable) { false }
 

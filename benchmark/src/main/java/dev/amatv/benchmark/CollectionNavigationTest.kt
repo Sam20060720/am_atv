@@ -7,6 +7,7 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -30,9 +31,10 @@ class CollectionNavigationTest {
     }
 
     @Test fun headerScrollsWithSongsAndMenuReturnsToTheSameSong() {
+        assumeTrue("Floating panel restoration belongs to the Apple interface", !ui.isClassic())
         ui.focusUi("collection-play")
         val cover = ui.id("collection-artwork").visibleBounds
-        ui.id("nav-menu")
+        ui.navigation()
         ui.id("collection-title")
         ui.down(0)
         ui.awaitFocused("collection-song-0")

@@ -142,6 +142,7 @@ class NavigationRaceProbeActivity : ComponentActivity() {
                                 LocalFocusTargetsEnabled provides (homeTarget == null)) {
                                 HomeScreen(if (scenario == "radio") Destination.Radio else Destination.Home, source,
                                     homeShelves = listOf(ContentShelf(shelfId, "Fixture shelf", homeItems,
+                                        hasMore = scenario == "home",
                                         seeAll = source.takeIf { scenario == "home-resource" })),
                                     connectionState = MusicConnectionState.SignedIn,
                                     onOpenInsights = { homeTarget = it.source.name },

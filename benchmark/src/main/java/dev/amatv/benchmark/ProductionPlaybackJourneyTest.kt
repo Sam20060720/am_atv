@@ -1252,10 +1252,10 @@ class ProductionPlaybackJourneyTest {
     private fun pressControl(id: String) {
         require(id in setOf("player-previous", "player-next", "player-lyrics", "player-queue"))
         wake(); node(id) { check(it.isEnabled) { "Production control is disabled: $id" } }
-        fun selected() = node(id) { it.isSelected || it.isChecked }
-        repeat(8) { if (!selected()) ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 30) }
-        repeat(8) { if (!selected()) ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 30) }
-        check(selected()) { "Remote could not select actual control $id" }
+        fun focused() = node(id) { it.isFocused }
+        repeat(8) { if (!focused()) ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 30) }
+        repeat(8) { if (!focused()) ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 30) }
+        check(focused()) { "Remote could not focus actual control $id" }
         check(ui.device.pressDPadCenter())
     }
 

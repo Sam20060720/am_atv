@@ -124,7 +124,7 @@ class TvNavigationTest {
         ui.id("collection-screen")
         assertFalse("The selected card must open its collection", ui.has("player-screen"))
         device.pressBack()
-        ui.id("nav-menu")
+        ui.navigation()
         assertFalse("A single Back must leave the collection", ui.has("collection-screen"))
         ui.awaitFocused(targetId)
         assertEquals("Back must restore the same Home row", targetRow, ui.focusedCardPosition().first)
@@ -132,7 +132,7 @@ class TvNavigationTest {
 
     @Test fun searchFieldCanAlwaysMoveDownToResults() {
         ui.browseTab("search")
-        ui.right(0)
+        ui.enterContent()
         ui.awaitFocused("search-field")
         assertTrue("Navigation Right must close the menu",
             device.wait(Until.gone(By.res("nav-panel")), 5_000L))
@@ -149,6 +149,7 @@ class TvNavigationTest {
     }
 
     @Test fun floatingNavigationSwitchesPagesAndRestoresContentFocus() {
+        assumeTrue("Floating navigation belongs to the Apple interface", !ui.isClassic())
         // Warm Browse through its public tab before testing the actual remote
         // selection. Catalog response latency is not the navigation oracle.
         ui.browseTab("browse")

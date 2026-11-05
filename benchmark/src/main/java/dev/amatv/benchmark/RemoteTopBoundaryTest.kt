@@ -93,11 +93,17 @@ class RemoteTopBoundaryTest {
             // press. The last begins while the 260ms top reveal is in flight.
             repeat(2) { ui.inject(KeyEvent.KEYCODE_DPAD_UP); SystemClock.sleep(20) }
             verifyContent("fast_fresh_up")
+            val classicHome = tab == "home" && ui.has("classic-navigation")
             ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 250)
-            ui.await("Normal Left could no longer open navigation", 3_000) {
-                ui.has("nav-panel") || "nav-menu" in ui.snapshot().focused
+            if (classicHome) {
+                verifyContent("classic_home_left_stop")
+                ui.key(KeyEvent.KEYCODE_DPAD_UP, 250)
             }
-            result.put("normal_left_navigation", true)
+            ui.await("The style's navigation boundary did not reach navigation", 3_000) {
+                ui.has("nav-panel") || "nav-menu" in ui.snapshot().focused ||
+                    ui.has("classic-navigation") && ui.snapshot().focused.any { it.startsWith("nav-") }
+            }
+            result.put("navigation_boundary", if (classicHome) "up" else "left")
             ui.firstShelf(tab)
             result.put("final", ui.snapshot().json()).put("status", "passed")
         } catch (error: Throwable) {

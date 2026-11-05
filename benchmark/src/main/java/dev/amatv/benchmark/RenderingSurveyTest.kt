@@ -131,12 +131,14 @@ class RenderingSurveyTest {
         }
         add(SurveyScene("home_square_horizontal") { horizontalShelf("home", square = true) })
         add(SurveyScene("sidebar_focus") {
+            if (ui.has("classic-navigation")) throw SurveyUnavailable("Floating sidebar scene requires the Apple interface")
             ui.firstShelf("home"); ui.openNavigation(); ui.focus("nav-home")
             SurveyPrepared("nav-panel", mixed(down to 3, up to 1), startFocus = Regex("nav-home"),
                 endFocus = Regex("nav-library"), endFocusStableMs = 400,
                 proof = JSONObject().put("journey", "home_down_three_up_one_to_library"))
         })
         add(SurveyScene("sidebar_open_close") {
+            if (ui.has("classic-navigation")) throw SurveyUnavailable("Floating sidebar scene requires the Apple interface")
             val source = ui.firstShelf("home"); ui.openNavigation(); ui.focus("nav-home")
             // Repeated Left slots allow the ordinary delayed menu entrance without idle waits.
             val input = List(4) { mixed(right to 1, left to 4) }.flatten() + keys(right, 1)
@@ -151,7 +153,8 @@ class RenderingSurveyTest {
             // Measure the page transition itself. Down events delivered while
             // the old sidebar is closing can change its selection instead of
             // entering the destination and would measure a different journey.
-            SurveyPrepared("nav-panel", listOf(SurveyInput(activation = activation, gapAfterMs = 600)),
+            SurveyPrepared(if (ui.has("classic-navigation")) "classic-navigation" else "nav-panel",
+                listOf(SurveyInput(activation = activation, gapAfterMs = 600)),
                 endContainer = ui.pageContainer(tab), absentAtEnd = "nav-panel")
         })
         add(SurveyScene("search_type_switch") {
@@ -321,6 +324,7 @@ class RenderingSurveyTest {
                     .put("identity", ui.artistSelectionProof).put("expected_search_result", sourceResult))
         })
         add(SurveyScene("artist_left_sidebar") {
+            if (ui.has("classic-navigation")) throw SurveyUnavailable("Floating sidebar scene requires the Apple interface")
             ui.openNewJeans()
             ui.focus("artist-topsongs-0-song")
             SurveyPrepared("artist-screen", keys(left, 1), endContainer = "nav-panel",
@@ -329,6 +333,7 @@ class RenderingSurveyTest {
                     .put("identity", ui.artistSelectionProof).put("start_card", "artist-topsongs-0-song"))
         })
         add(SurveyScene("sidebar_back_home_focus") {
+            if (ui.has("classic-navigation")) throw SurveyUnavailable("Floating sidebar scene requires the Apple interface")
             ui.firstShelf("home"); ui.openNavigation(); ui.focus("nav-library"); ui.settle(150)
             ui.await("Sidebar Back setup did not retain Library highlight", 4_000) {
                 "nav-library" in ui.snapshot().focused

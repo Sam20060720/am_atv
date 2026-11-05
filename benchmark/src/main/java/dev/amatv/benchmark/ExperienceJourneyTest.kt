@@ -425,7 +425,13 @@ class ExperienceJourneyTest {
 
     private fun center(id: String, virtual: Boolean = false) {
         requireOwnAppOrIme()
-        if (virtual) check(id in ui.snapshot().selected) else check(id in ui.snapshot().focused)
+        val owner = ui.snapshot()
+        if (virtual) {
+            check("player-screen" in owner.focused)
+            // Progress keeps its existing virtual selection; transport buttons
+            // expose cursor focus independently of their toggle selection.
+            if (id == "player-progress") check(id in owner.selected) else check(id in owner.focused)
+        } else check(id in owner.focused)
         check(id in setOf("search-field", "player-queue", "player-progress", "collection-play", "search-history-clear",
             "catalog-action-queue-remove", "catalog-action-queue-move-down") || id.matches(Regex("search-history-[0-9]+")))
         val down = SystemClock.uptimeMillis()

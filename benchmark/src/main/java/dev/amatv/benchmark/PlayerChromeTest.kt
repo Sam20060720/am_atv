@@ -85,6 +85,6 @@ class PlayerChromeTest {
         ui.id("player-controls")
         player.focusControl("player-play-pause")
         device.pressBack()
-        ui.id("nav-menu")
+        ui.navigation()
     }
 }

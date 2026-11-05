@@ -70,8 +70,16 @@ internal class TvUi(val device: UiDevice) {
     fun right(pause: Long = 120L) = key(KeyEvent.KEYCODE_DPAD_RIGHT, pause)
     fun center(pause: Long = 340L) = key(KeyEvent.KEYCODE_DPAD_CENTER, pause)
 
-    /** Opens the floating menu through its public accessibility click action. */
+    fun isClassic(): Boolean = has("classic-navigation")
+    fun navigation(): UiObject2 = requireObject(By.res(Pattern.compile("classic-navigation|nav-menu")))
+    fun enterContent(pause: Long = 0L) = key(
+        if (isClassic()) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_RIGHT, pause,
+    )
+
+    /** Opens the selected style's navigation through its public UI. */
     fun openNavigation() {
+        requireObject(By.res(Pattern.compile("classic-navigation|nav-menu|nav-panel")))
+        if (isClassic()) { id("classic-navigation"); return }
         if (!has("nav-panel")) {
             id("nav-menu")
             assertTrue("Navigation menu did not open",
@@ -80,7 +88,7 @@ internal class TvUi(val device: UiDevice) {
         id("nav-panel")
     }
 
-    /** Setup ends on the selected menu item; Right enters the retained content focus. */
+    /** Setup ends on the selected menu item; enterContent uses the style's actual key. */
     fun browseTab(tab: String) {
         repeat(5) {
             if (has("player-screen") || has("collection-screen")) {
@@ -97,7 +105,8 @@ internal class TvUi(val device: UiDevice) {
             performUiAction("nav-$tab", AccessibilityNodeInfo.ACTION_CLICK))
         val destinationId = if (tab == "nowplaying") "player-screen" else "browse-$tab"
         id(destinationId)
-        assertTrue("Selecting $tab must close the navigation menu",
+        if (isClassic()) id("classic-navigation") else assertTrue(
+            "Selecting $tab must close the navigation menu",
             device.wait(Until.gone(By.res("nav-panel")), 5_000L))
         if (tab == "nowplaying") {
             focusUi("player-screen")
@@ -107,7 +116,7 @@ internal class TvUi(val device: UiDevice) {
             // this also verifies that loading eventually grants content focus.
             requireObject(By.res(destinationId).hasDescendant(By.focused(true)))
             // Reopen only for setup so callers start their content journey with
-            // a real Right press, after the previous navigation has completed.
+            // the style's real entry key, after the previous navigation has completed.
             openNavigation()
             focusUi("nav-$tab")
         }
@@ -144,15 +153,14 @@ internal class TvUi(val device: UiDevice) {
         requireObject(By.res(Pattern.compile("shelf-$row-item-\\d+-[a-z]+")).focused(true), timeout)
 
     fun enterHomeFirstCard() {
-        // Setup only: a real tab round-trip disposes the old Home lazy state.
-        // This is faster and independent of how many personalized shelves exist;
-        // no process/data reset, synthetic coordinates or measured-key changes.
-        browseTab("browse")
+        // Confirming the current tab is the public root-to-top operation;
+        // Home's retained viewport deliberately survives an ordinary tab switch.
+        browseTab("home")
         browseTab("home")
         requireObject(By.res(Pattern.compile("home-shelves-count-\\d+")))
         assertTrue("Home needs at least one shelf", homeRowCount() > 0)
         requireObject(By.res(Pattern.compile("shelf-0-item-0-[a-z]+")))
-        right(0)
+        enterContent()
         awaitCardPosition(0, 0)
         assertEquals(0 to 0, focusedCardPosition())
     }

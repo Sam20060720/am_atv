@@ -46,14 +46,16 @@ class HomeProgressiveFocusTest {
             ui.await("Cold app must arrive in foreground", 15_000L) { ui.foreground() == TARGET }
             check(!ui.has("phone-sign-in-dialog")) { "Home regression must not enter an account flow" }
             if (!ui.has("browse-home")) {
-                if (!ui.has("nav-panel")) ui.activate("nav-menu", "navigation")
+                ui.openNavigation()
                 ui.awaitId("nav-home", 3_000L)
                 ui.activate("nav-home", "navigation")
                 ui.awaitGone("nav-panel")
             }
-            // Real Right entry while loading; never focus a chosen card.
-            if (ui.has("nav-panel") || "nav-menu" in ui.snapshot().focused)
-                ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 0L)
+            // Real style-specific entry while loading; never focus a chosen card.
+            val initial = ui.snapshot()
+            if (ui.has("nav-panel") || "nav-menu" in initial.focused ||
+                ui.has("classic-navigation") && initial.focused.any { it.startsWith("nav-") })
+                ui.key(if (ui.has("classic-navigation")) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_RIGHT, 0L)
             ui.await("First Home fixture card must arrive", 20_000L) {
                 ui.requireForeground()
                 ui.has("browse-home") && ui.hasPattern(Regex("shelf-0-item-0-[a-z]+"))

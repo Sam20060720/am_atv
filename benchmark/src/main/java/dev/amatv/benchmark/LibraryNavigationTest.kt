@@ -30,7 +30,7 @@ class LibraryNavigationTest {
         val intent = instrumentation.context.packageManager.getLaunchIntentForPackage(TARGET)!!
         instrumentation.context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         ui.browseTab("library")
-        ui.right(0)
+        ui.enterContent()
         ui.id("library-browser")
     }
 

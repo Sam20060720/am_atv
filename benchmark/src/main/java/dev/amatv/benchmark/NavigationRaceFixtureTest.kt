@@ -33,21 +33,14 @@ class NavigationRaceFixtureTest {
             ui.focus(card)
             ui.inject(KeyEvent.KEYCODE_DPAD_UP)
             ui.await("Card Up did not enter its Show All header", 3_000L) { all in ui.snapshot().focused }
-            ui.inject(KeyEvent.KEYCODE_DPAD_RIGHT)
-            ui.await("Show All Right did not reach Replay", 3_000L) { replay in ui.snapshot().focused }
-            activateHeader(ui, replay)
-            ui.await("Replay header did not deliver its real callback", 3_000L) { ui.label("fixture-home-target") == "Replay" }
-            ui.inject(KeyEvent.KEYCODE_BACK)
-            ui.await("Back did not restore the same Replay header", 3_000L) { replay in ui.snapshot().focused }
-            ui.inject(KeyEvent.KEYCODE_DPAD_DOWN)
-            ui.await("Header Down did not return to the same source card", 3_000L) { card in ui.snapshot().focused }
-            ui.inject(KeyEvent.KEYCODE_DPAD_UP)
-            ui.await("Card Up did not return to its first header action", 3_000L) { all in ui.snapshot().focused }
+            check(!ui.has(replay)) { "Hidden Replay must not be restored by a fixture" }
             activateHeader(ui, all)
             ui.await("Show All did not deliver RecentTracks", 3_000L) { ui.label("fixture-home-target") == "RecentTracks" }
             ui.inject(KeyEvent.KEYCODE_BACK)
             ui.await("Show All Back did not restore that same entry", 3_000L) { all in ui.snapshot().focused }
-            report.put("real_callback_sources", JSONArray(listOf("Replay", "RecentTracks")))
+            ui.inject(KeyEvent.KEYCODE_DPAD_DOWN)
+            ui.await("Header Down did not return to its source card", 3_000L) { card in ui.snapshot().focused }
+            report.put("real_callback_sources", JSONArray(listOf("RecentTracks")))
         }
         for ((scenario, heading, target) in listOf(
             Triple("home-resource", "home-shelf-fixture-public-see-all", "Resource"),

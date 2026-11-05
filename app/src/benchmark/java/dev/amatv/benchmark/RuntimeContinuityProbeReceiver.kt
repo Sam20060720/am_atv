@@ -29,7 +29,11 @@ class RuntimeContinuityProbeReceiver : BroadcastReceiver() {
         if (Build.HARDWARE !in setOf("ranchu", "goldfish") && !intent.getBooleanExtra("allow_physical", false)) return
         val run = intent.getStringExtra("run_id")?.takeIf { it.matches(Regex("[A-Za-z0-9_.-]+")) } ?: return
         val app = context.applicationContext as AmAtvApplication
-        val out = File(app.getExternalFilesDir(null), "runtime-probe/$run/result.json")
+        val invocation = intent.getStringExtra("invocation_id")
+        if (invocation != null && !invocation.matches(Regex("[A-Za-z0-9_.-]+"))) return
+        // A test reusing its run label still gets a distinct result for this invocation.
+        val resultDirectory = if (invocation == null) "runtime-probe/$run" else "runtime-probe/$run/$invocation"
+        val out = File(app.getExternalFilesDir(null), "$resultDirectory/result.json")
         if (intent.getBooleanExtra("parser_stress", false)) {
             if (out.exists()) return
             out.parentFile?.mkdirs()
@@ -143,7 +147,7 @@ class RuntimeContinuityProbeReceiver : BroadcastReceiver() {
             return
         }
         if (owner == null || before?.isPlaying != true) {
-            out.writeText(JSONObject().put("status", "unavailable").put("reason", "Existing real playback required").toString())
+            out.writeText(JSONObject().put("invocation_id", invocation).put("status", "unavailable").put("reason", "Existing real playback required").toString())
             return
         }
         val started = SystemClock.elapsedRealtime()
@@ -164,7 +168,8 @@ class RuntimeContinuityProbeReceiver : BroadcastReceiver() {
             val sameQueue = afterOwner?.queue?.state?.value?.sessionEntries?.map { it.entryId } == ids
             val playing = after?.isPlaying == true && afterOwner?.desiredPlay?.value == true
             val advanced = after != null && after.positionMs > before.positionMs
-            out.writeText(JSONObject().put("status", if (reason == null && sameOwner && sameEntry && sameQueue && playing && advanced) "passed" else "failed")
+            out.writeText(JSONObject().put("invocation_id", invocation).put("recreation_issued", issued)
+                .put("status", if (reason == null && issued && sameOwner && sameEntry && sameQueue && playing && advanced) "passed" else "failed")
                 .put("reason", reason).put("same_owner", sameOwner).put("same_current_occurrence", sameEntry)
                 .put("same_queue", sameQueue).put("playing_after_recreate", playing).put("position_advanced", advanced)
                 .put("before_position_ms", before.positionMs).put("after_position_ms", after?.positionMs)

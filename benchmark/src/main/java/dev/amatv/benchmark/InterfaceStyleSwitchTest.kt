@@ -75,7 +75,7 @@ class InterfaceStyleSwitchTest {
                 if (ui.has("player-lyrics-display")) {
                     val state = ui.snapshot()
                     val controls = state.nodes.filter { PLAYER_CONTROL.matches(it.id) && it.clickable }.map { it.id }.distinct()
-                    val from = controls.indexOfFirst { it in state.selected }
+                    val from = controls.indexOfFirst { it in state.focused }
                     val to = controls.indexOf("player-lyrics-display")
                     check(from >= 0 && to >= 0)
                     repeat(kotlin.math.abs(to - from)) { ui.key(
@@ -98,7 +98,7 @@ class InterfaceStyleSwitchTest {
                     ui.key(KeyEvent.KEYCODE_BACK, 0); ui.awaitGone("lyrics-display-menu")
                     ui.await("Lyrics menu Back did not restore its virtual player control", 3_000) {
                         val restored = ui.snapshot()
-                        "player-screen" in restored.focused && "player-lyrics-display" in restored.selected
+                        "player-screen" in restored.focused && "player-lyrics-display" in restored.focused
                     }
                 } else cases.put(JSONObject().put("case", "lyrics-menu").put("status", "skipped")
                     .put("reason", "Existing track exposes no actual Lyrics Display control"))
@@ -131,7 +131,7 @@ class InterfaceStyleSwitchTest {
         check(id in setOf("player-lyrics-display", "lyrics-menu-translation"))
         ui.await("Allowed menu source does not own Center: $id", 2_000) {
             val state = ui.snapshot()
-            if (virtual) "player-screen" in state.focused && id in state.selected else id in state.focused
+            if (virtual) "player-screen" in state.focused && id in state.focused else id in state.focused
         }
         val down = SystemClock.uptimeMillis()
         for (action in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) check(instrumentation.uiAutomation.injectInputEvent(
@@ -453,13 +453,13 @@ class InterfaceStyleSwitchTest {
                 revealPlayerControls(ui)
                 val controls = ui.snapshot()
                 val ids = controls.nodes.filter { PLAYER_CONTROL.matches(it.id) && it.clickable }.map { it.id }.distinct()
-                val from = ids.indexOfFirst { it in controls.selected }
+                val from = ids.indexOfFirst { it in controls.focused }
                 val to = ids.indexOf("player-queue")
                 check(from >= 0 && to >= 0) { "Player has no proven control selection/queue action" }
                 repeat(kotlin.math.abs(to - from)) {
                     ui.key(if (to > from) KeyEvent.KEYCODE_DPAD_RIGHT else KeyEvent.KEYCODE_DPAD_LEFT, 55)
                 }
-                ui.await("Queue view does not own activation", 1_500) { "player-queue" in ui.snapshot().selected }
+                ui.await("Queue view does not own activation", 1_500) { "player-queue" in ui.snapshot().focused }
                 // The only player activation allowed by this test is opening its queue view.
                 val down = SystemClock.uptimeMillis()
                 fun center(action: Int) = KeyEvent(down, SystemClock.uptimeMillis(), action, KeyEvent.KEYCODE_DPAD_CENTER,
@@ -521,7 +521,7 @@ class InterfaceStyleSwitchTest {
         check(ui.has("player-screen") && !ui.has("player-controls") && !ui.has("queue-panel"))
         ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 320) // Hidden controls consume this key without activating transport.
         ui.await("Player controls have no virtual focus", 2_000) {
-            "player-screen" in ui.snapshot().focused && ui.snapshot().selected.any(PLAYER_CONTROL::matches)
+            "player-screen" in ui.snapshot().focused && ui.snapshot().focused.any(PLAYER_CONTROL::matches)
         }
     }
 

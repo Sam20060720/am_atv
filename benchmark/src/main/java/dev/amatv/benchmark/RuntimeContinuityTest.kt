@@ -11,6 +11,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.UUID
 
 @RunWith(AndroidJUnit4::class)
 class RuntimeContinuityTest {
@@ -22,9 +23,10 @@ class RuntimeContinuityTest {
         val run = checkNotNull(args.getString("run_id")); require(run.matches(Regex("[A-Za-z0-9_.-]+")))
         val inst = InstrumentationRegistry.getInstrumentation()
         val device = UiDevice.getInstance(inst)
-        val remote = "/sdcard/Android/data/dev.amatv/files/runtime-probe/$run/result.json"
+        val invocation = UUID.randomUUID().toString()
+        val remote = "/sdcard/Android/data/dev.amatv/files/runtime-probe/$run/$invocation/result.json"
         device.pressHome()
-        device.executeShellCommand("am broadcast -n dev.amatv/dev.amatv.benchmark.RuntimeContinuityProbeReceiver --es run_id $run --ez allow_physical ${expected != null}")
+        device.executeShellCommand("am broadcast -n dev.amatv/dev.amatv.benchmark.RuntimeContinuityProbeReceiver --es run_id $run --es invocation_id $invocation --ez allow_physical ${expected != null}")
         val launch = checkNotNull(inst.context.packageManager.getLaunchIntentForPackage(TARGET))
         inst.context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         val deadline = SystemClock.uptimeMillis() + 20_000
@@ -35,6 +37,7 @@ class RuntimeContinuityTest {
             if (report == null) SystemClock.sleep(200)
         }
         val result = checkNotNull(report) { "Runtime continuity probe did not produce a report" }
+        assertEquals(result.toString(2), invocation, result.getString("invocation_id"))
         assertEquals(result.toString(2), "passed", result.getString("status"))
     }
 }

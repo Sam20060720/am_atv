@@ -354,15 +354,16 @@ class PhysicalLyricsFrameTest {
     private fun activateToggle(ui: RenderingSurveyUi, id: String) {
         check(id in setOf("player-lyrics", "player-queue"))
         wake(ui)
-        // Player chrome uses its production virtual cursor, not Android focus.
-        repeat(8) { if (!selected(ui, id)) ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 35) }
-        repeat(8) { if (!selected(ui, id)) ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 35) }
-        check(selected(ui, id)) { "Cannot select production control $id" }
-        node(ui, id) { check(it.isEnabled && it.isVisibleToUser && (it.isSelected || it.isChecked)) }
+        // Player chrome exposes its virtual cursor through focus semantics;
+        // selected remains the toggle's actual state.
+        repeat(8) { if (!controlFocused(ui, id)) ui.key(KeyEvent.KEYCODE_DPAD_LEFT, 35) }
+        repeat(8) { if (!controlFocused(ui, id)) ui.key(KeyEvent.KEYCODE_DPAD_RIGHT, 35) }
+        check(controlFocused(ui, id)) { "Cannot focus production control $id" }
+        node(ui, id) { check(it.isEnabled && it.isVisibleToUser && it.isFocused) }
         check(ui.device.pressDPadCenter())
     }
 
-    private fun selected(ui: RenderingSurveyUi, id: String): Boolean = node(ui, id) { it.isSelected || it.isChecked }
+    private fun controlFocused(ui: RenderingSurveyUi, id: String): Boolean = node(ui, id) { it.isFocused }
 
     private fun <T> node(ui: RenderingSurveyUi, id: String, action: (AccessibilityNodeInfo) -> T): T {
         ui.requireForeground()

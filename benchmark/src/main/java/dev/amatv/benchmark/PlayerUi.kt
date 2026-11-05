@@ -53,10 +53,10 @@ internal class PlayerUi(private val ui: TvUi) {
         if (!ui.has("player-controls")) { ui.right(350) }
         ui.id("player-controls")
     }
-    private fun isSelected(id: String): Boolean {
+    private fun isControlFocused(id: String): Boolean {
         val node = ui.device.findObject(By.res(id)) ?: return false
-        // Compose exposes Selected as checked for non-tab controls.
-        return node.isSelected || node.isChecked
+        // The virtual cursor has its own focus semantics; selected is toggle state.
+        return node.isFocused && ui.device.findObject(By.res("player-screen"))?.isFocused == true
     }
 
     fun focusControl(id: String) {
@@ -64,12 +64,12 @@ internal class PlayerUi(private val ui: TvUi) {
         // This helper is used from the controls zone; a freshly opened player
         // starts there and a hidden player returns there on its first key.
         repeat(7) {
-            if (!isSelected(id)) ui.left(55)
+            if (!isControlFocused(id)) ui.left(55)
         }
         repeat(7) {
-            if (!isSelected(id)) ui.right(80)
+            if (!isControlFocused(id)) ui.right(80)
         }
-        assertTrue("Lost virtual player focus: $id", isSelected(id))
+        assertTrue("Lost virtual player focus: $id", isControlFocused(id))
     }
     fun play() {
         focusControl("player-play-pause")

@@ -188,7 +188,8 @@ internal class RenderingSurveyUi(private val instrumentation: Instrumentation) {
         var stableSince = 0L
         while (SystemClock.uptimeMillis() < deadline) {
             requireForeground()
-            if (browseContentTarget && has("nav-panel")) {
+            if (browseContentTarget && (has("nav-panel") ||
+                    has("classic-navigation") && snapshot().focused.any { it.startsWith("nav-") })) {
                 enterBrowseContentForSetup()
                 stableSince = 0L
             }
@@ -210,19 +211,21 @@ internal class RenderingSurveyUi(private val instrumentation: Instrumentation) {
         throw SurveyUnavailable("Cannot establish exact focus " + id)
     }
 
-    /** Setup only: Right is the app's public sidebar/pill-to-content operation. */
+    /** Setup only: use the selected style's public navigation-to-content key. */
     private fun enterBrowseContentForSetup() {
         requireForeground()
         repeat(3) {
             val state = snapshot()
             val panel = "nav-panel" in state.ids
             val pill = "nav-menu" in state.focused
-            if (!panel && !pill) return
+            val classic = "classic-navigation" in state.ids && state.focused.any { it.startsWith("nav-") }
+            if (!panel && !pill && !classic) return
             if (panel && state.focused.none { it.startsWith("nav-") }) focus("nav-home")
             setupOwnerRecoveries.put(JSONObject().put("at_ns", System.nanoTime())
-                .put("owner", if (panel) "nav-panel" else "nav-menu")
-                .put("focus", JSONArray(state.focused)).put("action", "DPAD_RIGHT_ENTER_CONTENT"))
-            key(KeyEvent.KEYCODE_DPAD_RIGHT, 0)
+                .put("owner", if (classic) "classic-navigation" else if (panel) "nav-panel" else "nav-menu")
+                .put("focus", JSONArray(state.focused))
+                .put("action", if (classic) "DPAD_DOWN_ENTER_CONTENT" else "DPAD_RIGHT_ENTER_CONTENT"))
+            key(if (classic) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_RIGHT, 0)
             awaitGone("nav-panel")
             await("Sidebar did not hand off to real browse content", 8_000) {
                 val current = snapshot()
@@ -231,7 +234,8 @@ internal class RenderingSurveyUi(private val instrumentation: Instrumentation) {
             settle(300)
         }
         val end = snapshot()
-        if ("nav-panel" in end.ids || "nav-menu" in end.focused)
+        if ("nav-panel" in end.ids || "nav-menu" in end.focused ||
+            "classic-navigation" in end.ids && end.focused.any { it.startsWith("nav-") })
             throw SurveyUnavailable("Browse content owner repeatedly returned to navigation during setup")
     }
 
@@ -443,12 +447,12 @@ internal class RenderingSurveyUi(private val instrumentation: Instrumentation) {
     }
     fun openNavigation() {
         requireForeground()
-        await("Navigation owner unavailable", 8_000) { has("nav-panel") || has("nav-menu") }
+        await("Navigation owner unavailable", 8_000) { has("classic-navigation") || has("nav-panel") || has("nav-menu") }
         fun interactivePanel(): Boolean = findNode { normalizedId(it) == "nav-home" &&
             it.isEnabled && it.isClickable }?.let { it.recycle(); true } == true
         // Closing contents remain mounted for their spring, with input already
         // disabled. Their presence alone does not mean the drawer is open.
-        if (!interactivePanel()) activate("nav-menu", "navigation")
+        if (!has("classic-navigation") && !interactivePanel()) activate("nav-menu", "navigation")
         await("Navigation panel did not become interactive", 8_000) { interactivePanel() }
     }
 
@@ -1168,9 +1172,9 @@ internal class RenderingSurveyUi(private val instrumentation: Instrumentation) {
         var obsoleteFocusNodes = 0
         fun visit(node: AccessibilityNodeInfo, path: String, ancestorId: String) {
             try {
-                // Virtual player controls own selection while their parent owns
-                // native focus. Refresh their IDs too: cached selected flags can
-                // otherwise combine a previous scrubber with the new control.
+                // Refresh virtual control focus and queue/progress selection
+                // alongside native focus so an old accessibility snapshot cannot
+                // combine the previous scrubber with the current control.
                 val focusNode = node.isFocusable || node.isFocused
                 if (focusNode || normalizedId(node).isNotBlank() || node.isSelected || node.isChecked) {
                     if (!node.refresh()) { if (focusNode) obsoleteFocusNodes++; return }
