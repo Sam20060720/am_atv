@@ -76,6 +76,7 @@ class MusicServices(context: Context) : RecommendationProvider {
     val contentCache = ContentCache.get(appContext)
     val artworkMotionPreferences = ArtworkMotionPreferences.get(appContext)
     val libraryAdditionPreferences = LibraryAdditionPreferences(appContext)
+    val playlistOrderPreferences = PlaylistOrderPreferences(appContext)
     private val tokenStore = SecureTokenStore(appContext)
     private val webAuthenticationSession = WebAuthenticationSession(appContext)
     private val developerTokens = DeveloperTokenClient(
@@ -486,8 +487,16 @@ class MusicServices(context: Context) : RecommendationProvider {
         api.createContinuousStation(songId)
     override suspend fun amStationNextTracks(stationId: String): List<Track> =
         api.stationNextTracks(stationId)
-    suspend fun collectionTracks(collection: Track): List<Track> = api.collectionTracks(collection)
-    suspend fun collectionTracksPage(collection: Track, nextPage: String? = null): LibraryPage = api.collectionTracksPage(collection, nextPage)
+    /** Mutation/copy callers keep Apple's source order, independently of display preferences. */
+    suspend fun collectionTracks(collection: Track): List<Track> =
+        api.withCurrentAuthorization { api.collectionTracks(collection) }
+
+    suspend fun collectionPlaybackTracks(collection: Track): List<Track> {
+        val reverse = collection.catalogKind == dev.amatv.model.CatalogKind.Playlist && playlistOrderPreferences.reversed.value
+        return collectionTracks(collection).let { if (reverse) it.asReversed() else it }
+    }
+    suspend fun collectionTracksPage(collection: Track, nextPage: String? = null): LibraryPage =
+        api.collectionTracksPage(collection, nextPage, reversePlaylist = playlistOrderPreferences.reversed.value)
     internal suspend fun sampleCollectionShuffleSong(collection: Track, total: Int): CollectionShuffleSample? =
         api.sampleCollectionShuffleSong(collection, total)
 

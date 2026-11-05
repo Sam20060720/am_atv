@@ -16,7 +16,8 @@ internal class BrowseTabSession(scope: CoroutineScope, services: MusicServices, 
     val details = DetailBrowser(scope, services::collectionTracksPage, { services.relatedArtistsPage(it) }, services::artistProfile,
         { artist, section, next -> services.artistSectionPage(artist, section, next).let { it.copy(items = capabilities.filterTracks(it.items)) } },
         services::resourceProfile, { ref, section, next -> services.resourceSectionPage(ref, section, next).let { it.copy(items = capabilities.filterTracks(it.items)) } },
-        services::editorialArtwork, loadShuffleSample = services::sampleCollectionShuffleSong)
+        services::editorialArtwork, loadShuffleSample = services::sampleCollectionShuffleSong,
+        playlistOrder = { services.playlistOrderPreferences.reversed.value })
     val search = SearchBrowser(scope, { query, type, next, library ->
         (if (library) services.librarySearchPage(query, type, next) else services.searchPage(query, type, next))
             .let { it.copy(items = capabilities.filterTracks(it.items)) }

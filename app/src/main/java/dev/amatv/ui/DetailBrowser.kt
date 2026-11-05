@@ -38,6 +38,7 @@ internal class DetailBrowser(
     private val loadResourceSection: suspend (CatalogResourceRef, CatalogResourceSection, String?) -> CatalogResourcePage,
     private val enrichArtwork: (suspend (Track) -> Track)? = null,
     private val loadShuffleSample: (suspend (Track, Int) -> CollectionShuffleSample?)? = null,
+    private val playlistOrder: () -> Boolean = { false },
 ) {
     private var sequence = 0L
     private var visible = true
@@ -60,7 +61,7 @@ internal class DetailBrowser(
             val collection = CollectionBrowser(scope, loadCollection, { loadRelatedArtists(it).items }, { source ->
                 val metadata = CatalogResourceRef.fromTrack(source)?.let { loadResourceProfile(it).item }
                 enrichArtwork?.invoke(metadata ?: source) ?: metadata
-            }, loadShuffleSample)
+            }, loadShuffleSample, playlistOrder)
             collection.setVisible(visible)
             collection.open(track)
             DetailVisit(++sequence, track, collection = collection, returnToPlayer = returnToPlayer)

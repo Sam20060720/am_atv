@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="playlist_order_title">Playlists</string>
+    <string name="playlist_order_hint">Show and play playlists from the last song to the first. Albums keep their original order.</string>
+    <string name="playlist_order_reverse">Reverse playlist order</string>
+</resources>

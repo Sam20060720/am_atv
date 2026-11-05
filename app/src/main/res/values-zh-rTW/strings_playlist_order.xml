@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="playlist_order_title">播放列表</string>
+    <string name="playlist_order_hint">從最後一首往前顯示並播放，專輯維持原順序。</string>
+    <string name="playlist_order_reverse">反轉播放列表順序</string>
+</resources>

@@ -2447,6 +2447,7 @@ fun AmAtvApp() {
                                 onFocusRestoreFailed = finishStyleFocusRequest)
                             ArtworkMotionSettings(artworkMotionEnabled, services.artworkMotionPreferences::setEnabled, navigationFocus)
                             LibraryAdditionSettings(services.libraryAdditionPreferences, navigationFocus)
+                            PlaylistOrderSettings(services.playlistOrderPreferences, navigationFocus)
                             LanguageSettings(navigationFocus)
                             ContentCacheSettings(services.contentCache, navigationFocus)
                         },
@@ -2667,7 +2668,7 @@ fun AmAtvApp() {
                         },
                         onQueue = if (queueState.current != null && item.catalogKind in setOf(
                                 CatalogKind.Song, CatalogKind.Album, CatalogKind.Playlist)) { playNext ->
-                            val entries = if (item.openAction == CatalogOpenAction.Collection) services.collectionTracks(item) else listOf(item)
+                            val entries = if (item.openAction == CatalogOpenAction.Collection) services.collectionPlaybackTracks(item) else listOf(item)
                             kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             check(queueController.state.value.sessionId == enqueueSession)
                             check(if (playNext) queueController.enqueueNext(entries) else queueController.enqueueLast(entries))

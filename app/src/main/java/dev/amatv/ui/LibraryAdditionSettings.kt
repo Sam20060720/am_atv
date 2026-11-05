@@ -27,15 +27,15 @@ internal fun LibraryAdditionSettings(preferences: LibraryAdditionPreferences, na
     Spacer(Modifier.height(18.dp))
     Text(stringResource(R.string.library_addition_title), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
     Spacer(Modifier.height(8.dp))
-    LibraryAdditionToggle(stringResource(R.string.library_addition_playlists), settings.addPlaylistSongs,
+    SettingsBooleanToggle(stringResource(R.string.library_addition_playlists), settings.addPlaylistSongs,
         { preferences.setAddPlaylistSongs(!settings.addPlaylistSongs) }, navigationFocus, "settings-library-playlists")
     Spacer(Modifier.height(8.dp))
-    LibraryAdditionToggle(stringResource(R.string.library_addition_favorites), settings.addFavoriteItems,
+    SettingsBooleanToggle(stringResource(R.string.library_addition_favorites), settings.addFavoriteItems,
         { preferences.setAddFavoriteItems(!settings.addFavoriteItems) }, navigationFocus, "settings-library-favorites")
 }
 
 @Composable
-private fun LibraryAdditionToggle(label: String, enabled: Boolean, onClick: () -> Unit,
+internal fun SettingsBooleanToggle(label: String, enabled: Boolean, onClick: () -> Unit,
     navigationFocus: FocusRequester, id: String) {
     val state = stringResource(if (enabled) R.string.library_addition_on else R.string.library_addition_off)
     FocusSurface(onClick = onClick,

@@ -4,6 +4,7 @@ import dev.amatv.R
 import dev.amatv.integration.CatalogFailureReason
 import dev.amatv.integration.LibraryPage
 import dev.amatv.integration.CollectionShuffleSample
+import dev.amatv.integration.ReversePlaylistCursor
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.CatalogOpenAction
 import dev.amatv.model.CatalogResourceRef
@@ -46,6 +47,7 @@ internal class CollectionBrowser(
     private val loadArtists: (suspend (Track) -> List<Track>)? = null,
     private val loadMetadata: (suspend (Track) -> Track?)? = null,
     private val loadShuffleSample: (suspend (Track, Int) -> CollectionShuffleSample?)? = null,
+    private val playlistOrder: () -> Boolean = { false },
 ) {
     private data class Preparation(
         val visit: Long,
@@ -71,6 +73,7 @@ internal class CollectionBrowser(
     private var rawCount = 0
     private var rawPositionsValid = true
     private val songRawIndices = mutableListOf<Int>()
+    private var reversedPlaylist = false
 
     fun open(collection: Track) {
         require(collection.openAction == CatalogOpenAction.Collection)
@@ -80,6 +83,7 @@ internal class CollectionBrowser(
         rawCount = 0; rawPositionsValid = true; songRawIndices.clear()
         artistsLoaded = false
         metadataLoaded = false
+        reversedPlaylist = collection.catalogKind == CatalogKind.Playlist && playlistOrder()
         mutableState.value = CollectionBrowserState(collection)
         if (visible) { requestPage(); requestArtists(); requestMetadata() }
     }
@@ -142,11 +146,17 @@ internal class CollectionBrowser(
         val intent = preparation ?: return
         val visit = generation
         val request = ++requestGeneration
+        val reverseCursor = ReversePlaylistCursor.parse(mutableState.value.next)
         val samplingJob = scope.launch(start = CoroutineStart.LAZY) {
             var ready: CollectionPlaybackRequest? = null
             var fallback = false
             try {
-                val sample = sampler(collection, total)
+                val sample = sampler(collection, total)?.let { sampled ->
+                    if (reverseCursor == null) sampled else {
+                        check(sampled.total == reverseCursor.total) { "Playlist changed during shuffle preparation" }
+                        sampled.copy(rawIndex = sampled.total - 1 - sampled.rawIndex, firstPage = reverseCursor.firstPage)
+                    }
+                }
                 currentCoroutineContext().ensureActive()
                 if (visit != generation || request != requestGeneration || !visible) return@launch
                 if (sample == null || sample.track == null) {
@@ -202,6 +212,12 @@ internal class CollectionBrowser(
     }
 
     fun setVisible(value: Boolean) {
+        val collection = mutableState.value.collection
+        if (value && collection?.catalogKind == CatalogKind.Playlist && reversedPlaylist != playlistOrder()) {
+            visible = true
+            open(collection)
+            return
+        }
         if (visible == value) return
         visible = value
         if (!value) cancelRequests()

@@ -33,6 +33,11 @@ internal data class CollectionRequest(
         return "$endpoint?offset=$rawIndex&limit=1" + if (includeCatalog) "&include=catalog" else ""
     }
 
+    fun range(offset: Int, limit: Int): String {
+        require(offset >= 0 && limit > 0 && (pageSize == null || limit <= pageSize))
+        return "$endpoint?offset=$offset&limit=$limit" + if (includeCatalog) "&include=catalog" else ""
+    }
+
     fun nextPage(href: String, retainPageSize: Boolean): String {
         val uri = URI("https://api.music.apple.com").resolve(href)
         check(uri.scheme == "https" && uri.host == "api.music.apple.com" &&

@@ -713,8 +713,10 @@ class AppleMusicApi(
         collectionTracks(collection) { path, needsUserToken -> requestRoot(path, needsUserToken) }
 
     /** A relationship page preserves occurrences: repeated playlist songs are intentional. */
-    suspend fun collectionTracksPage(collection: Track, nextPage: String? = null): LibraryPage =
-        collectionTracksPage(collection, nextPage) { path, needsUserToken -> requestRoot(path, needsUserToken) }
+    suspend fun collectionTracksPage(collection: Track, nextPage: String? = null, reversePlaylist: Boolean = false): LibraryPage =
+        withCurrentAuthorization {
+            collectionTracksPage(collection, nextPage, reversePlaylist) { path, needsUserToken -> requestRoot(path, needsUserToken) }
+        }
 
     internal suspend fun sampleCollectionShuffleSong(collection: Track, total: Int): CollectionShuffleSample? =
         sampleCollectionShuffleSong(collection, total, { path, user -> requestRoot(path, user) })
@@ -746,7 +748,22 @@ class AppleMusicApi(
         collection: Track,
         nextPage: String? = null,
         fetchPage: suspend (String, Boolean) -> JSONObject,
-    ): LibraryPage = collectionTracksPage(collection.collectionRequest(effectiveStorefront()), nextPage, fetchPage)
+    ): LibraryPage = collectionTracksPage(collection, nextPage, false, fetchPage)
+
+    internal suspend fun collectionTracksPage(
+        collection: Track,
+        nextPage: String?,
+        reversePlaylist: Boolean,
+        fetchPage: suspend (String, Boolean) -> JSONObject,
+    ): LibraryPage {
+        val request = collection.collectionRequest(effectiveStorefront())
+        val reverseCursor = ReversePlaylistCursor.parse(nextPage)
+        if (reverseCursor != null || nextPage == null && reversePlaylist && collection.catalogKind == CatalogKind.Playlist) {
+            require(collection.catalogKind == CatalogKind.Playlist)
+            return reversePlaylistPage(request, nextPage) { path -> collectionTracksPage(request, path, fetchPage) }
+        }
+        return collectionTracksPage(request, nextPage, fetchPage)
+    }
 
     private suspend fun collectionTracksPage(
         request: CollectionRequest,
