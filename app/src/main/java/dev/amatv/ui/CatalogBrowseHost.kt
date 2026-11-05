@@ -357,7 +357,7 @@ internal fun BrowseShell(
         resetRootStarted = false
         resetRootPending = false
     }
-    fun enterNavigation() {
+    fun enterNavigation(expand: Boolean = true) {
         if (switchingTab || !isBrowseVisible || isContextMenuOpen() || !upBoundary.allowsMenuFocus()) return
         // A content edge is an explicit ownership handoff, not a geometric
         // search that can race an old card-restoration coroutine.
@@ -367,7 +367,8 @@ internal fun BrowseShell(
         enterContentAfterNavigation = false
         resetRootStarted = false
         resetRootPending = false
-        navigationExpanded = true
+        navigationExpanded = expand
+        if (!expand) runCatching { menuRequester.requestFocus() }
     }
     fun handleRootBack() {
         modalReturnPending = false
@@ -446,7 +447,9 @@ internal fun BrowseShell(
     BackHandler(enabled = isBrowseVisible && !switchingTab && detail != null && !navigationExpanded && !contextMenuVisible) {
         if (isContextMenuOpen()) onDismissPendingContextMenu() else closeDetail()
     }
-    LaunchedEffect(destination, tab, currentContentHasFocus, isBrowseVisible, detail?.key, collectionState.loading, collectionState.error, returnToContent, auxiliaryPage, contextMenuVisible, modalExitToken, switchingTab, windowFocused, interfaceStyle, interfaceStyleFocusPending) {
+    // Losing content focus can mean the collapsed pill legitimately took over.
+    // It must not trigger re-entry during the pill's existing expansion dwell.
+    LaunchedEffect(destination, tab, isBrowseVisible, detail?.key, collectionState.loading, collectionState.error, returnToContent, auxiliaryPage, contextMenuVisible, modalExitToken, switchingTab, windowFocused, interfaceStyle, interfaceStyleFocusPending) {
         if (!isBrowseVisible || !windowFocused || contextMenuVisible || switchingTab || resetRootPending ||
             settingsFocusPending || observedInterfaceStyle != interfaceStyle) return@LaunchedEffect
         val entry = when {
@@ -713,7 +716,11 @@ internal fun BrowseShell(
                             },
                             firstContentFocusRequester = firstContentFocus,
                             navigationFocusRequester = menuRequester,
-                            onRequestNavigation = ::enterNavigation,
+                            onRequestNavigation = {
+                                // Apple enters its pill first; its existing dwell
+                                // opens the panel. Classic enters the top bar.
+                                enterNavigation(expand = classicInterface)
+                            },
                             modifier = Modifier.fillMaxSize(),
                         )
                     }
