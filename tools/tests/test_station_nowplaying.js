@@ -20,12 +20,16 @@ const music = {nowPlayingItem:station, playbackState:2, currentPlaybackDuration:
 const context = {console, AbortController, document:{addEventListener:(name, callback)=>{handlers[name]=callback;}},
   bridge:{report:raw=>reports.push(JSON.parse(raw))},
   window:{setTimeout:()=>1,clearTimeout:()=>{},setInterval:()=>1},
-  MusicKit:{PlaybackStates:{playing:2,stopped:4,loading:1,waiting:6,stalled:7,seeking:8,completed:9},
+  MusicKit:{PlaybackStates:{none:0,playing:2,paused:3,stopped:4,ended:5,loading:1,waiting:6,stalled:7,seeking:8,completed:9},
     configure:configuration=>{assert.equal(configuration.storefrontId,'tw');return Promise.resolve(music);},
     formatArtworkURL:a=>a.url.replace('{w}','600').replace('{h}','600')},
   fetch:(url, options)=>new Promise(resolve=>requests.push({url,options,resolve}))};
 vm.runInNewContext(inline, context);
 const flush = async()=>{for(let i=0;i<10;i++)await Promise.resolve();};
+const withDeadline=(promise,description)=>new Promise((resolve,reject)=>{
+  const timeout=setTimeout(()=>reject(new Error(description+' was not observed')),1000);
+  promise.then(value=>{clearTimeout(timeout);resolve(value);},error=>{clearTimeout(timeout);reject(error);});
+});
 const latest = ()=>reports.at(-1);
 (async()=>{
   // Configuring an API storefront and assigning a token do not make MusicKit's
@@ -175,6 +179,58 @@ const latest = ()=>reports.at(-1);
     localHandlers.mediaPlaybackError({error}); await flush();
     assert.equal(localReports.at(-1).reason, expected, JSON.stringify(error));
   }
+  // None/Stopped after actual playback remain eligible for the existing
+  // native progress deadline. A normal pause or queue completion does not;
+  // reporting this health signal must not invent Playing/Buffering UI state.
+  {
+    const events={},observations=[];
+    const states=context.MusicKit.PlaybackStates;
+    const backing={...music,playbackState:states.playing,
+      addEventListener:(name,callback)=>{events[name]=callback;}};
+    const environment={...context,window:{...context.window},
+      document:{addEventListener:(name,callback)=>{events[name]=callback;}},
+      bridge:{report:raw=>observations.push(JSON.parse(raw))},
+      MusicKit:{...context.MusicKit,configure:()=>Promise.resolve(backing)}};
+    vm.runInNewContext(inline,environment);events.musickitloaded();await flush();
+    environment.window.amatvStationCommand('play',0);await flush();
+    assert.equal(observations.at(-1).playing,true);
+    for(const state of ['none','stopped','paused','ended','completed']){
+      backing.playbackState=states[state];events.playbackStateDidChange();
+      const report=observations.at(-1);
+      assert.equal(report.idle,state==='none' || state==='stopped',state);
+      assert.equal(report.playing,false,state);assert.equal(report.buffering,false,state);
+    }
+    environment.window.amatvStationCommand('pause',0);await flush();
+    backing.playbackState=states.stopped;events.playbackStateDidChange();
+    assert.equal(observations.at(-1).idle,false,'User Pause must disable the idle deadline');
+  }
+  // A failed stream may also make the SDK's Stop throw synchronously. Cleanup
+  // must still report the original network error: terminal suppresses future
+  // state reports, and the native startup deadline ended on the first Playing.
+  {
+    const events={},observations=[];
+    let stops=0;
+    const backing={...music,playbackState:2,
+      addEventListener:(name,callback)=>{events[name]=callback;},
+      stop:()=>{stops++;throw Object.assign(new Error('Stop failed'),{name:'InvalidStateError'});}};
+    const environment={...context,window:{...context.window},
+      document:{addEventListener:(name,callback)=>{events[name]=callback;}},
+      bridge:{report:raw=>observations.push(JSON.parse(raw))},
+      MusicKit:{...context.MusicKit,configure:()=>Promise.resolve(backing)}};
+    vm.runInNewContext(inline,environment);events.musickitloaded();await flush();
+    environment.window.amatvStationCommand('play',0);await flush();
+    assert.equal(observations.at(-1).playing,true);
+    backing.playbackState=6;events.playbackStateDidChange();
+    assert.equal(observations.at(-1).buffering,true);
+    assert.doesNotThrow(()=>events.mediaPlaybackError({error:{name:'NetworkError'}}));
+    await flush();
+    const failures=observations.filter(report=>report.event==='error');
+    assert.equal(failures.length,1);assert.equal(failures[0].reason,'network');
+    assert.equal(observations.at(-1).event,'error');assert.equal(stops,1);
+    events.mediaPlaybackError({error:{name:'NetworkError'}});events.playbackStateDidChange();
+    assert.equal(observations.filter(report=>report.event==='error').length,1);
+    assert.equal(observations.at(-1).event,'error','A dead stream must not overwrite its terminal failure');
+  }
   assert.ok(!reports.some(report=>'metadataFields' in report), 'Standalone diagnostics must remain disabled');
   const diagnostics=[], diagnosticHandlers={}, diagnosticRequests=[];
   const diagnosticMusic={...music,nowPlayingItem:station,
@@ -308,6 +364,80 @@ const latest = ()=>reports.at(-1);
   assert.ok(!episodeCalls.some(call=>call[0]==='stop'),'Episode Pause must retain the finite item');
   episodeMusic.playbackState=9;episodeEvents.playbackStateDidChange();
   assert.equal(episodeReports.at(-1).ended,true);
+  // A finite episode's first Play can finish after a completed Pause. Its
+  // success must reapply the current Pause; only that explicit intent owns
+  // the correction, including a rejection that arrives after a newer Play.
+  for(const scenario of ['late_play_success','superseded_pause_error','current_pause_throw','terminal_stop_throw']){
+    const events={},observations=[],pendingPlays=[];
+    const states=context.MusicKit.PlaybackStates;
+    let pauseCalls=0,stopCalls=0,rejectCorrection,reportTerminal,markLateStop;
+    const terminalReported=new Promise(resolve=>{reportTerminal=resolve;});
+    const lateStopCalled=new Promise(resolve=>{markLateStop=resolve;});
+    const backing={...music,
+      nowPlayingItem:{isLiveRadioStation:false,attributes:{name:'Episode',artistName:'Host'}},
+      playbackState:states.paused,
+      addEventListener:(name,callback)=>{events[name]=callback;},
+      play:()=>new Promise(resolve=>pendingPlays.push(()=>{
+        backing.playbackState=states.playing;events.playbackStateDidChange();resolve();
+      })),
+      pause:()=>{
+        pauseCalls++;
+        if(scenario==='current_pause_throw' && pauseCalls===2)
+          throw Object.assign(new Error('Pause cleanup failed'),{name:'NetworkError'});
+        backing.playbackState=states.paused;events.playbackStateDidChange();
+        if(scenario==='superseded_pause_error' && pauseCalls===3)
+          return new Promise((resolve,reject)=>{rejectCorrection=reject;});
+        return Promise.resolve();
+      },
+      stop:()=>{
+        stopCalls++;
+        if(scenario==='terminal_stop_throw' && stopCalls===2){
+          markLateStop();
+          throw Object.assign(new Error('Stop cleanup failed'),{name:'InvalidStateError'});
+        }
+        backing.playbackState=states.stopped;return Promise.resolve();
+      }};
+    const environment={...context,window:{...context.window},
+      document:{addEventListener:(name,callback)=>{events[name]=callback;}},
+      bridge:{report:raw=>{
+        const report=JSON.parse(raw);observations.push(report);
+        if(report.event==='error')reportTerminal(report);
+      }},
+      MusicKit:{...context.MusicKit,configure:()=>Promise.resolve(backing)}};
+    vm.runInNewContext(inline,environment);events.musickitloaded();await flush();
+    const command=action=>environment.window.amatvStationCommand(action,0);
+    command('play');await flush();assert.equal(pendingPlays.length,1);
+    if(scenario==='terminal_stop_throw'){
+      events.mediaPlaybackError({error:{name:'NetworkError'}});
+      const failure=await withDeadline(terminalReported,'Terminal network error');
+      assert.equal(failure.reason,'network');
+      pendingPlays[0]();await withDeadline(lateStopCalled,'Stop after late Play');
+      assert.equal(stopCalls,2,'Late successful work must stop its terminal stream');
+      assert.equal(observations.filter(report=>report.event==='error').length,1);
+      assert.equal(observations.filter(report=>report.event!=='diagnostic').at(-1).event,'error',
+        'Late diagnostic messages must not be mistaken for playback state');
+      continue;
+    }
+    command('pause');
+    if(scenario==='current_pause_throw'){
+      const failure=await withDeadline(terminalReported,'Pause cleanup terminal error');
+      assert.equal(failure.event,'error');assert.equal(failure.reason,'network');
+      continue;
+    }
+    await flush();
+    assert.equal(backing.playbackState,states.paused);
+    pendingPlays[0]();await flush();
+    assert.equal(backing.playbackState,states.paused,'A late first Play must preserve the latest Pause');
+    if(scenario==='superseded_pause_error'){
+      assert.equal(typeof rejectCorrection,'function');
+      command('play');await flush();assert.equal(pendingPlays.length,2);
+      pendingPlays[1]();await flush();
+      rejectCorrection(Object.assign(new Error('Old correction failed'),{name:'NetworkError'}));await flush();
+      assert.equal(backing.playbackState,states.playing);
+      assert.equal(observations.at(-1).playing,true);
+    }else assert.equal(observations.at(-1).playing,false);
+    assert.ok(!observations.some(report=>report.event==='error'),scenario);
+  }
   for(const scenario of ['deferred_episode','deferred_live','explicit_seek','skip']){
     const events={},calls=[];
     const backing={...episodeMusic,nowPlayingItem:undefined,currentPlaybackDuration:0,

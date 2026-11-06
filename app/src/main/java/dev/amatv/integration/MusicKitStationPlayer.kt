@@ -410,7 +410,8 @@ internal class MusicKitStationPlayer(private val context: Context) {
             isPrepared = data.optBoolean("prepared", ready), isLiveStream = live,
             canSeek = !live && duration > 0L && data.optBoolean("seek", false))
         if (progressWatchdog.observe(epoch, snapshot.isPrepared, desiredPlaying, snapshot.isPlaying,
-                snapshot.isBuffering, snapshot.positionMs, snapshot.capturedAtElapsedRealtimeMs)) {
+                snapshot.isBuffering, snapshot.positionMs, snapshot.capturedAtElapsedRealtimeMs,
+                idle = !snapshot.isEnded && data.optBoolean("idle", false))) {
             fail(epoch, PlaybackFailureKind.Network)
             return
         }
@@ -922,6 +923,10 @@ internal class MusicKitStationPlayer(private val context: Context) {
                   positionMs:Math.round(finite(music.currentPlaybackTime)*1000),durationMs:live ? 0 : Math.round(duration*1000),
                   liveWindowDurationMs:live ? Math.round(duration*1000) : 0,
                   playing:state===ps.playing,buffering:state===ps.loading || state===ps.waiting || state===ps.stalled || state===ps.seeking,
+                  // Queue acceptance is not playback. A requested stream can
+                  // return to None/Stopped without an error; keep its existing
+                  // progress deadline, without treating a focus Pause as a stall.
+                  idle:desired && state!==ps.ended && state!==ps.completed && (state===ps.none || state===ps.stopped),
                   live:live,seek:!live && duration>0, next:!!queue && queue.nextPlayableItemIndex>=0,
                   previous:!!queue && queue.previousPlayableItemIndex>=0,ended:state===ps.completed});
               }
@@ -929,7 +934,10 @@ internal class MusicKitStationPlayer(private val context: Context) {
                 if(terminal) return;
                 var error=event && (event.error || event.detail && (event.detail.error || event.detail)) || event;
                 diagnostic('failure');terminal=true; desired=false;clearTimedMetadata();destroySpectrum();
-                if(music) Promise.resolve(music.stop()).catch(function(){});
+                // A broken media element can make Stop throw before returning
+                // a promise. Cleanup must never swallow the terminal error;
+                // state polling is deliberately disabled after terminal=true.
+                try{if(music) Promise.resolve(music.stop()).catch(function(){});}catch(ignored){}
                 var code=Number(error && (error.status || error.statusCode || error.code ||
                   error.data && (error.data.status || error.data.statusCode)));
                 var name=error && error.name || '';
@@ -990,6 +998,17 @@ internal class MusicKitStationPlayer(private val context: Context) {
                   });
                 });
               }
+              function enforcePausedIntent(version){
+                // An earlier Play can start audio after Pause already settled.
+                // Reapply only the latest explicit Pause, never auto-Play a
+                // normal SDK/audio-focus pause observed in a state callback.
+                return Promise.resolve().then(function(){
+                  if(terminal || desired || version!==commandVersion)return;
+                  return pauseCurrent();
+                }).then(function(){report();},function(error){
+                  if(!terminal && !desired && version===commandVersion)fail(error);
+                });
+              }
               window.amatvStationCommand=function(action,value){
                 if(!music || terminal) return;
                 try{
@@ -1005,13 +1024,19 @@ internal class MusicKitStationPlayer(private val context: Context) {
                   else if(action==='previous'){resumePosition=0;work=music.skipToPreviousItem();}
                   diagnostic('command_'+action);
                   Promise.resolve(work).then(function(){
-                    if(action==='play' && version!==commandVersion)return;
+                    if(action==='play' && version!==commandVersion){
+                      if(!terminal && intentReceived && !desired)return enforcePausedIntent(commandVersion);
+                      return;
+                    }
+                    if(action==='pause' && version!==commandVersion)return;
                     diagnostic(action+'_resolved');
                     if(terminal) music.stop();
-                    else if(intentReceived && !desired && !stationWasLive) music.pause();
+                    else if(intentReceived && !desired && !stationWasLive)return enforcePausedIntent(commandVersion);
                     report();
-                  },function(error){
-                    if(action==='play' && version!==commandVersion)return;
+                  }).catch(function(error){
+                    // This also catches synchronous SDK errors in successful
+                    // command cleanup, not only rejection of the first work.
+                    if(version!==undefined && version!==commandVersion)return;
                     fail(error);
                   });
                 }catch(error){fail(error);}
