@@ -39,6 +39,7 @@
     <string name="services_track_unavailable">這首歌曲目前無法播放。</string>
     <string name="services_playback_auth_required">Apple Music 授權需要更新，請重新登入。</string>
     <string name="services_apple_connection_failed">暫時無法連線至 Apple Music，請重試。</string>
+    <string name="services_connection_verification_failed">無法驗證連線，請確認裝置日期、時間與網路後重試。</string>
     <string name="services_playback_failed">無法完成播放，請重試。</string>
     <string name="services_sdk_unavailable">此版本無法使用 Apple Music 播放功能。</string>
     <string name="services_catalog_id_missing">這首歌曲目前無法播放。</string>

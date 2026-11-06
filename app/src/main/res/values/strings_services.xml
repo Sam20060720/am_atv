@@ -39,6 +39,7 @@
     <string name="services_track_unavailable">This song is currently unavailable.</string>
     <string name="services_playback_auth_required">Apple Music authorization needs to be renewed. Please sign in again.</string>
     <string name="services_apple_connection_failed">Unable to connect to Apple Music. Please try again.</string>
+    <string name="services_connection_verification_failed">Connection verification failed. Check the device date, time and network, then try again.</string>
     <string name="services_playback_failed">Unable to complete playback. Please try again.</string>
     <string name="services_sdk_unavailable">Apple Music playback is unavailable in this version.</string>
     <string name="services_catalog_id_missing">This song is currently unavailable.</string>

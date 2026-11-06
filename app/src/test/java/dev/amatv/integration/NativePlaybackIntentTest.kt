@@ -343,7 +343,7 @@ class NativePlaybackIntentTest {
         assertEquals(PlaybackFailureKind.Network, intent.observe(probe(now = 47_000L)).failure)
     }
 
-    @Test fun onlyTheSdkIoTypeIdentifiesANativeNetworkFailure() {
+    @Test fun onlyTheSdkIoTypeAloneIdentifiesANativeNetworkFailure() {
         assertEquals(PlaybackFailureKind.Network, classifyPlaybackFailure(1, null, null))
         assertEquals(PlaybackFailureKind.Network, classifyPlaybackFailure(1, 401, 403))
         assertEquals(PlaybackFailureKind.Unexpected, classifyPlaybackFailure(null, null, null))
@@ -372,6 +372,42 @@ class NativePlaybackIntentTest {
         val transportFailure = java.lang.reflect.InvocationTargetException(java.io.IOException("offline"))
         assertEquals(PlaybackFailureKind.Network, classifyPlaybackFailure(null, null, null, transportFailure))
         assertEquals(PlaybackFailureKind.Unexpected, classifyPlaybackFailure(null, null, null, IllegalStateException("not ready")))
+    }
+
+    @Test fun queueProviderTransportFailuresKeepTheirCauseThroughNativeWrappers() {
+        val failures = listOf(
+            javax.net.ssl.SSLHandshakeException("certificate validation failed"),
+            java.net.SocketTimeoutException(), java.net.UnknownHostException(),
+            java.net.ConnectException(), java.net.NoRouteToHostException(),
+        )
+        for (failure in failures) {
+            val wrapped = java.lang.reflect.InvocationTargetException(IllegalStateException("queue provider", failure))
+            assertEquals(PlaybackFailureKind.Network,
+                classifyPlaybackFailure(3, Int.MIN_VALUE, Int.MIN_VALUE, wrapped))
+            assertEquals(failure is javax.net.ssl.SSLHandshakeException, playbackCertificateFailure(wrapped))
+        }
+        var outsideBound: Throwable = failures.first()
+        repeat(8) { outsideBound = IllegalStateException(outsideBound) }
+        assertFalse(playbackCertificateFailure(outsideBound))
+        assertEquals(PlaybackFailureKind.Unexpected, classifyPlaybackFailure(3, null, null, outsideBound))
+    }
+
+    @Test fun queueConditionsAndOtherNativeTypesDoNotBorrowTheTransportRecovery() {
+        for (condition in listOf(java.io.IOException("native condition"), IllegalStateException("queue filter"))) {
+            assertEquals(PlaybackFailureKind.Unexpected, classifyPlaybackFailure(3, null, null, condition))
+            assertFalse(playbackCertificateFailure(condition))
+        }
+        val handshake = IllegalStateException(javax.net.ssl.SSLHandshakeException("certificate validation failed"))
+        for (type in listOf(2, 4, 6)) {
+            assertEquals(PlaybackFailureKind.Unexpected, classifyPlaybackFailure(type, null, null, handshake))
+        }
+        val cancelled = kotlinx.coroutines.CancellationException("selection replaced")
+        try {
+            classifyPlaybackFailure(3, null, null, IllegalStateException(cancelled))
+            fail("Cancellation must propagate through the queue wrapper")
+        } catch (actual: kotlinx.coroutines.CancellationException) {
+            assertSame(cancelled, actual)
+        }
     }
 
     @Test fun continuousBufferTimeoutIsRetryableNetworkFailureNotTrackFailure() {

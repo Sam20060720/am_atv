@@ -488,8 +488,17 @@ class MusicKitBridge(private val context: Context) {
                                     val errorType = errorNumber("getType")
                                     val errorCode = errorNumber("getErrorCode")
                                     val componentCode = errorNumber("getComponentErrorCode")
+                                    val causes = generateSequence(error as? Throwable) { it.cause }.take(6).toList()
+                                    val causeTypes = causes.joinToString(">") { it.javaClass.simpleName }
+                                    val origin = causes.lastOrNull()?.stackTrace?.firstOrNull {
+                                        it.className.startsWith("com.apple.android.music.")
+                                    }?.let { "${it.className}.${it.methodName}" }
+                                    val explicitAllowed = context.getSharedPreferences(
+                                        "com.apple.android.music.playback_preferences", Context.MODE_PRIVATE)
+                                        .getBoolean("explicit_content_allowed", true)
                                     Log.w(TAG, "Native playback failure generation=$generation " +
-                                        "type=$errorType code=$errorCode component=$componentCode kind=$pendingFailureKind")
+                                        "type=$errorType code=$errorCode component=$componentCode kind=$pendingFailureKind " +
+                                        "causes=$causeTypes origin=$origin explicitAllowed=$explicitAllowed")
                                 }
                                 dispatchSnapshot()
                             }
@@ -908,7 +917,8 @@ class MusicKitBridge(private val context: Context) {
     private fun describePlaybackError(error: Any?): String = when (classifyNativeFailure(error)) {
         PlaybackFailureKind.TrackUnavailable -> AppText.text(R.string.services_track_unavailable)
         PlaybackFailureKind.Authorization -> AppText.text(R.string.services_playback_auth_required)
-        PlaybackFailureKind.Network -> AppText.text(R.string.services_apple_connection_failed)
+        PlaybackFailureKind.Network -> AppText.text(if (playbackCertificateFailure(error as? Throwable))
+            R.string.services_connection_verification_failed else R.string.services_apple_connection_failed)
         PlaybackFailureKind.PositionRestore -> AppText.text(R.string.services_playback_restore_failed)
         PlaybackFailureKind.Unexpected -> AppText.text(R.string.services_playback_failed)
     }

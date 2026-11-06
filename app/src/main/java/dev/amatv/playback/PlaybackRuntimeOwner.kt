@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import dev.amatv.integration.CatalogRequestException
 import dev.amatv.integration.MusicServices
 import dev.amatv.integration.NativeQueueEntry
 import dev.amatv.integration.PlaybackFailureKind
@@ -14,6 +15,7 @@ import dev.amatv.integration.PlaybackSession
 import dev.amatv.integration.PlaybackSnapshot
 import dev.amatv.integration.StationReconnectPolicy
 import dev.amatv.integration.classifyPlaybackFailure
+import dev.amatv.integration.playbackCertificateFailure
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.Destination
 import dev.amatv.model.Track
@@ -602,9 +604,12 @@ class PlaybackRuntimeOwner(
         stationHealth.reset()
         services.pauseForReplacement()
         prepareJob = scope.launch {
+            var preparationStage = "catalog"
             try {
                 val prepared = prepareRuntimeSelection(request,
-                    resolve = services::resolvePlayableTrack,
+                    resolve = { track ->
+                        services.resolvePlayableTrack(track).also { preparationStage = "renderer" }
+                    },
                     prepare = { playable, position, entry ->
                         queue.updateCatalogIdentity(request.track, playable)
                         services.preparePlayback(playable, position, playWhenReady = false,
@@ -627,9 +632,19 @@ class PlaybackRuntimeOwner(
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
                 if (isCurrentPreparation(request)) {
-                    Log.w("AMATV-runtime", "Playback prepare failed: ${failure.javaClass.simpleName}")
-                    failPreparation(classifyPlaybackFailure(null, null, null, failure),
-                        failure.message ?: dev.amatv.i18n.AppText.text(dev.amatv.R.string.app_song_load_failed),
+                    val kind = classifyPlaybackFailure(null, null, null, failure)
+                    val catalog = generateSequence<Throwable>(failure) { it.cause }.take(8)
+                        .filterIsInstance<CatalogRequestException>().firstOrNull()
+                    // Preserve the failure stage and service code without logging a
+                    // response, request URL, account credential or exception message.
+                    val serviceCode = catalog?.serviceCode?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,48}")) }
+                    val rating = request.track.contentRating?.takeIf { it == "explicit" || it == "clean" } ?: "unspecified"
+                    Log.w("AMATV-runtime", "Playback prepare failed: ${failure.javaClass.simpleName} " +
+                        "stage=$preparationStage kind=$kind rating=$rating http=${catalog?.httpStatus} service=$serviceCode")
+                    failPreparation(kind,
+                        if (playbackCertificateFailure(failure)) dev.amatv.i18n.AppText.text(
+                            dev.amatv.R.string.services_connection_verification_failed)
+                        else failure.message ?: dev.amatv.i18n.AppText.text(dev.amatv.R.string.app_song_load_failed),
                         request.positionMs, request.isLiveStream, 0L)
                 }
             } finally {

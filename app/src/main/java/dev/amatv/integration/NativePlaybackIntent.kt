@@ -1,5 +1,10 @@
 package dev.amatv.integration
 
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLHandshakeException
 import kotlin.math.abs
 
 enum class PlaybackFailureKind { TrackUnavailable, Authorization, Network, PositionRestore, Unexpected }
@@ -272,6 +277,10 @@ internal class NativePlaybackIntent {
     }
 }
 
+/** TLS handshakes can fail when the device clock makes a valid certificate appear invalid. */
+internal fun playbackCertificateFailure(error: Throwable?): Boolean =
+    generateSequence(error) { it.cause }.take(8).any { it is SSLHandshakeException }
+
 /** MusicKit component codes are not documented HTTP status codes or account-token verdicts. */
 @Suppress("UNUSED_PARAMETER")
 internal fun classifyPlaybackFailure(type: Int?, code: Int?, componentCode: Int?, error: Throwable? = null): PlaybackFailureKind {
@@ -284,6 +293,12 @@ internal fun classifyPlaybackFailure(type: Int?, code: Int?, componentCode: Int?
     // Public MusicKit 1.1.1 types: IO=1, DRM=2, queue=3, lease=4,
     // Chromecast=5, explicit-content age verification=6. None means expired login.
     if (type == 1) return PlaybackFailureKind.Network
+    // Catalog provider transport failures are wrapped by MusicKit's queue type.
+    // Match concrete transport causes, not its unrelated IOException conditions.
+    if (type == 3 && generateSequence(error) { it.cause }.take(8).any {
+            it is SSLHandshakeException || it is SocketTimeoutException || it is UnknownHostException ||
+                it is ConnectException || it is NoRouteToHostException
+        }) return PlaybackFailureKind.Network
     // The SDK's ErrorConditionException also extends IOException. An explicit
     // native type therefore takes precedence over that broad Java superclass.
     if (type == null && generateSequence(error) { it.cause }.take(8).any { it is java.io.IOException }) {
