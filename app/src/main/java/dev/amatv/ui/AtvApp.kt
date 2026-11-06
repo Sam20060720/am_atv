@@ -1,13 +1,17 @@
 package dev.amatv.ui
 
 import android.Manifest
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
+import androidx.core.app.ActivityCompat
 import android.util.Log
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
@@ -410,12 +414,26 @@ fun AmAtvApp() {
         onDispose { phoneSignInEpoch[0]++; phoneSignInJob[0]?.cancel(); phoneSignInSession?.close() }
     }
     var selectionGeneration by remember { mutableLongStateOf(0L) }
-    var spectrumPermissionAsked by remember { mutableStateOf(false) }
+    var spectrumPermissionAsked by remember(playbackPrefs) {
+        mutableStateOf(playbackPrefs.spectrumPermissionRequested)
+    }
     var spectrumPermissionGranted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
     }
     val spectrumPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         spectrumPermissionGranted = it
+    }
+    fun requestSpectrumPermission() {
+        val activity = context as? android.app.Activity
+        if (spectrumPermissionGranted || spectrumPermissionAsked && activity != null &&
+            !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)) {
+            context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", context.packageName, null)))
+        } else {
+            spectrumPermissionAsked = true
+            playbackPrefs.spectrumPermissionRequested = true
+            spectrumPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
     }
     // Read only by callbacks/effects: native position polls do not recompose the app.
     val systemPlaybackSnapshot = remember { mutableStateOf<PlaybackSnapshot?>(null) }
@@ -2171,10 +2189,28 @@ fun AmAtvApp() {
     val isNowPlaying = destination == Destination.NowPlaying
     val spectrumRequiresPermission = track.catalogKind != CatalogKind.Station || services.mediaCapabilities.catalogStations
     LaunchedEffect(isNowPlaying, isPlaying, spectrumPermissionGranted, spectrumRequiresPermission) {
-        if (isNowPlaying && isPlaying && spectrumRequiresPermission && !spectrumPermissionGranted && !spectrumPermissionAsked) {
+        if (isNowPlaying && isPlaying && spectrumRequiresPermission && !spectrumPermissionGranted &&
+            !spectrumPermissionAsked && !retainedRuntimeSession) {
             spectrumPermissionAsked = true
-            spectrumPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            playbackPrefs.spectrumPermissionRequested = true
+            // A previous version may already have been declined. Only a user
+            // action may retry; don't interrupt the player transition again.
+            val activity = context as? android.app.Activity
+            if (activity == null || !ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.RECORD_AUDIO)) {
+                spectrumPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
         }
+    }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                // System settings can grant/revoke access without recreating this UI.
+                spectrumPermissionGranted = ContextCompat.checkSelfPermission(context,
+                    Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     DisposableEffect(lifecycleOwner, isNowPlaying, isPlaying, spectrumPermissionGranted, spectrumRequiresPermission) {
         fun updateCapture() {
@@ -2501,6 +2537,7 @@ fun AmAtvApp() {
                                 onFocusRestored = finishStyleFocusRequest,
                                 onFocusRestoreFailed = finishStyleFocusRequest)
                             ArtworkMotionSettings(artworkMotionEnabled, services.artworkMotionPreferences::setEnabled, navigationFocus)
+                            SpectrumPermissionSettings(spectrumPermissionGranted, ::requestSpectrumPermission, navigationFocus)
                             LibraryAdditionSettings(services.libraryAdditionPreferences, navigationFocus)
                             PlaylistOrderSettings(services.playlistOrderPreferences, navigationFocus)
                             LanguageSettings(navigationFocus)

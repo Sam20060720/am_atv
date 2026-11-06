@@ -138,6 +138,13 @@ class PlaybackPreferences(context: Context) : QueuePreferences {
             preferences.edit().putBoolean(KEY_LOW_PERFORMANCE_MODE, value).apply()
         }
 
+    /** A declined visualizer request must not reopen the system dialog on each Activity. */
+    var spectrumPermissionRequested: Boolean
+        get() = preferences.getBoolean(KEY_SPECTRUM_PERMISSION_REQUESTED, false)
+        set(value) {
+            preferences.edit().putBoolean(KEY_SPECTRUM_PERMISSION_REQUESTED, value).apply()
+        }
+
     var lyricOffsetMs: Long
         get() = preferences.getLong(KEY_LYRIC_OFFSET_MS, 0L)
         set(value) {
@@ -215,5 +222,6 @@ class PlaybackPreferences(context: Context) : QueuePreferences {
         const val KEY_LYRIC_TRANSLATION_LANGUAGE = "pref_lyric_translation_language"
         const val KEY_LYRIC_PRONUNCIATION_LANGUAGE = "pref_lyric_pronunciation_language"
         const val KEY_LOW_PERFORMANCE_MODE = "pref_playback_low_performance_mode"
+        const val KEY_SPECTRUM_PERMISSION_REQUESTED = "pref_spectrum_permission_requested"
     }
 }

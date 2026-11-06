@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="spectrum_permission_title">音乐律动</string>
+    <string name="spectrum_permission_hint">让播放背景随音乐律动。</string>
+    <string name="spectrum_permission_allow">授权音频分析</string>
+    <string name="spectrum_permission_manage">管理音频授权</string>
+</resources>

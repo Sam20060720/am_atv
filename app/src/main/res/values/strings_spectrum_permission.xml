@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="spectrum_permission_title">Music motion</string>
+    <string name="spectrum_permission_hint">Let the player background move with the music.</string>
+    <string name="spectrum_permission_allow">Allow audio analysis</string>
+    <string name="spectrum_permission_manage">Manage audio access</string>
+</resources>
