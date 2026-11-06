@@ -26,9 +26,11 @@
     <string name="app_account">Account</string>
     <string name="app_sign_in">Sign In</string>
     <string name="app_exit_title">Exit %1$s?</string>
-    <string name="app_exit_background_playback">Music will continue playing in the background.</string>
+    <string name="app_exit_background_playback">Keep music playing in the background, or stop playback when you exit.</string>
     <string name="app_exit_stay">Stay</string>
     <string name="app_exit_confirm">Exit</string>
+    <string name="app_exit_keep_playing">Exit and keep playing</string>
+    <string name="app_exit_stop_playback">Exit and stop playback</string>
     <string name="interface_style_title">Interface Style</string>
     <string name="interface_style_apple">Apple Style</string>
     <string name="interface_style_classic">Classic</string>

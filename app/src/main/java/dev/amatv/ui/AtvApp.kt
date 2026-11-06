@@ -2308,6 +2308,19 @@ fun AmAtvApp() {
         catalogModalInput.menuOpened()
         exitConfirmationVisible = true
     }
+    fun exitApplication(stopPlayback: Boolean) {
+        if (stopPlayback) {
+            // Reuse Pause's preparation cancellation and renderer intent handling:
+            // a late catalog/stream result must not restart audio after exit.
+            startupQueueActions.drain()
+            pendingAuthentication.clear()
+            authenticatedAction = null
+            pausePlayback()
+            runtime.setSleepTimer(dev.amatv.playback.SleepTimerOption.Off)
+        }
+        exitConfirmationVisible = false
+        (context as? android.app.Activity)?.finish()
+    }
     // Registered before the browse/player subtree: every inner Back owner gets
     // first refusal. Only an exhausted root reaches the exit confirmation.
     BackHandler {
@@ -2784,10 +2797,8 @@ fun AmAtvApp() {
                     backgroundPlayback = playWhenReady || isPlaying,
                     inputGate = catalogModalInput,
                     onStay = ::dismissExitConfirmation,
-                    onExit = {
-                        exitConfirmationVisible = false
-                        (context as? android.app.Activity)?.finish()
-                    },
+                    onExit = { exitApplication(stopPlayback = false) },
+                    onExitAndStop = { exitApplication(stopPlayback = true) },
                 )
                 FocusFrameOverlay(focusFrameController)
             }

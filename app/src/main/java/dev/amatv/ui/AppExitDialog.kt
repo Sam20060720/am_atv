@@ -30,18 +30,21 @@ internal fun AppExitDialog(
     inputGate: CatalogModalInputGate,
     onStay: () -> Unit,
     onExit: () -> Unit,
+    onExitAndStop: () -> Unit,
 ) {
     val stay = remember { FocusRequester() }
     val leave = remember { FocusRequester() }
+    val stop = remember { FocusRequester() }
     var stayFocused by remember { mutableStateOf(false) }
     var leaveFocused by remember { mutableStateOf(false) }
+    var stopFocused by remember { mutableStateOf(false) }
     Dialog(onDismissRequest = onStay, properties = DialogProperties(
         usePlatformDefaultWidth = false, dismissOnClickOutside = false,
         windowTitle = "AMATV.Exit",
     )) {
         TvBrowseViewport {
             val windowFocused = LocalWindowInfo.current.isWindowFocused
-            LaunchedEffect(windowFocused) {
+            LaunchedEffect(windowFocused, backgroundPlayback) {
                 if (!windowFocused) return@LaunchedEffect
                 repeat(4) {
                     withFrameNanos { }
@@ -56,7 +59,7 @@ internal fun AppExitDialog(
                         val activation = key.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
                             key.keyCode == KeyEvent.KEYCODE_ENTER || key.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
                         val back = key.keyCode == KeyEvent.KEYCODE_BACK
-                        (activation || back) && !inputGate.dialog(stayFocused || leaveFocused, back, activation,
+                        (activation || back) && !inputGate.dialog(stayFocused || leaveFocused || stopFocused, back, activation,
                             key.action == KeyEvent.ACTION_DOWN, key.action == KeyEvent.ACTION_UP, key.repeatCount)
                     }.background(Color.Black.copy(alpha = .55f)), Alignment.Center) {
                     val shape = RoundedCornerShape(28.dp)
@@ -67,18 +70,25 @@ internal fun AppExitDialog(
                             color = Color.White, fontSize = 25.sp, lineHeight = 32.sp, fontWeight = FontWeight.Bold)
                         if (backgroundPlayback) Text(stringResource(R.string.app_exit_background_playback),
                             color = Color.White.copy(alpha = .70f), fontSize = 14.sp, lineHeight = 21.sp)
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             TvDialogAction(stringResource(R.string.app_exit_stay), onStay,
-                                Modifier.weight(1f).automationId("app-exit-stay").focusRequester(stay)
+                                Modifier.fillMaxWidth().automationId("app-exit-stay").focusRequester(stay)
                                     .onFocusChanged { stayFocused = it.isFocused }.focusProperties {
-                                        up = FocusRequester.Cancel; down = FocusRequester.Cancel
-                                        left = FocusRequester.Cancel; right = leave
+                                        up = FocusRequester.Cancel; down = leave
+                                        left = FocusRequester.Cancel; right = FocusRequester.Cancel
                                     })
-                            TvDialogAction(stringResource(R.string.app_exit_confirm), onExit,
-                                Modifier.weight(1f).automationId("app-exit-confirm").focusRequester(leave)
+                            TvDialogAction(stringResource(if (backgroundPlayback) R.string.app_exit_keep_playing
+                                else R.string.app_exit_confirm), onExit,
+                                Modifier.fillMaxWidth().automationId("app-exit-confirm").focusRequester(leave)
                                     .onFocusChanged { leaveFocused = it.isFocused }.focusProperties {
-                                        up = FocusRequester.Cancel; down = FocusRequester.Cancel
-                                        left = stay; right = FocusRequester.Cancel
+                                        up = stay; down = if (backgroundPlayback) stop else FocusRequester.Cancel
+                                        left = FocusRequester.Cancel; right = FocusRequester.Cancel
+                                    })
+                            if (backgroundPlayback) TvDialogAction(stringResource(R.string.app_exit_stop_playback), onExitAndStop,
+                                Modifier.fillMaxWidth().automationId("app-exit-stop").focusRequester(stop)
+                                    .onFocusChanged { stopFocused = it.isFocused }.focusProperties {
+                                        up = leave; down = FocusRequester.Cancel
+                                        left = FocusRequester.Cancel; right = FocusRequester.Cancel
                                     })
                         }
                     }
