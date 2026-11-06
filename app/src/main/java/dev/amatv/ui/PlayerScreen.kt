@@ -1399,8 +1399,8 @@ private fun TrackIdentity(
     // Keep the centred artwork column's height independent of fallback font
     // metrics (for example moving between Latin and CJK song names).
     Column(Modifier.fillMaxWidth().height((titleSize * 2 + 14).dp)) {
-    Text(
-        text = track.title,
+    TrackTitle(
+        track = track,
         fontSize = titleSize.sp,
         lineHeight = (titleSize + 8).sp,
         fontWeight = FontWeight.SemiBold,
@@ -3684,8 +3684,8 @@ private fun QueuePanel(
                                 cornerRadius = 16.dp,
                             )
                             Spacer(Modifier.height(11.dp))
-                            Text(
-                                text = item.title,
+                            TrackTitle(
+                                track = item,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color.White.copy(

@@ -680,7 +680,7 @@ private fun SearchCover(item: Track, modifier: Modifier, onOpen: () -> Unit) {
                         null, Modifier.size(34.dp), tint = Color.White.copy(alpha = 0.3f))
                 } else MotionArtwork(item, Modifier.fillMaxSize().clip(shape), animate = rememberBrowseMotionReady(focused), cornerRadius = radius)
             }
-            Text(item.title, color = Color.White.copy(alpha = 0.94f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
+            TrackTitle(item, color = Color.White.copy(alpha = 0.94f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
                 fontWeight = if (classic) FontWeight.SemiBold else FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = if (classic) 9.dp else 7.dp))
             if (!artist) Text(item.artist, color = Color.White.copy(alpha = 0.53f),
@@ -704,13 +704,8 @@ private fun SearchSong(item: Track, modifier: Modifier, onOpen: () -> Unit) {
             if (item.posterForAspect().isNullOrBlank() && item.motionForAspect(1f) == null) Icon(Icons.Rounded.Album, null, Modifier.size(artworkSize), Color.White.copy(alpha = 0.3f))
             else MotionArtwork(item, Modifier.size(artworkSize), animate = false, cornerRadius = 4.dp)
             Column(Modifier.weight(1.15f)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text(item.title, Modifier.weight(1f, fill = false), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.94f), focusedColor), fontSize = if (classic) 16.sp else 13.sp,
-                        lineHeight = if (classic) 20.sp else 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (item.contentRating == "explicit") Text("E", Modifier.background(Color.White.copy(alpha = 0.20f), RoundedCornerShape(2.dp))
-                        .padding(horizontal = 2.dp), color = focusSurfaceContentColor(Color.White.copy(alpha = 0.80f), focusedColor.copy(alpha = 0.75f)), fontSize = 8.sp, lineHeight = 10.sp,
-                        fontWeight = FontWeight.Bold)
-                }
+                TrackTitle(item, color = focusSurfaceContentColor(Color.White.copy(alpha = 0.94f), focusedColor), fontSize = if (classic) 16.sp else 13.sp,
+                    lineHeight = if (classic) 20.sp else 17.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(item.artist, color = focusSurfaceContentColor(Color.White.copy(alpha = 0.52f), focusedColor.copy(alpha = 0.65f)), fontSize = if (classic) 12.sp else 11.sp, lineHeight = 14.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
             }

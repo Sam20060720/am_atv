@@ -258,7 +258,7 @@ private fun CollectionSongRow(track: Track, modifier: Modifier, onClick: () -> U
             horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             MotionArtwork(track, Modifier.size(if (classic) 42.dp else 34.dp), animate = false, cornerRadius = 4.dp)
             Column(Modifier.weight(1f)) {
-                Text(track.title, color = Color.White.copy(alpha = .94f), fontSize = if (classic) 16.sp else 14.sp, lineHeight = if (classic) 20.sp else 18.sp,
+                TrackTitle(track, color = Color.White.copy(alpha = .94f), fontSize = if (classic) 16.sp else 14.sp, lineHeight = if (classic) 20.sp else 18.sp,
                     fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(track.artist, color = Color.White.copy(alpha = .54f), fontSize = if (classic) 12.sp else 11.sp, lineHeight = if (classic) 16.sp else 15.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)

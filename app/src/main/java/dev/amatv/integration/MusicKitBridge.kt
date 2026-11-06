@@ -801,6 +801,7 @@ class MusicKitBridge(private val context: Context) {
                 ?: fallback?.hasLyricsAvailable
                 ?: false,
             playbackQueueId = queueItem.callOrNull("getPlaybackQueueId") as? Long,
+            contentRating = fallback?.takeIf { it.catalogId == storeId }?.contentRating,
         )
     }
 

@@ -571,7 +571,7 @@ internal fun ArtistCover(item: Track, modifier: Modifier, onClick: () -> Unit) {
         Column(horizontalAlignment = if (artist) Alignment.CenterHorizontally else Alignment.Start) {
             MotionArtwork(item, Modifier.size(cardWidth).coverShadow(focused, radius).coverHairline(radius),
                 animate = rememberBrowseMotionReady(focused), cornerRadius = radius)
-            Text(item.title, color = Color.White.copy(alpha = 0.95f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
+            TrackTitle(item, color = Color.White.copy(alpha = 0.95f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
                 fontWeight = if (classic) FontWeight.SemiBold else FontWeight.Medium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = if (classic) 9.dp else 7.dp))
             if (!artist) Text(item.artist, color = Color.White.copy(alpha = 0.55f),

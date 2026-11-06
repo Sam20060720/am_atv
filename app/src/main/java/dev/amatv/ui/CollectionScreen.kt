@@ -590,7 +590,7 @@ private fun CollectionSong(song: Track, index: Int, selected: Boolean, isPlaying
                 Spacer(Modifier.width(if (classic) 12.dp else 10.dp))
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(song.title, fontSize = 16.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                TrackTitle(song, fontSize = 16.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                     color = if (classic && selected) Color(0xFFFF91A0) else Color.White.copy(alpha = if (focused || selected) 1f else 0.9f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(song.artist, fontSize = 12.sp, color = Color.White.copy(alpha = if (focused) 0.72f else 0.48f),
                     maxLines = 1, overflow = TextOverflow.Ellipsis)

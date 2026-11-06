@@ -2015,7 +2015,7 @@ private fun ClassicTopPick(
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center) {
-                        Text(track.title, color = Color.White.copy(alpha = 0.96f),
+                        TrackTitle(track, color = Color.White.copy(alpha = 0.96f),
                             fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (track.artist.isNotBlank()) {
@@ -2122,8 +2122,8 @@ private fun TopPick(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    Text(
-                        text = track.title,
+                    TrackTitle(
+                        track = track,
                         color = Color.White,
                         fontSize = 13.sp,
                         lineHeight = 17.sp,
@@ -2192,8 +2192,8 @@ private fun RecentCard(
                         cornerRadius = homeLayout.cardRadius,
                     )
                 }
-                Text(
-                    text = track.title,
+                TrackTitle(
+                    track = track,
                     color = Color.White.copy(alpha = if (homeLayout.classic) 0.92f else 0.96f),
                     fontSize = if (homeLayout.classic) ClassicBrowseVisuals.CardTitleSize else 12.sp,
                     lineHeight = if (homeLayout.classic) 20.sp else 16.sp,

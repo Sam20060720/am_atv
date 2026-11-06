@@ -621,7 +621,7 @@ private fun LibraryCover(track: Track, modifier: Modifier, onClick: () -> Unit) 
                 } else MotionArtwork(track, Modifier.fillMaxSize().clip(shape), animate = rememberBrowseMotionReady(focused),
                     cornerRadius = if (artist) 96.dp else radius)
             }
-            Text(track.title, color = Color.White.copy(alpha = 0.92f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
+            TrackTitle(track, color = Color.White.copy(alpha = 0.92f), fontSize = if (classic) ClassicBrowseVisuals.CardTitleSize else 12.sp, lineHeight = if (classic) 20.sp else 16.sp,
                 fontWeight = if (classic) FontWeight.SemiBold else FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = if (classic) 9.dp else 7.dp))
             if (!artist) Text(track.artist, color = Color.White.copy(alpha = 0.53f), fontSize = if (classic) ClassicBrowseVisuals.CardSubtitleSize else 11.sp, lineHeight = if (classic) 17.sp else 14.sp,
@@ -645,7 +645,7 @@ private fun LibrarySong(track: Track, modifier: Modifier, onClick: () -> Unit) {
             if (track.posterForAspect().isNullOrBlank() && track.motionForAspect(1f) == null) Icon(Icons.Rounded.Album, null, Modifier.size(artworkSize), Color.White.copy(alpha = 0.3f))
             else MotionArtwork(track, Modifier.size(artworkSize), animate = false, cornerRadius = 4.dp)
             Column(Modifier.weight(1f)) {
-                Text(track.title, color = Color.White.copy(alpha = 0.92f), fontSize = if (classic) 16.sp else 13.sp, lineHeight = if (classic) 20.sp else 17.sp, fontWeight = FontWeight.Medium,
+                TrackTitle(track, color = Color.White.copy(alpha = 0.92f), fontSize = if (classic) 16.sp else 13.sp, lineHeight = if (classic) 20.sp else 17.sp, fontWeight = FontWeight.Medium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(track.artist, color = Color.White.copy(alpha = 0.52f), fontSize = if (classic) 12.sp else 11.sp, lineHeight = if (classic) 16.sp else 14.sp,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)

@@ -1527,6 +1527,7 @@ fun AmAtvApp() {
             val withLyrics = withCachedLyrics(artworkSource.copy(
                 recommendedByYtm = provenance?.recommendedByYtm == true,
                 ytmVideoId = provenance?.ytmVideoId,
+                contentRating = artworkSource.contentRating ?: provenance?.contentRating,
             ))
             if (track.id != withLyrics.id ||
                 track.lyrics != withLyrics.lyrics ||
@@ -1537,6 +1538,7 @@ fun AmAtvApp() {
                 track.motionArtworkUrl != withLyrics.motionArtworkUrl ||
                 track.motionArtworkVariants != withLyrics.motionArtworkVariants ||
                 track.durationMs != withLyrics.durationMs ||
+                track.contentRating != withLyrics.contentRating ||
                 track.recommendedByYtm != withLyrics.recommendedByYtm
             ) {
                 track = withLyrics
