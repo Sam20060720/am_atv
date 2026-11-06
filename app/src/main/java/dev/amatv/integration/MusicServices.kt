@@ -25,6 +25,12 @@ import dev.amatv.model.CatalogKind
 import dev.amatv.model.matchesPlaybackQueueEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.ensureActive
@@ -77,6 +83,7 @@ class MusicServices(context: Context) : RecommendationProvider {
     val artworkMotionPreferences = ArtworkMotionPreferences.get(appContext)
     val libraryAdditionPreferences = LibraryAdditionPreferences(appContext)
     val playlistOrderPreferences = PlaylistOrderPreferences(appContext)
+    val audioQualityPreferences = AudioQualityPreferences(appContext)
     private val tokenStore = SecureTokenStore(appContext)
     private val webAuthenticationSession = WebAuthenticationSession(appContext)
     private val developerTokens = DeveloperTokenClient(
@@ -89,10 +96,16 @@ class MusicServices(context: Context) : RecommendationProvider {
         if (context is Activity) baseContext = context
     }
     private val stationPlayer = MusicKitStationPlayer(playbackHostContext)
-    private enum class PlaybackEngine { Native, StationWeb }
-    private class EngineRequest(val engine: PlaybackEngine, val generation: Long) {
+    private val hlsPlayer = AppleHlsPlayer(appContext)
+    private val playbackScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var audioFallbackJob: Job? = null
+    private enum class PlaybackEngine { Native, StationWeb, Hls }
+    private class EngineRequest(var engine: PlaybackEngine, val generation: Long,
+        val cursor: AudioFallbackCursor, var upcoming: List<NativeQueueEntry>) {
         var localGeneration = 0L
         var pending: PlaybackSnapshot? = null
+        var fallbackStarted = false
+        var nativeFallback: (suspend (Long, Boolean, List<NativeQueueEntry>) -> Long)? = null
     }
     private val playbackEpoch = AtomicLong()
     private val engineLock = Any()
@@ -104,8 +117,11 @@ class MusicServices(context: Context) : RecommendationProvider {
     private val songSpectrum = SongAudioSpectrum(appContext) {
         // A station WebView does not expose the native renderer's audio session.
         // Never visualize an old native song as if it belonged to the station.
-        val nativeActive = synchronized(engineLock) { activeEngineRequest?.engine == PlaybackEngine.Native }
-        if (nativeActive) bridge.audioSessionId() else 0
+        when (currentEngine()) {
+            PlaybackEngine.Native -> bridge.audioSessionId()
+            PlaybackEngine.Hls -> if (hlsPlayer.isAtmosPlayback) 0 else hlsPlayer.audioSessionId()
+            else -> 0
+        }
     }
     private val mediaSession = PlaybackMediaSession(appContext)
     private val playbackPreparation = Mutex()
@@ -115,6 +131,7 @@ class MusicServices(context: Context) : RecommendationProvider {
         userToken = tokenStore::readUserToken,
     ).apply { language = ::effectiveLanguageTag }
     private val webPageToken = AppleWebPlaybackTokenClient()
+    private val audioAssets by lazy { AppleAudioAssetResolver(api::userStorefront, webPageToken) }
     internal val webRequest = AppleMusicWebRequest(tokenStore::readUserToken, webPageToken)
     val libraryManagement = CatalogLibraryManagement(api::effectiveStorefront) { path, method, body ->
         webRequest.request(path, method, body, fresh = method == "GET")
@@ -165,6 +182,23 @@ class MusicServices(context: Context) : RecommendationProvider {
     private val google = GoogleTvAuthorization(tokenStore)
     private val ytm = YtmInnertubeClient(country = api::effectiveStorefront, accessToken = google::accessToken)
     private val resolver = CrossCatalogResolver(api)
+
+    init {
+        playbackScope.launch {
+            audioQualityPreferences.selection.collect {
+                val rail = synchronized(engineLock) {
+                    activeEngineRequest?.takeIf { it.engine == PlaybackEngine.Native && it.localGeneration != 0L }
+                        ?.let { it.localGeneration to nativeUpcoming(it.upcoming) }
+                }
+                // A queued SDK successor must not bypass a newly selected quality preference.
+                rail?.let { (generation, entries) -> bridge.updateUpcoming(generation, entries) }
+            }
+        }
+    }
+
+    private fun nativeUpcoming(entries: List<NativeQueueEntry>): List<NativeQueueEntry> =
+        if (audioQualityPreferences.selection.value.let { it.atmosEnabled || it.quality == AudioQuality.Efficient })
+            emptyList() else entries
 
     /** Opaque per-authorization cache boundary; tokens never reach cache keys or logs. */
     fun authorizationCacheScope(): String = appleAuthorizationCacheScope(tokenStore.readUserToken())
@@ -521,17 +555,37 @@ class MusicServices(context: Context) : RecommendationProvider {
         currentAppEntryId: Long? = null,
         upcoming: List<NativeQueueEntry> = emptyList(),
     ): Long {
+        audioFallbackJob?.cancel()
         val userToken = checkNotNull(tokenStore.readUserToken()) { AppText.text(R.string.services_sign_in_apple_music) }
         val developerToken = developerTokens.token()
         return playbackPreparation.withLock {
             withContext(Dispatchers.Default) {
                 if (playWhenReady) mediaSession.playbackRequested()
-                val engine = if (track.catalogKind == dev.amatv.model.CatalogKind.Station &&
-                    !mediaCapabilities.catalogStations) PlaybackEngine.StationWeb else PlaybackEngine.Native
-                val request = EngineRequest(engine, playbackEpoch.incrementAndGet())
+                val selected = audioQualityPreferences.selection.value
+                val selection = if (selected.atmosEnabled && !hlsPlayer.canPlayAtmos())
+                    selected.copy(atmosEnabled = false) else selected
+                val asset = if (track.catalogKind == CatalogKind.Song &&
+                    (selection.atmosEnabled || selection.quality == AudioQuality.Efficient)) {
+                    audioAssets.resolve(track, developerToken, userToken, selection)
+                } else null
+                ensureActive()
+                if (tokenStore.readUserToken() != userToken) throw CancellationException("Apple account changed")
+                val engine = when {
+                    track.catalogKind == CatalogKind.Station && !mediaCapabilities.catalogStations -> PlaybackEngine.StationWeb
+                    asset != null -> PlaybackEngine.Hls
+                    else -> PlaybackEngine.Native
+                }
+                val request = EngineRequest(engine, playbackEpoch.incrementAndGet(),
+                    AudioFallbackCursor(positionMs, playWhenReady), upcoming)
+                request.nativeFallback = { position, play, next ->
+                    bridge.preparePlayback(track, developerToken, userToken, position, play, currentAppEntryId, nativeUpcoming(next))
+                }
                 synchronized(engineLock) { activeEngineRequest = request; serviceSnapshot = null }
                 refreshSpectrumRoute()
                 try {
+                    // Stop a prior encoded stream before starting another renderer. This also
+                    // prevents a stale audio-focus callback from pausing its replacement.
+                    withContext(Dispatchers.Main.immediate) { hlsPlayer.release() }
                     val local = if (engine == PlaybackEngine.StationWeb) {
                         bridge.pause()
                         bridge.release()
@@ -541,24 +595,48 @@ class MusicServices(context: Context) : RecommendationProvider {
                         val stationStorefront = api.userStorefront()
                         stationPlayer.preparePlayback(track, developerToken, userToken, positionMs, playWhenReady,
                             storefront = stationStorefront)
+                    } else if (engine == PlaybackEngine.Hls) {
+                        stationPlayer.release()
+                        bridge.release()
+                        try {
+                            hlsPlayer.preparePlayback(track, checkNotNull(asset), developerToken, userToken,
+                                positionMs, playWhenReady, currentAppEntryId)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            withContext(Dispatchers.Main.immediate) { hlsPlayer.release() }
+                            synchronized(engineLock) {
+                                request.engine = PlaybackEngine.Native
+                                request.pending = null
+                                request.fallbackStarted = true
+                            }
+                            refreshSpectrumRoute()
+                            checkNotNull(request.nativeFallback)(positionMs, playWhenReady, request.upcoming)
+                        }
                     } else {
                         stationPlayer.release()
                         bridge.prepareQueuedSuccessor(track, developerToken, userToken, positionMs,
                             playWhenReady, currentAppEntryId)
                             ?: bridge.preparePlayback(track, developerToken, userToken, positionMs, playWhenReady,
-                                currentAppEntryId, upcoming)
+                                currentAppEntryId, nativeUpcoming(upcoming))
                     }
                     val pending = synchronized(engineLock) {
+                        if (activeEngineRequest !== request) throw CancellationException("Playback replaced")
                         request.localGeneration = local
                         request.pending.also { request.pending = null }
                     }
+                    refreshSpectrumRoute()
+                    val pendingEngine = request.engine
                     pending?.takeIf { it.requestGeneration == local }?.let { snapshot ->
-                        playbackMain.post { forwardPlaybackSnapshot(engine, snapshot) }
+                        playbackMain.post { forwardPlaybackSnapshot(pendingEngine, snapshot) }
                     }
                     request.generation
                 } catch (failure: Throwable) {
-                    synchronized(engineLock) {
-                        if (activeEngineRequest === request) activeEngineRequest = null
+                    val owned = synchronized(engineLock) {
+                        (activeEngineRequest === request).also { if (it) activeEngineRequest = null }
+                    }
+                    if (owned && request.engine == PlaybackEngine.Hls) {
+                        withContext(NonCancellable + Dispatchers.Main.immediate) { hlsPlayer.release() }
                     }
                     refreshSpectrumRoute()
                     throw failure
@@ -571,22 +649,26 @@ class MusicServices(context: Context) : RecommendationProvider {
     fun updateNativeUpcoming(serviceGeneration: Long, entries: List<NativeQueueEntry>): Boolean {
         val localGeneration = synchronized(engineLock) {
             val request = activeEngineRequest ?: return false
-            if (request.engine != PlaybackEngine.Native || request.generation != serviceGeneration || request.localGeneration == 0L) return false
+            if (request.generation != serviceGeneration) return false
+            request.upcoming = entries
+            if (request.engine != PlaybackEngine.Native || request.localGeneration == 0L) return false
             request.localGeneration
         }
-        return bridge.updateUpcoming(localGeneration, entries)
+        return bridge.updateUpcoming(localGeneration, nativeUpcoming(entries))
     }
 
     fun audioSpectrum(): AudioSpectrum = when {
         !spectrumActive -> AudioSpectrum()
         currentEngine() == PlaybackEngine.StationWeb -> stationPlayer.audioSpectrum()
         currentEngine() == PlaybackEngine.Native -> songSpectrum.sample()
+        currentEngine() == PlaybackEngine.Hls && !hlsPlayer.isAtmosPlayback -> songSpectrum.sample()
         else -> AudioSpectrum()
     }
     fun spectrumCaptureState(): SpectrumCaptureState = when {
         !spectrumActive -> SpectrumCaptureState.Disabled
         currentEngine() == PlaybackEngine.StationWeb -> stationPlayer.spectrumCaptureState()
         currentEngine() == PlaybackEngine.Native -> songSpectrum.captureState()
+        currentEngine() == PlaybackEngine.Hls -> if (hlsPlayer.isAtmosPlayback) SpectrumCaptureState.Unavailable else songSpectrum.captureState()
         else -> SpectrumCaptureState.WaitingForSession
     }
     fun setSpectrumActive(enabled: Boolean) {
@@ -598,33 +680,67 @@ class MusicServices(context: Context) : RecommendationProvider {
         // obsolete route from a concurrently finishing playback preparation.
         playbackMain.post {
             val engine = currentEngine()
-            songSpectrum.setActive(spectrumActive && engine == PlaybackEngine.Native)
+            songSpectrum.setActive(spectrumActive && (engine == PlaybackEngine.Native ||
+                engine == PlaybackEngine.Hls && !hlsPlayer.isAtmosPlayback))
             stationPlayer.setSpectrumActive(spectrumActive && engine == PlaybackEngine.StationWeb)
         }
     }
 
     private fun currentEngine(): PlaybackEngine? = synchronized(engineLock) { activeEngineRequest?.engine }
 
+    private fun setPlaybackIntent(playing: Boolean) {
+        synchronized(engineLock) { activeEngineRequest?.cursor?.wantsPlay = playing }
+    }
+
     fun play() {
         mediaSession.playbackRequested()
-        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.play() else bridge.play()
+        setPlaybackIntent(true)
+        when (currentEngine()) {
+            PlaybackEngine.StationWeb -> stationPlayer.play()
+            PlaybackEngine.Hls -> hlsPlayer.play()
+            PlaybackEngine.Native -> bridge.play()
+            null -> Unit
+        }
     }
     /** Keep the existing foreground lease while preparing an explicit replacement. */
     fun pauseForReplacement() {
-        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.pause() else bridge.pause()
+        pauseCurrentRenderer()
     }
     fun pause() {
         mediaSession.playbackPaused()
-        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.pause() else bridge.pause()
+        pauseCurrentRenderer()
+    }
+    private fun pauseCurrentRenderer() {
+        setPlaybackIntent(false)
+        when (currentEngine()) {
+            PlaybackEngine.StationWeb -> stationPlayer.pause()
+            PlaybackEngine.Hls -> hlsPlayer.pause()
+            PlaybackEngine.Native -> bridge.pause()
+            null -> Unit
+        }
     }
     fun seekTo(positionMs: Long) {
-        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.seekTo(positionMs) else bridge.seekTo(positionMs)
+        synchronized(engineLock) { activeEngineRequest?.cursor?.seekTo(positionMs) }
+        when (currentEngine()) {
+            PlaybackEngine.StationWeb -> stationPlayer.seekTo(positionMs)
+            PlaybackEngine.Hls -> hlsPlayer.seekTo(positionMs)
+            PlaybackEngine.Native -> bridge.seekTo(positionMs)
+            null -> Unit
+        }
     }
     fun skipToNext() {
-        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.skipToNext() else bridge.skipToNext()
+        when (currentEngine()) {
+            PlaybackEngine.StationWeb -> stationPlayer.skipToNext()
+            PlaybackEngine.Native -> bridge.skipToNext()
+            else -> Unit // Song navigation belongs to the shared app queue.
+        }
     }
     fun skipToPrevious() {
-        if (currentEngine() == PlaybackEngine.StationWeb) stationPlayer.skipToPrevious() else bridge.skipToPrevious()
+        when (currentEngine()) {
+            PlaybackEngine.StationWeb -> stationPlayer.skipToPrevious()
+            PlaybackEngine.Native -> bridge.skipToPrevious()
+            else -> Unit
+        }
     }
     // Song repeat/shuffle belongs to the app queue; a station owns its actual
     // internal queue. Engine-local generations must never escape this boundary.
@@ -665,18 +781,80 @@ class MusicServices(context: Context) : RecommendationProvider {
         stationPlayer.setPlaybackListener(if (!subscribed) null else { snapshot ->
             forwardPlaybackSnapshot(PlaybackEngine.StationWeb, snapshot)
         })
+        hlsPlayer.setPlaybackListener(if (!subscribed) null else { snapshot ->
+            forwardPlaybackSnapshot(PlaybackEngine.Hls, snapshot)
+        })
     }
     private fun forwardPlaybackSnapshot(engine: PlaybackEngine, snapshot: PlaybackSnapshot) {
+        var fallback: EngineRequest? = null
         val mapped = synchronized(engineLock) {
             val request = activeEngineRequest ?: return
             if (request.engine != engine) return
             if (request.localGeneration == 0L) { request.pending = snapshot; return }
             if (snapshot.requestGeneration != request.localGeneration) return
-            snapshot.copy(requestGeneration = request.generation).also { serviceSnapshot = it }
+            if (engine == PlaybackEngine.Hls && request.fallbackStarted) return
+            if (engine == PlaybackEngine.Hls) {
+                hlsPlayer.desiredPlayWhenReady()?.let { request.cursor.wantsPlay = it }
+            }
+            request.cursor.observe(snapshot.positionMs, snapshot.isPrepared)
+            if (engine == PlaybackEngine.Hls && snapshot.errorMessage != null && !request.fallbackStarted) {
+                request.fallbackStarted = true
+                fallback = request
+            }
+            val value = snapshot.copy(requestGeneration = request.generation)
+            // Optional audio failure is handled here once. Do not let the runtime
+            // start a simultaneous song retry or skip while the AAC handoff runs.
+            (if (fallback != null) value.copy(errorMessage = null, failureKind = null,
+                isBuffering = true, isPlaying = false, isPrepared = false) else value)
+                .also { serviceSnapshot = it }
         }
         runtimePlaybackListener?.invoke(mapped)
+        fallback?.let(::startNativeAudioFallback)
+    }
+
+    private fun startNativeAudioFallback(request: EngineRequest) {
+        audioFallbackJob = playbackScope.launch {
+            playbackPreparation.withLock {
+                val cursor = synchronized(engineLock) {
+                    if (activeEngineRequest !== request || request.engine != PlaybackEngine.Hls) return@withLock
+                    request.engine = PlaybackEngine.Native
+                    request.localGeneration = 0L
+                    request.pending = null
+                    request.cursor
+                }
+                hlsPlayer.release()
+                refreshSpectrumRoute()
+                try {
+                    val position = cursor.positionMs
+                    val local = checkNotNull(request.nativeFallback)(position, false, request.upcoming)
+                    val pending = synchronized(engineLock) {
+                        if (activeEngineRequest !== request) return@withLock
+                        request.localGeneration = local
+                        request.pending.also { request.pending = null }
+                    }
+                    // Commands may have changed while SDK preparation suspended.
+                    if (cursor.positionMs != position) bridge.seekTo(cursor.positionMs)
+                    if (cursor.wantsPlay) bridge.play() else bridge.pause()
+                    pending?.takeIf { it.requestGeneration == local }?.let {
+                        forwardPlaybackSnapshot(PlaybackEngine.Native, it)
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    val failure = synchronized(engineLock) {
+                        if (activeEngineRequest !== request) return@withLock
+                        request.localGeneration = -1L
+                        serviceSnapshot?.copy(requestGeneration = -1L, isBuffering = false,
+                            errorMessage = AppText.text(R.string.services_playback_failed),
+                            failureKind = PlaybackFailureKind.Unexpected)
+                    }
+                    failure?.let { forwardPlaybackSnapshot(PlaybackEngine.Native, it) }
+                }
+            }
+        }
     }
     private fun resetPlaybackEngines() {
+        audioFallbackJob?.cancel()
         synchronized(engineLock) {
             playbackEpoch.incrementAndGet()
             activeEngineRequest = null
@@ -685,6 +863,7 @@ class MusicServices(context: Context) : RecommendationProvider {
         refreshSpectrumRoute()
         stationPlayer.release()
         bridge.release()
+        hlsPlayer.release()
     }
     fun setRuntimeSystemPlaybackCallbacks(callbacks: PlaybackMediaSession.Callbacks?) {
         mediaSession.setCallbacks(callbacks)
@@ -697,5 +876,6 @@ class MusicServices(context: Context) : RecommendationProvider {
         songSpectrum.release()
         mediaSession.release()
         resetPlaybackEngines()
+        playbackScope.cancel()
     }
 }

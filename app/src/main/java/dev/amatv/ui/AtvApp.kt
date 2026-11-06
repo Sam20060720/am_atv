@@ -2538,6 +2538,7 @@ fun AmAtvApp() {
                                 onFocusRestoreFailed = finishStyleFocusRequest)
                             ArtworkMotionSettings(artworkMotionEnabled, services.artworkMotionPreferences::setEnabled, navigationFocus)
                             SpectrumPermissionSettings(spectrumPermissionGranted, ::requestSpectrumPermission, navigationFocus)
+                            AudioQualitySettings(services.audioQualityPreferences, navigationFocus)
                             LibraryAdditionSettings(services.libraryAdditionPreferences, navigationFocus)
                             PlaylistOrderSettings(services.playlistOrderPreferences, navigationFocus)
                             LanguageSettings(navigationFocus)

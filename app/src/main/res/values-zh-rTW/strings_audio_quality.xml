@@ -1,0 +1,11 @@
+<resources>
+    <string name="audio_quality_title">音質</string>
+    <string name="audio_quality_hint">變更會在下一首或重新播放時生效。</string>
+    <string name="audio_quality_efficient">高效率 · AAC</string>
+    <string name="audio_quality_high">高音質 · AAC</string>
+    <string name="audio_quality_lossless">無損 · ALAC</string>
+    <string name="audio_quality_hires">高解析度無損 · ALAC</string>
+    <string name="audio_quality_unavailable">暫不支援</string>
+    <string name="audio_quality_atmos">Dolby Atmos</string>
+    <string name="audio_quality_atmos_hint">支援的歌曲與裝置優先使用 Atmos，其餘使用所選的 AAC 音質。</string>
+</resources>

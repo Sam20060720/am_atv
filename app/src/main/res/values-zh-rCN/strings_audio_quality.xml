@@ -1,0 +1,11 @@
+<resources>
+    <string name="audio_quality_title">音质</string>
+    <string name="audio_quality_hint">更改会在下一首或重新播放时生效。</string>
+    <string name="audio_quality_efficient">高效 · AAC</string>
+    <string name="audio_quality_high">高音质 · AAC</string>
+    <string name="audio_quality_lossless">无损 · ALAC</string>
+    <string name="audio_quality_hires">高解析度无损 · ALAC</string>
+    <string name="audio_quality_unavailable">暂不支持</string>
+    <string name="audio_quality_atmos">杜比全景声</string>
+    <string name="audio_quality_atmos_hint">支持的歌曲与设备优先使用杜比全景声，其余使用所选的 AAC 音质。</string>
+</resources>

@@ -1,0 +1,11 @@
+<resources>
+    <string name="audio_quality_title">Audio quality</string>
+    <string name="audio_quality_hint">Changes apply to the next song or when playback restarts.</string>
+    <string name="audio_quality_efficient">Efficient · AAC</string>
+    <string name="audio_quality_high">High quality · AAC</string>
+    <string name="audio_quality_lossless">Lossless · ALAC</string>
+    <string name="audio_quality_hires">Hi-Res Lossless · ALAC</string>
+    <string name="audio_quality_unavailable">Not available yet</string>
+    <string name="audio_quality_atmos">Dolby Atmos</string>
+    <string name="audio_quality_atmos_hint">Prioritize Atmos for supported songs and devices. Otherwise use the selected AAC quality.</string>
+</resources>
