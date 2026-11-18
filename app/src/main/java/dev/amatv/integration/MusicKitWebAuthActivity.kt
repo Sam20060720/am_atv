@@ -1,7 +1,6 @@
 package dev.amatv.integration
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -27,7 +26,11 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.core.content.ContextCompat
+import androidx.annotation.RequiresApi
+import androidx.webkit.WebViewCompat
 import dev.amatv.R
 
 /**
@@ -36,7 +39,7 @@ import dev.amatv.R
  * Preserves `window.opener` across Apple's `window.open` authorization popup
  * while also capturing same-origin callback redirects on `https://am-atv.local/`.
  */
-class MusicKitWebAuthActivity : Activity() {
+class MusicKitWebAuthActivity : ComponentActivity() {
     private lateinit var rootContainer: LinearLayout
     private lateinit var browserContainer: FrameLayout
     private lateinit var webView: WebView
@@ -51,7 +54,7 @@ class MusicKitWebAuthActivity : Activity() {
     private var mainWebViewDestroyed = false
     private var rendererFailureReported = false
     private val signInUiScript by lazy {
-        assets.open("gecko-auth/signin-ui.js").bufferedReader().use { it.readText() }
+        assets.open("web-auth/signin-ui.js").bufferedReader().use { it.readText() }
     }
 
     override fun attachBaseContext(newBase: Context) {
@@ -120,6 +123,14 @@ class MusicKitWebAuthActivity : Activity() {
             it.event("MENU: show/hide console")
         }
         setContentView(content)
+        onBackPressedDispatcher.addCallback(this) {
+            val popup = popupWebView
+            when {
+                popup != null -> closePopupWebView(popup)
+                ::webView.isInitialized && webView.canGoBack() -> webView.goBack()
+                else -> finish()
+            }
+        }
         webView.loadDataWithBaseURL(
             AUTH_ORIGIN,
             authorizationPage(developerToken),
@@ -135,21 +146,6 @@ class MusicKitWebAuthActivity : Activity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
-    }
-
-    @Deprecated("Deprecated in Java")
-    @Suppress("DEPRECATION")
-    override fun onBackPressed() {
-        val popup = popupWebView
-        if (popup != null) {
-            closePopupWebView(popup)
-            return
-        }
-        if (::webView.isInitialized && webView.canGoBack()) {
-            webView.goBack()
-            return
-        }
-        super.onBackPressed()
     }
 
     override fun onDestroy() {
@@ -291,6 +287,7 @@ class MusicKitWebAuthActivity : Activity() {
                     }
                 }
 
+                @RequiresApi(26)
                 override fun onRenderProcessGone(
                     view: WebView?,
                     detail: RenderProcessGoneDetail?,
@@ -400,7 +397,7 @@ class MusicKitWebAuthActivity : Activity() {
     }.getOrDefault(false)
 
     private fun currentWebViewLabel(): String {
-        val provider = WebView.getCurrentWebViewPackage() ?: return "WebView unavailable"
+        val provider = WebViewCompat.getCurrentWebViewPackage(this) ?: return "WebView unavailable"
         return "${provider.packageName} ${provider.versionName.orEmpty()}".trim()
     }
 

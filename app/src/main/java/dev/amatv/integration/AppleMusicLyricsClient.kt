@@ -4,6 +4,8 @@ import dev.amatv.R
 import dev.amatv.i18n.AppText
 
 import android.icu.lang.UScript
+import android.os.Build
+import com.ibm.icu.lang.UScript as LegacyUScript
 import android.util.Log
 import dev.amatv.model.LyricAgentType
 import dev.amatv.model.LyricLine
@@ -252,14 +254,16 @@ internal object AppleLocaleUtil {
 
     fun getSystemLyricsScripts(locale: Locale = Locale.getDefault()): Array<String> {
         val shortNames = runCatching {
-            val codes = UScript.getCode(locale)
+            val codes = if (Build.VERSION.SDK_INT >= 24) UScript.getCode(locale) else LegacyUScript.getCode(locale)
+            fun shortName(code: Int): String? = if (Build.VERSION.SDK_INT >= 24)
+                UScript.getShortName(code) else LegacyUScript.getShortName(code)
             val list = ArrayList<String>((codes?.size ?: 0) + 1)
             if (locale == Locale.JAPAN) {
-                UScript.getShortName(54)?.let(list::add)
+                shortName(54)?.let(list::add)
             }
             if (codes != null) {
                 for (code in codes) {
-                    UScript.getShortName(code)?.let(list::add)
+                    shortName(code)?.let(list::add)
                 }
             }
             list

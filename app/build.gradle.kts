@@ -1,10 +1,13 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import com.android.build.api.instrumentation.FramesComputationMode
 import com.android.build.api.instrumentation.InstrumentationScope
+import com.android.build.api.artifact.SingleArtifact
 import dev.amatv.build.HomePrefetchBudgetVisitorFactory
+import dev.amatv.build.MusicKitDeveloperToken
 import dev.amatv.build.MusicKitSongIdVisitorFactory
 import dev.amatv.build.MusicKitStackMapFrames
 import dev.amatv.build.VerifyMusicKitSdkTask
+import dev.amatv.build.StripFontAssetsTask
 import java.util.Properties
 import java.util.Base64
 import java.time.Instant
@@ -23,8 +26,8 @@ fun localSetting(name: String, fallback: String = ""): String =
 fun quotedBuildConfig(value: String): String =
     "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
-val bundledDeveloperToken = localSetting("AM_DEVELOPER_TOKEN_FILE").takeIf(String::isNotBlank)
-    ?.let { file(it).readText().trim() }
+val developerTokenFile = localSetting("AM_DEVELOPER_TOKEN_FILE").takeIf(String::isNotBlank)?.let(::file)
+val bundledDeveloperToken = developerTokenFile?.takeIf { it.isFile }?.readText()?.trim()
     ?: localSetting("AM_DEVELOPER_TOKEN")
 
 plugins {
@@ -39,13 +42,12 @@ android {
 
     defaultConfig {
         applicationId = "dev.amatv"
-        minSdk = 28
+        minSdk = 23
         targetSdk = 36
         versionCode = 16
         versionName = "0.6.3"
 
-        buildConfigField("String", "AUTH_BROWSER_ACTIVITY", "\"dev.amatv.integration.MusicKitWebAuthActivity\"")
-        buildConfigField("boolean", "AUTH_BROWSER_IS_GECKO", "false")
+        buildConfigField("boolean", "BUNDLED_FONTS", "true")
         val nativePlayerBackdrop = providers.gradleProperty("amatv.nativeBackdrop").getOrElse("true")
         require(nativePlayerBackdrop in setOf("true", "false")) { "amatv.nativeBackdrop must be true or false" }
         buildConfigField("boolean", "NATIVE_PLAYER_BACKDROP", nativePlayerBackdrop)
@@ -94,19 +96,10 @@ android {
             matchingFallbacks += "release"
             buildConfigField("String", "MUSICKIT_TOKEN_ENDPOINT", "\"\"")
         }
-        create("standaloneGecko") {
+        create("standaloneSystem") {
             initWith(getByName("standalone"))
             matchingFallbacks += listOf("standalone", "release")
-            proguardFile("src/standaloneGecko/proguard-rules.pro")
-            buildConfigField("String", "AUTH_BROWSER_ACTIVITY", "\"dev.amatv.integration.GeckoMusicKitAuthActivity\"")
-            buildConfigField("boolean", "AUTH_BROWSER_IS_GECKO", "true")
-            // The default supports both ARM architectures; a device-specific
-            // APK can omit the other engine with -Pamatv.geckoAbi=<ABI>.
-            val geckoAbi = providers.gradleProperty("amatv.geckoAbi").orNull
-            require(geckoAbi == null || geckoAbi in listOf("armeabi-v7a", "arm64-v8a")) {
-                "amatv.geckoAbi must be armeabi-v7a or arm64-v8a"
-            }
-            ndk.abiFilters += geckoAbi?.let(::listOf) ?: listOf("armeabi-v7a", "arm64-v8a")
+            buildConfigField("boolean", "BUNDLED_FONTS", "false")
         }
         create("benchmark") {
             initWith(getByName("standalone"))
@@ -115,6 +108,7 @@ android {
     }
 
     compileOptions {
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -147,12 +141,36 @@ val musicKitFrameRepairClasses = providers.provider {
     MusicKitStackMapFrames.missingFrameClasses(musicKitFrameSdkAars.files)
 }
 
+val distApks = tasks.register<Copy>("distApks") {
+    group = "distribution"
+    description = "Build and copy the standard and bundled-font APKs to dist/."
+    into(rootProject.layout.projectDirectory.dir("dist"))
+}
+
 androidComponents {
+    beforeVariants(selector().withBuildType("standaloneSystem")) { variant ->
+        variant.minSdk = 24
+    }
     onVariants(selector().all()) { variant ->
-        if (variant.name == "standaloneGecko") {
-            // Direct APK distribution benefits from compressed browser binaries.
-            // Android extracts the selected architecture once during installation.
-            variant.packaging.jniLibs.useLegacyPackaging.set(true)
+        if (variant.name in setOf("standalone", "standaloneSystem")) {
+            val version = variant.outputs.single().versionName
+            val suffix = if (variant.name == "standalone") "-font" else ""
+            distApks.configure {
+                inputs.property("${variant.name}Version", version)
+                from(variant.artifacts.get(SingleArtifact.APK)) {
+                    include("*.apk")
+                    rename { "AMATV-${version.get()}$suffix.apk" }
+                }
+            }
+        }
+        if (variant.name == "standaloneSystem") {
+            // The auth SDK carries an unused Roboto asset even with browser-only
+            // sign-in. This variant must contain no font binaries at all.
+            val stripFonts = tasks.register<StripFontAssetsTask>("stripStandaloneSystemFontAssets")
+            variant.artifacts.use(stripFonts).wiredWithDirectories(
+                StripFontAssetsTask::getInputDirectory,
+                StripFontAssetsTask::getOutputDirectory,
+            ).toTransform(SingleArtifact.ASSETS)
         }
         variant.instrumentation.transformClassesWith(
             MusicKitSongIdVisitorFactory::class.java,
@@ -168,6 +186,20 @@ androidComponents {
         variant.instrumentation.setAsmFramesComputationMode(
             FramesComputationMode.COMPUTE_FRAMES_FOR_INSTRUMENTED_CLASSES,
         )
+    }
+}
+
+tasks.register("generateMusicKitToken") {
+    group = "distribution"
+    description = "Sign a MusicKit developer token using the configured Apple key."
+    val teamId = localSetting("APPLE_TEAM_ID")
+    val keyId = localSetting("APPLE_MUSIC_KEY_ID")
+    val privateKey = localSetting("APPLE_MUSIC_PRIVATE_KEY_PATH").takeIf(String::isNotBlank)?.let(::file)
+    doLast {
+        val key = checkNotNull(privateKey) { "Set APPLE_MUSIC_PRIVATE_KEY_PATH." }
+        val output = checkNotNull(developerTokenFile) { "Set AM_DEVELOPER_TOKEN_FILE." }
+        val expiry = MusicKitDeveloperToken.write(key.toPath(), output.toPath(), teamId, keyId)
+        logger.lifecycle("Wrote MusicKit developer token (expires $expiry).")
     }
 }
 
@@ -188,14 +220,53 @@ val verifyStandaloneCredential = tasks.register("verifyStandaloneCredential") {
         logger.lifecycle("Standalone developer credential expires ${Instant.ofEpochSecond(expiry)}")
     }
 }
-tasks.matching { it.name == "preStandaloneBuild" || it.name == "preStandaloneGeckoBuild" || it.name == "preBenchmarkBuild" }
+tasks.matching { it.name in setOf("preStandaloneBuild", "preStandaloneSystemBuild", "preBenchmarkBuild") }
     .configureEach { dependsOn(verifyStandaloneCredential) }
 
+val legacyIcuSource = configurations.create("legacyIcuSource") {
+    isCanBeConsumed = false
+    isTransitive = false
+}
+
+// Android 6 uses ICU4J only for UScript.getCode(Locale) and getShortName.
+// Keep the locale, alias and property data used by those lookups in ICU4J 76.1.
+// JVM tests use this same JAR so missing runtime data also fails in tests.
+val legacyIcuScripts = tasks.register<Jar>("packageLegacyIcuScripts") {
+    archiveBaseName.set("legacy-icu-scripts")
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+    from(legacyIcuSource.elements.map { zipTree(it.single().asFile) }) {
+        include("com/ibm/icu/**/*.class")
+        val data = "com/ibm/icu/impl/data/icudata"
+        include(
+            "$data/keyTypeData.res",
+            "$data/langInfo.res",
+            "$data/metadata.res",
+            "$data/pnames.icu",
+            "$data/pool.res",
+            "$data/root.res",
+            "$data/supplementalData.res",
+            "$data/timezoneTypes.res",
+        )
+    }
+}
+
 dependencies {
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
     implementation(platform("androidx.compose:compose-bom:2026.06.01"))
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("androidx.core:core-ktx:1.17.0")
+    implementation("androidx.webkit:webkit:1.14.0")
+    // Only API 23 needs the legacy script lookup. Keep it available to the
+    // compiler and JVM tests, but outside the Android 7+ runtime classpath.
+    add(legacyIcuSource.name, "com.ibm.icu:icu4j:76.1")
+    val legacyIcu = files(legacyIcuScripts)
+    compileOnly(legacyIcu)
+    testImplementation(legacyIcu)
+    listOf("debug", "release", "standalone", "benchmark").forEach {
+        add("${it}Implementation", legacyIcu)
+    }
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     implementation("androidx.appcompat:appcompat:1.8.0")
     implementation("androidx.compose.foundation:foundation") {
@@ -216,7 +287,6 @@ dependencies {
     implementation("androidx.tv:tv-material:1.1.0")
     implementation("androidx.media3:media3-exoplayer:1.11.0")
     implementation("androidx.media3:media3-exoplayer-hls:1.11.0")
-    implementation("androidx.media3:media3-ui:1.11.0")
     implementation("io.coil-kt.coil3:coil-compose:3.3.0")
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
     implementation("com.google.zxing:core:3.5.4")
@@ -231,11 +301,4 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")
 
-    // The last stable Gecko release compatible with this project's Kotlin 2.3.21
-    // and compileSdk 36. It is packaged only in the alternate sign-in APK.
-    add("standaloneGeckoImplementation", "org.mozilla.geckoview:geckoview:153.0.20260810162159") {
-        // Bundling a browser must not replace the app's existing artwork/player
-        // Media3 version. MusicKit remains the sole music playback engine.
-        exclude(group = "androidx.media3")
-    }
 }

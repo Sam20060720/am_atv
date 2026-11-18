@@ -21,6 +21,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebViewCompat
 import dev.amatv.BuildConfig
 import dev.amatv.R
 import dev.amatv.i18n.AppText
@@ -142,7 +143,7 @@ internal class MusicKitStationPlayer(private val context: Context) {
     // Structural route availability must not depend on whether a new Activity
     // has reached its attach effect yet. Starting a new view still requires a host.
     val available: Boolean get() = runCatching {
-        WebView.getCurrentWebViewPackage() != null
+        WebViewCompat.getCurrentWebViewPackage(context) != null
     }.getOrDefault(false)
 
     fun preparePlayback(track: Track, developerToken: String, userToken: String,

@@ -54,7 +54,7 @@
       }
       if (moveFocus && password) password.focus();
       // WebView evaluates the hook in the top document; inspect only accessible
-      // frames. Gecko also installs this file separately in each matching frame.
+      // frames.
       var frames = doc.querySelectorAll("iframe");
       for (var k = 0; k < frames.length; k++) {
         var frame = frames[k];

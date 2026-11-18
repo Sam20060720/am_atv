@@ -14,7 +14,7 @@
 ## 已有驗證
 
 - 分批提交前的最終主機檢查：982 個單元測試通過，0 failures／errors／skipped。
-- Debug APK 建置、App 與 benchmark 模組的 benchmark Kotlin、standaloneGecko Kotlin 編譯通過。
+- Debug APK 建置、App 與 benchmark 模組的 benchmark Kotlin 編譯通過。
 - Production station now-playing 與 spectrum JavaScript 回歸通過。
 - 模擬器確認電台歌曲封面及首頁動態封面正常。冷素材 HTTPS 失敗另查明為模擬器時鐘落後，校時後恢復，未加入 TLS 信任例外。
 - 提交整理使用逐檔 SHA-256 比對，確保既有 112 個變更檔的內容保留；未因整理提交重跑裝置巡迴。各中間 commit 未逐一建置，以上驗證對應整合後的最終程式。

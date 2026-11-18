@@ -16,7 +16,7 @@ English · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)
 
 ## Install
 
-Android TV 9+ and an Apple Music subscription required. Install the APK and sign in to Apple Music.
+Use the standard APK on Android 7 or later. Choose the bundled-font APK for Android 6 or to use Noto Sans CJK TC. Both support phone QR and TV sign-in and require an Apple Music subscription. Playback on Android 6 and 7 has yet to be verified on physical TVs.
 
 ## Screenshots
 
@@ -40,9 +40,7 @@ Requires JDK 17, Android SDK 36, and the official [MusicKit Android SDK](https:/
 
 ```sh
 ./gradlew :app:assembleDebug
-tools/build-standalone.sh
-# Alternate APK with GeckoView for Apple Music sign-in:
-tools/build-standalone-gecko.sh
+./gradlew :app:distApks
 ```
 
 The standalone APK is written to `dist/`. See [APK and source distribution](docs/standalone-distribution.md) for signing and packaging.

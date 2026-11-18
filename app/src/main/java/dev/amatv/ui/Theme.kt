@@ -16,6 +16,8 @@ private val TvColors = darkColorScheme(
 
 @Composable
 fun AmAtvTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = TvColors, content = content)
+    MaterialTheme(colorScheme = TvColors) {
+        TvTypography(content)
+    }
 }
 

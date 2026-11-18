@@ -20,4 +20,10 @@ obtain it from Apple; it is not included in the source distribution. The MIT
 license does not relicense the SDK, Apple trademarks, catalog artwork or lyrics.
 MusicKit terms: https://developer.apple.com/musickit/android/
 
+Distributions with bundled fonts use Noto Sans CJK TC, Copyright 2014-2021 Adobe
+(http://www.adobe.com/) and licensed under the SIL Open Font License 1.1.
+The license is included in noto-sans-tc-OFL.txt. The Regular, Medium and Bold
+OpenType files, when present, are distributed unmodified from
+https://github.com/notofonts/noto-cjk/tree/main/Sans/OTF/TraditionalChinese .
+
 AM for TV is an independent project and is not affiliated with Apple Inc.

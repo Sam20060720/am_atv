@@ -18,7 +18,7 @@ internal fun TvBrowseViewport(content: @Composable () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val scale = sqrt(constraints.maxWidth.toFloat() * constraints.maxHeight / (960f * 540f))
         CompositionLocalProvider(LocalDensity provides Density(scale, LocalDensity.current.fontScale)) {
-            TvTypography { content() }
+            content()
         }
     }
 }
@@ -42,11 +42,9 @@ internal object BrowseTokens {
     val ShowcaseWidth = 200.dp
     val ShowcaseHeight = 278.dp
     val ShowcaseRadius = 10.dp
-    val ShowcaseRowHeight = ShowcaseHeight + RowVerticalPadding * 2
     val CardWidth = 124.dp
     val CardHeight = 170.dp
     val CardRadius = 6.dp
-    val CardRowHeight = CardHeight + RowVerticalPadding * 2
 
     const val ShowcaseFocusScale = 1.035f
     const val CardFocusScale = 1.04f

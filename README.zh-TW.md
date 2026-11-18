@@ -16,7 +16,7 @@
 
 ## 安裝
 
-Android TV 9+，需 Apple Music 訂閱。安裝 APK 後登入 Apple Music。
+Android 7 以上選標準版。Android 6 或想使用內建 Noto Sans CJK TC 字型時，選內建字型版。兩版都支援手機掃 QR Code 或直接在電視登入，需 Apple Music 訂閱。Android 6、7 的實機串流播放仍待驗證。
 
 ## 截圖
 
@@ -40,9 +40,7 @@ Android TV 9+，需 Apple Music 訂閱。安裝 APK 後登入 Apple Music。
 
 ```sh
 ./gradlew :app:assembleDebug
-tools/build-standalone.sh
-# 使用 GeckoView 登入的替代 APK：
-tools/build-standalone-gecko.sh
+./gradlew :app:distApks
 ```
 
 獨立版 APK 輸出至 `dist/`。簽章與打包方式見 [APK 與原始碼發佈](docs/standalone-distribution.md)。

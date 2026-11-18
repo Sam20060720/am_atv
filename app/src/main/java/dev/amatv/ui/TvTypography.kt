@@ -9,15 +9,17 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import dev.amatv.R
+import dev.amatv.BuildConfig
 
-private val TvFontFamily = FontFamily(
-    Font(R.font.tv_sfhello_regular, FontWeight.Normal),
-    Font(R.font.tv_sfhello_medium, FontWeight.Medium),
-    Font(R.font.tv_sfhello_semibold, FontWeight.SemiBold),
-    Font(R.font.tv_sfhello_bold, FontWeight.Bold),
-)
+private val TvFontFamily = if (BuildConfig.BUNDLED_FONTS) {
+    FontFamily(
+        Font(R.font.tv_noto_sans_tc_regular, FontWeight.Normal),
+        Font(R.font.tv_noto_sans_tc_medium, FontWeight.Medium),
+        Font(R.font.tv_noto_sans_tc_bold, FontWeight.Bold),
+    )
+} else FontFamily.SansSerif
 
-/** Apply only within the browse/control viewport; existing type sizes and weights stay local. */
+/** Share the font family across both interfaces, playback, lyrics and dialogs. */
 @Composable
 internal fun TvTypography(content: @Composable () -> Unit) {
     val inheritedTypography = MaterialTheme.typography

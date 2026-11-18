@@ -90,7 +90,7 @@ internal fun TvPlaybackViewport(
             LocalFocusFrameEnabled provides false,
             LocalFocusMotionStyle provides if (lowPerformanceMode) FocusMotionStyle.Immediate else FocusMotionStyle.Television,
             LocalTelevisionFocusTimings provides TelevisionFocusTimings(75, 150),
-        ) { TvTypography { content() } }
+        ) { content() }
     }
 }
 

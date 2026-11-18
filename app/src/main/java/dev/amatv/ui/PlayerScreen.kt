@@ -3274,8 +3274,10 @@ private fun KaraokeWordItem(
     val density = LocalDensity.current
     val liftDistancePx = with(density) { MotionTokens.KaraokeWordLiftDp.dp.toPx() }
     val shadowRadiusPx = with(density) { MotionTokens.KaraokeEmphasisShadowDp.dp.toPx() }
-    val shadowStyle = remember(shadowRadiusPx) {
+    val lyricFontFamily = androidx.compose.material3.LocalTextStyle.current.fontFamily
+    val shadowStyle = remember(shadowRadiusPx, lyricFontFamily) {
         TextStyle(
+            fontFamily = lyricFontFamily,
             shadow = Shadow(
                 color = Color.White,
                 blurRadius = shadowRadiusPx,

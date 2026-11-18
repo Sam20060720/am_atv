@@ -1,5 +1,9 @@
 package dev.amatv.integration
 
+import java.util.Locale
+import androidx.core.os.ConfigurationCompat
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
 import dev.amatv.R
 import dev.amatv.i18n.AppText
 
@@ -73,12 +77,14 @@ interface RecommendationProvider {
     ): MusicServices.ResolvedRadioPage
 }
 
+@OptIn(UnstableApi::class)
 class MusicServices(context: Context) : RecommendationProvider {
     private val appContext = context.applicationContext
-    /** Dynamic app locale, including AppCompat locales on API 28–32. */
-    fun effectiveLanguageTag(): String = ContextCompat.getContextForLanguage(appContext)
-        .resources.configuration.locales[0].toLanguageTag()
-    suspend fun supportedCatalogLanguageTag(): String? = api.catalogLanguage(api.effectiveStorefront())
+    /** AppCompat supplies the selected app locale before the platform locale API. */
+    fun effectiveLanguageTag(): String {
+        val configuration = ContextCompat.getContextForLanguage(appContext).resources.configuration
+        return (ConfigurationCompat.getLocales(configuration)[0] ?: Locale.getDefault()).toLanguageTag()
+    }
     val contentCache = ContentCache.get(appContext)
     val artworkMotionPreferences = ArtworkMotionPreferences.get(appContext)
     val libraryAdditionPreferences = LibraryAdditionPreferences(appContext)
@@ -226,8 +232,6 @@ class MusicServices(context: Context) : RecommendationProvider {
     val ytmPairingConfigured get() = google.configured
     val ytmSignedIn get() = google.signedIn
     val ytmAuthorizationState get() = google.state
-    fun ytmAuthorizationCacheScope(): String = google.state.value.scope
-    fun cancelYtmPairing() = google.cancelPairing()
     suspend fun startYtmPairing(): GoogleTvPairing = google.startPairing()
     suspend fun awaitYtmPairing(pairing: GoogleTvPairing) = google.awaitPairing(pairing)
     fun signOutYtm() = google.signOut()
@@ -325,11 +329,9 @@ class MusicServices(context: Context) : RecommendationProvider {
         )
 
     suspend fun webAuthenticationIntent(): Intent {
-        // Gecko owns a fresh private profile. Do not initialize the system
-        // WebView provider on a compatibility build whose provider may be broken.
-        if (!BuildConfig.AUTH_BROWSER_IS_GECKO) webAuthenticationSession.prepareForSignIn()
+        webAuthenticationSession.prepareForSignIn()
         val developerToken = developerTokens.token()
-        return Intent().setClassName(appContext, BuildConfig.AUTH_BROWSER_ACTIVITY).putExtra(
+        return Intent(appContext, MusicKitWebAuthActivity::class.java).putExtra(
             MusicKitWebAuthActivity.EXTRA_DEVELOPER_TOKEN,
             developerToken,
         )

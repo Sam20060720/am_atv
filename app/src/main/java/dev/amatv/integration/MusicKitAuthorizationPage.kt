@@ -1,5 +1,7 @@
 package dev.amatv.integration
 
+import java.util.Locale
+import androidx.core.os.ConfigurationCompat
 import android.content.Context
 import android.text.TextUtils
 import dev.amatv.BuildConfig
@@ -8,11 +10,10 @@ import org.json.JSONObject
 
 internal const val MUSIC_AUTH_JS_BRIDGE = "AndroidMusicAuth"
 
-/** Shared MusicKit page; each browser supplies only its native-message transport. */
+/** MusicKit sign-in page for the system WebView. */
 internal fun musicKitAuthorizationPage(
     context: Context,
     developerToken: String,
-    bridgeSetupScript: String = "",
 ): String {
     val tokenLiteral = JSONObject.quote(developerToken)
     val buildLiteral = JSONObject.quote(BuildConfig.VERSION_NAME)
@@ -22,9 +23,10 @@ internal fun musicKitAuthorizationPage(
         .put("waiting", context.getString(R.string.services_auth_waiting))
         .put("invalidAuthorization", context.getString(R.string.services_auth_invalid_user_token))
         .put("retry", context.getString(R.string.services_auth_retry))
+    val locale = ConfigurationCompat.getLocales(context.resources.configuration)[0] ?: Locale.getDefault()
     return """
         <!doctype html>
-        <html lang="${context.resources.configuration.locales[0].toLanguageTag()}">
+        <html lang="${locale.toLanguageTag()}">
           <head>
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -51,7 +53,6 @@ internal fun musicKitAuthorizationPage(
               <p id="error"></p>
             </main>
             <script>
-                  $bridgeSetupScript
               // This synthetic origin only holds our MusicKit bootstrap
               // state. Never let its old token bypass a fresh local sign-in.
               try {
