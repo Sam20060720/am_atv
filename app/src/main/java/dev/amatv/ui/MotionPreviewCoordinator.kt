@@ -7,6 +7,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.view.Surface
 import android.util.Log
+import androidx.annotation.OptIn
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -16,6 +17,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.VideoSize
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -52,6 +54,7 @@ internal class MotionPreviewOutput internal constructor(
  * looper owns ALL ExoPlayer operations, including blocking surface acknowledgments
  * and codec release. The player's separate internal playback looper stays Media3's.
  */
+@OptIn(UnstableApi::class)
 internal object MotionPreviewCoordinator {
     private data class Request(val context: Context, val url: String, val width: Int, val height: Int)
     private data class Selection(val mediaId: String, val request: Request)

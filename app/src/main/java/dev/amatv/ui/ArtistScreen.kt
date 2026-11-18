@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.MoreHoriz
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -77,7 +76,7 @@ internal fun ArtistScreen(
     val topSongs = visit.sections[ArtistSection.TopSongs]?.items.orEmpty()
     var biographyExpanded by rememberSaveable { mutableStateOf(false) }
     val biography = remember(profile?.biography) { profile?.biography?.let {
-        android.text.Html.fromHtml(it, android.text.Html.FROM_HTML_MODE_COMPACT).toString().trim()
+        androidx.core.text.HtmlCompat.fromHtml(it, androidx.core.text.HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()
     }?.takeIf(String::isNotBlank) }
     val playFocus = remember { FocusRequester() }
     val biographyFocus = remember { FocusRequester() }
@@ -179,7 +178,7 @@ internal fun ArtistScreen(
                 val next = sectionNavigation.nextStep() ?: return@launch
                 fun requestPlaced(): Boolean = runCatching {
                     if (next == ArtistSectionNavigation.Profile) latestProfileEntry?.requestFocus() == true
-                    else sectionEntries.getOrPut(ArtistSection.valueOf(next)) { FocusRequester() }.requestFocus()
+                    else sectionEntries.retainedFocusRequester(ArtistSection.valueOf(next)).requestFocus()
                 }.getOrDefault(false)
                 var acquired = requestPlaced()
                 if (!acquired) {
@@ -402,7 +401,7 @@ internal fun ArtistScreen(
             items(visibleSections, key = { it.name }, contentType = { "shelf" }) { section ->
                 val page = visit.sections[section] ?: ArtistSectionState()
                     CatalogShelf(section.name, stringResource(section.label()), "artist", page, contentActive, menuFocus,
-                        sectionEntries.getOrPut(section) { FocusRequester() }, selectedKey,
+                        sectionEntries.retainedFocusRequester(section), selectedKey,
                         onSelected = { selectedKey = it; sectionNavigation.focused(section.name); if (section == visibleSections.firstOrNull()) pageTop.request() }, onMore = { onMore(section) },
                         onRetry = { onRetrySection(section) },
                         onRegisterCancelPending = { cancel ->
@@ -526,7 +525,7 @@ internal fun CatalogShelf(
             horizontalArrangement = Arrangement.spacedBy(BrowseTokens.ColumnGap)) {
             itemsIndexed(page.items, key = { _, item -> artistItemKey(sectionKey, item) }) { index, item ->
                 val key = artistItemKey(sectionKey, item)
-                val requester = requesters.getOrPut(key) { FocusRequester() }
+                val requester = requesters.retainedFocusRequester(key)
                 if (key == selectedKey) SideEffect { entry?.requester = requester }
                 val isEntry = key == retainedEntry || (retainedEntry == null && index == 0)
                 ArtistCover(item, Modifier.automationId("$automationPrefix-${sectionKey.lowercase()}-$index-${item.catalogKind.name.lowercase()}")

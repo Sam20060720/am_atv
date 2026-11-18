@@ -75,7 +75,7 @@ internal fun CatalogRoomScreen(
     val title = profile?.name?.takeIf(String::isNotBlank) ?: source.title
     val description = remember(profile?.description) {
         profile?.description?.let {
-            android.text.Html.fromHtml(it, android.text.Html.FROM_HTML_MODE_COMPACT).toString().trim()
+            androidx.core.text.HtmlCompat.fromHtml(it, androidx.core.text.HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()
         }?.takeIf(String::isNotBlank)
     }
     val sectionStates = rememberSaveableStateHolder()
@@ -84,7 +84,7 @@ internal fun CatalogRoomScreen(
     val entry = LocalContentFocusEntry.current
     val showSections = sections.size > 1
     val selectedTab = sectionKey?.takeIf { showSections }?.let {
-        tabRequesters.getOrPut(it) { FocusRequester() }
+        tabRequesters.retainedFocusRequester(it)
     }
     var enterSection by remember { mutableStateOf<String?>(null) }
     val latestActive by rememberUpdatedState(contentActive)
@@ -126,7 +126,7 @@ internal fun CatalogRoomScreen(
             horizontalArrangement = Arrangement.spacedBy(9.dp), modifier = Modifier.fillMaxWidth()) {
             itemsIndexed(sections, key = { _, value -> value.pageKey() }) { index, value ->
                 val key = value.pageKey()
-                val requester = tabRequesters.getOrPut(key) { FocusRequester() }
+                val requester = tabRequesters.retainedFocusRequester(key)
                 val chosen = key == sectionKey
                 ArtistTextAction(value.title?.takeIf(String::isNotBlank)
                     ?: stringResource(R.string.collection_section_number, index + 1),

@@ -74,6 +74,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
@@ -136,7 +137,7 @@ fun MotionArtwork(
         val area = coordinates.size.width.toFloat() * coordinates.size.height
         visible = area > 0f && bounds.width * bounds.height / area >= 0.6f
     } else Modifier
-    val motionEligible = animate && android.animation.ValueAnimator.areAnimatorsEnabled() &&
+    val motionEligible = animate && systemAnimationsEnabled(LocalContext.current) &&
         LocalArtworkMotionEnabled.current && LocalFocusTargetsEnabled.current &&
         LocalWindowInfo.current.isWindowFocused && visible
     // Static/unfocused cards do not even install a lifecycle observer or start
@@ -190,10 +191,19 @@ private fun RetainedMotionArtwork(
     val imageLoader = remember(context) { ArtworkImages.loader(context) }
     val density = LocalDensity.current
     val requestedKey = requestedTrack.artworkVisualKey()
-    var coverState by remember { mutableStateOf("loading") }
-    val coverStateDescription = stringResource(when (coverState) {
-        "blending" -> R.string.player_artwork_transitioning
-        "ready" -> R.string.player_artwork_loaded
+    val cached = remember(imageLoader, requestedKey) {
+        ArtworkImages.cachedImage(context, requestedTrack.motionPreviewUrl ?: requestedTrack.artworkUrl)?.let {
+            DecodedArtwork(requestedKey, it.asPainter(context),
+                if (requestedTrack.catalogKind == dev.amatv.model.CatalogKind.Station) ContentScale.Fit else ContentScale.Crop)
+        }
+    }
+    var displayed by remember { mutableStateOf(cached) }
+    var incoming by remember { mutableStateOf<DecodedArtwork?>(null) }
+    val fade = remember { Animatable(0f) }
+    val initialPlaceholder = remember { SyntheticArtworkPainter(requestedTrack) }
+    val coverStateDescription = stringResource(when {
+        incoming != null -> R.string.player_artwork_transitioning
+        displayed != null -> R.string.player_artwork_loaded
         else -> R.string.player_loading
     })
     BoxWithConstraints(modifier = modifier
@@ -203,12 +213,6 @@ private fun RetainedMotionArtwork(
         }
         .clip(RoundedCornerShape(cornerRadius))) {
         val imageSize = with(density) { maxWidth.toPx().roundToInt().coerceAtLeast(1) }
-        val cached = remember(imageLoader, requestedKey) {
-            ArtworkImages.cachedImage(context, requestedTrack.motionPreviewUrl ?: requestedTrack.artworkUrl)?.let {
-                DecodedArtwork(requestedKey, it.asPainter(context),
-                    if (requestedTrack.catalogKind == dev.amatv.model.CatalogKind.Station) ContentScale.Fit else ContentScale.Crop)
-            }
-        }
         val ready = produceState(cached, imageLoader, requestedKey, imageSize) {
             var image: coil3.Image? = null
             for (url in listOfNotNull(requestedTrack.motionPreviewUrl, requestedTrack.artworkUrl)
@@ -229,32 +233,25 @@ private fun RetainedMotionArtwork(
                 contentScale = if (requestedTrack.catalogKind == dev.amatv.model.CatalogKind.Station) ContentScale.Fit else ContentScale.Crop,
             )
         }
-        var displayed by remember { mutableStateOf(cached) }
-        var incoming by remember { mutableStateOf<DecodedArtwork?>(null) }
-        val fade = remember { Animatable(0f) }
-        val initialPlaceholder = remember { SyntheticArtworkPainter(requestedTrack) }
         LaunchedEffect(ready) {
-            snapshotFlow { ready.value }.filterNotNull().collect { next ->
+            snapshotFlow { ready.value }.filterNotNull().collectLatest { next ->
                 if (next.key == displayed?.key) {
                     // A cached thumbnail can show synchronously while the same
                     // cover finishes a larger decode. Keep the real cover visible.
+                    incoming = null
                     displayed = next
-                    coverState = "ready"
-                    return@collect
+                    return@collectLatest
                 }
                 if (displayed == null) {
                     displayed = next
-                    coverState = "ready"
                 } else {
-                    // Establish alpha before publishing the new image. The
-                    // previous implementation reset it one frame too late.
-                    fade.snapTo(0f)
+                    // A newer cover takes over an interrupted fade at its
+                    // current opacity. The displayed poster stays opaque.
+                    if (incoming == null) fade.snapTo(0f)
                     incoming = next
-                    coverState = "blending"
                     fade.animateTo(1f, tween(360, easing = MotionTokens.KaraokeLineEasing))
                     displayed = next
                     incoming = null
-                    coverState = "ready"
                 }
             }
         }

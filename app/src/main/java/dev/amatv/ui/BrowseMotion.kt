@@ -1,5 +1,9 @@
 package dev.amatv.ui
 
+import android.animation.ValueAnimator
+import android.content.Context
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -27,6 +31,11 @@ internal val LocalEditorialArtworkLoader = staticCompositionLocalOf<EditorialArt
 /** Hidden browse content and the low-performance setting suppress all card previews. */
 internal val LocalBrowseMotionEnabled = staticCompositionLocalOf { true }
 internal val LocalBrowseContentVisible = staticCompositionLocalOf { true }
+
+/** Honor the same system animation setting before ValueAnimator exposes it on API 26. */
+internal fun systemAnimationsEnabled(context: Context): Boolean =
+    if (Build.VERSION.SDK_INT >= 26) ValueAnimator.areAnimatorsEnabled()
+    else Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
 
 /** The focused artwork qualifies immediately; hidden/inactive content stays gated. */
 @Composable

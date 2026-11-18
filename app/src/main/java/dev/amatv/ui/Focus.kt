@@ -56,6 +56,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.flow.first
 
+/** The remembered map retains identities even when their lazy item leaves composition. */
+internal fun <K> MutableMap<K, FocusRequester>.retainedFocusRequester(key: K, initial: FocusRequester? = null): FocusRequester =
+    getOrPut(key) { initial ?: FocusRequester() }
+
 /** Keep entry on an actual card/control, rather than a lazy container. */
 internal class ContentFocusEntry {
     private var focusedRequester by mutableStateOf<FocusRequester?>(null)

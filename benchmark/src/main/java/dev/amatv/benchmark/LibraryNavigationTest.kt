@@ -2,6 +2,7 @@ package dev.amatv.benchmark
 
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -45,7 +46,11 @@ class LibraryNavigationTest {
     }
 
     private fun evidence(name: String) {
-        val dir = File(instrumentation.context.getExternalFilesDir(null), "library-review").apply { mkdirs() }
+        val run = InstrumentationRegistry.getArguments().getString("run_id")
+            ?: "library-review-${SystemClock.elapsedRealtimeNanos()}"
+        require(run != "." && run != ".." && run.matches(Regex("[A-Za-z0-9_.-]+")))
+        val dir = File(instrumentation.context.getExternalFilesDir(null), "library-review/$run/$name")
+            .also { check(!it.exists() && it.mkdirs()) }
         device.takeScreenshot(File(dir, "$name.png"))
         device.dumpWindowHierarchy(File(dir, "$name.xml"))
         instrumentation.sendStatus(2, Bundle().apply { putString("libraryReview", name) })

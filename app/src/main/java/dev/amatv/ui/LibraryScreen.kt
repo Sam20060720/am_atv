@@ -1,5 +1,7 @@
 package dev.amatv.ui
 
+import java.util.Locale
+import androidx.core.os.ConfigurationCompat
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.focusGroup
@@ -7,7 +9,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.DisposableEffect
@@ -20,7 +21,6 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.text.input.ImeAction
-import kotlinx.coroutines.launch
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.BringIntoViewSpec
@@ -79,7 +79,6 @@ import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.platform.LocalWindowInfo
@@ -149,7 +148,8 @@ internal fun LibraryScreen(
     val latestRetry by rememberUpdatedState(onSelectSection)
     val latestSignIn by rememberUpdatedState(onSignIn)
     val latestPagination by rememberUpdatedState(pagination)
-    val locale = LocalConfiguration.current.locales[0]
+    val locales = ConfigurationCompat.getLocales(LocalConfiguration.current)
+    val locale = remember(locales.toLanguageTags()) { locales[0] ?: Locale.getDefault() }
     val tools = remember(selected, locale) {
         val sectionId = selected.shelfId
         LibraryBrowseTools(workScope, {

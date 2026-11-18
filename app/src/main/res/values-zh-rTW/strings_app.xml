@@ -13,7 +13,6 @@
     <string name="app_google_pairing_failed">Google 配對失敗。</string>
     <string name="app_apple_sign_in_required">請先登入 Apple Music 帳號以播放曲目。</string>
     <string name="app_choose_content_before_playback">請先選擇要播放的內容。</string>
-    <string name="app_multiple_songs_unavailable">多首歌曲暫時無法播放，請稍後重試。</string>
     <string name="app_recent_tracks">最近播放單曲</string>
     <string name="app_recent_albums_and_playlists">最近播放專輯與歌單</string>
     <string name="app_top_songs">熱門歌曲</string>

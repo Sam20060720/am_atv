@@ -48,7 +48,7 @@ fun PlayerBackdrop(
         Build.VERSION.SDK_INT >= 29 && ArtworkImages.memoryPolicy(context).constrained
     }
     val running = visible && animate && started && windowFocused &&
-        android.animation.ValueAnimator.areAnimatorsEnabled()
+        systemAnimationsEnabled(context)
     // Parent alpha=0 does not detach an AndroidView. Drop only its output after
     // the player's exit fade; either controller retains motion/palette on its
     // single worker while output buffers and native surfaces leave the window.

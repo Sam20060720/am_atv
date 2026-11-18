@@ -13,7 +13,6 @@
     <string name="app_google_pairing_failed">Google pairing failed.</string>
     <string name="app_apple_sign_in_required">Sign in to Apple Music to play music.</string>
     <string name="app_choose_content_before_playback">Choose music to play first.</string>
-    <string name="app_multiple_songs_unavailable">Several songs are unavailable. Please try again later.</string>
     <string name="app_recent_tracks">Recently Played Songs</string>
     <string name="app_recent_albums_and_playlists">Recently Played Albums and Playlists</string>
     <string name="app_top_songs">Top Songs</string>

@@ -1147,7 +1147,7 @@ private fun CatalogActionSheetContent(
                                 contentPadding = PaddingValues(horizontal = metrics.padding, vertical = metrics.viewportPadding)) {
                                 if (pane == CatalogSheetPane.Actions) {
                                     itemsIndexed(mainRows, key = { _, row -> row.id }) { index, row ->
-                                        val requester = mainRequesters.getOrPut(row.id) { FocusRequester() }
+                                        val requester = mainRequesters.retainedFocusRequester(row.id)
                                         val selected = (row.id == "like" && state?.rating == PersonalRating.Like) || (row.id == "dislike" && state?.rating == PersonalRating.Dislike)
                                         Column {
                                             if (index > 0 && catalogActionGroup(row.id) != catalogActionGroup(mainRows[index - 1].id)) CatalogSheetSeparator()
@@ -1176,7 +1176,7 @@ private fun CatalogActionSheetContent(
                                 } else if (pane == CatalogSheetPane.SleepTimer) {
                                     itemsIndexed(sleepOptions, key = { _, option -> option.name }) { index, option ->
                                         val id = "sleep-${option.name}"
-                                        val requester = mainRequesters.getOrPut(id) { FocusRequester() }
+                                        val requester = mainRequesters.retainedFocusRequester(id)
                                         val enabled = onSleepTimer != null &&
                                             (option != SleepTimerOption.EndOfTrack || canSleepAtTrackEnd) &&
                                             (option != SleepTimerOption.EndOfContext || canSleepAtContextEnd)
@@ -1208,7 +1208,7 @@ private fun CatalogActionSheetContent(
                                     val content = targets
                                     itemsIndexed(content, key = { _, target -> "${target.resourceType}:${target.resourceId ?: target.id}" }) { index, target ->
                                         val targetKey = "${target.resourceType}:${target.resourceId ?: target.id}"
-                                        val requester = targetRequesters.getOrPut(targetKey) { FocusRequester() }
+                                        val requester = targetRequesters.retainedFocusRequester(targetKey)
                                         CatalogSheetRow(target.title, Modifier.automationId("catalog-action-target-$index").focusRequester(requester)
                                             .onFocusChanged { if (it.isFocused) focusVisit.focused(targetKey) },
                                             enabled = !busy && (pane == CatalogSheetPane.Artists || mutationReady()) && targetKey !in unconfirmedAppendTargets, artwork = target) {

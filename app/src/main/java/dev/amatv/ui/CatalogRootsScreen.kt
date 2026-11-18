@@ -145,7 +145,7 @@ internal fun CatalogRootsScreen(
                 horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 itemsIndexed(items, key = { _, item -> itemKey(item) }, contentType = { _, _ -> "genre" }) { index, item ->
                     val key = itemKey(item)
-                    val requester = requesters.getOrPut(key) { if (index == 0) firstFocus else FocusRequester() }
+                    val requester = requesters.retainedFocusRequester(key, if (index == 0) firstFocus else null)
                     if (selectedKey == key) SideEffect { entry?.requester = requester }
                     FocusSurface({
                         // Pointer activation can open before focus changes.

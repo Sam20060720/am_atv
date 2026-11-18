@@ -1,5 +1,6 @@
 package dev.amatv.ui
 
+import androidx.core.os.ConfigurationCompat
 import android.view.KeyEvent
 import androidx.annotation.StringRes
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -37,7 +38,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.amatv.R
@@ -108,7 +108,7 @@ internal fun CatalogResourceScreen(
         }
     }
     val description = remember(profile?.description) { profile?.description?.let {
-        android.text.Html.fromHtml(it, android.text.Html.FROM_HTML_MODE_COMPACT).toString().trim()
+        androidx.core.text.HtmlCompat.fromHtml(it, androidx.core.text.HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()
     }?.takeIf(String::isNotBlank) }
     val backdrop = LocalBrowseBackdropController.current
     LaunchedEffect(profile?.item?.artworkUrl) { backdrop?.select(profile?.item ?: source) }
@@ -210,7 +210,7 @@ internal fun CatalogResourceScreen(
                     }
                 }
                 if (description != null) item(key = "description", contentType = "reading") {
-                    val requester = if (firstBodyKey == "description") firstFocus else entries.getOrPut("description") { FocusRequester() }
+                    val requester = if (firstBodyKey == "description") firstFocus else entries.retainedFocusRequester("description")
                     if (selectedKey == "description") SideEffect { entry?.requester = requester }
                     ResourceReadingSurface("description", 1, list, contentActive, requester, menuFocus,
                         aboveFocus = if (firstBodyKey == "description") menuFocus else null,
@@ -220,7 +220,7 @@ internal fun CatalogResourceScreen(
                 }
                 itemsIndexed(fields, key = { _, field -> "metadata:${field.key}" }, contentType = { _, _ -> "reading" }) { index, field ->
                     val key = "metadata:${field.key}"
-                    val requester = if (key == firstBodyKey) firstFocus else entries.getOrPut(key) { FocusRequester() }
+                    val requester = if (key == firstBodyKey) firstFocus else entries.retainedFocusRequester(key)
                     if (selectedKey == key) SideEffect { entry?.requester = requester }
                     ResourceReadingSurface(key, 1 + (if (description != null) 1 else 0) + index, list, contentActive, requester, menuFocus,
                         aboveFocus = if (key == firstBodyKey) menuFocus else null,
@@ -235,7 +235,7 @@ internal fun CatalogResourceScreen(
                 }
                 items(links, key = { "link:${it.ref.key}" }, contentType = { "link" }) { link ->
                     val key = "link:${link.ref.key}"
-                    val requester = if (key == firstBodyKey) firstFocus else entries.getOrPut(key) { FocusRequester() }
+                    val requester = if (key == firstBodyKey) firstFocus else entries.retainedFocusRequester(key)
                     if (selectedKey == key) SideEffect { entry?.requester = requester }
                     ArtistTextAction(link.title.orEmpty(), { onOpenLink(link) },
                         Modifier.padding(horizontal = 14.dp).focusRequester(requester)
@@ -244,7 +244,7 @@ internal fun CatalogResourceScreen(
                             })
                 }
                 if (state.loading || state.failed) item(key = "profile-status", contentType = "status") {
-                    val requester = if (firstBodyKey == "profile-status") firstFocus else entries.getOrPut("profile-status") { FocusRequester() }
+                    val requester = if (firstBodyKey == "profile-status") firstFocus else entries.retainedFocusRequester("profile-status")
                     if (selectedKey == "profile-status") SideEffect { entry?.requester = requester }
                     ArtistTextAction(if (state.loading) stringResource(R.string.browse_tracks_loading) else catalogRecoveryLabel(state.failureReason),
                         { performCatalogRecovery(state.failureReason, { statusWanted = true; browser.retryProfile() }, onSignIn) },
@@ -263,7 +263,7 @@ internal fun CatalogResourceScreen(
                     val page = state.sections[key] ?: ArtistSectionState()
                     if (!page.loaded || page.items.isNotEmpty() || page.next != null || page.loading || page.failed) CatalogShelf(
                         key, section.title ?: metadataLabel(section.id), "resource", page, contentActive, menuFocus,
-                        (if (key == firstBodyKey) firstFocus else entries.getOrPut(key) { FocusRequester() }), selectedKey, onSelected = { selectedKey = it; if (key == firstBodyKey) pageTop.request() },
+                        (if (key == firstBodyKey) firstFocus else entries.retainedFocusRequester(key)), selectedKey, onSelected = { selectedKey = it; if (key == firstBodyKey) pageTop.request() },
                         onMore = { browser.more(section) }, onRetry = { browser.retry(section) },
                         onEmptyFocus = {
                             // Lazy virtualization also disposes a shelf. Only a
@@ -420,7 +420,8 @@ private fun metadataLabelResource(key: String): Int? = when (key) {
 
 @Composable
 private fun metadataValue(field: CatalogMetadataField): String {
-    val locale = LocalConfiguration.current.locales[0] ?: Locale.getDefault()
+    val locales = ConfigurationCompat.getLocales(LocalConfiguration.current)
+    val locale = remember(locales.toLanguageTags()) { locales[0] ?: Locale.getDefault() }
     val formatted = ArrayList<String>(field.values.size)
     for (value in field.values) {
         val display = when (field.format) {

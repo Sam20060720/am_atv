@@ -59,22 +59,30 @@ internal fun homeArtworkPrefetchWindow(
     return positions.toList()
 }
 
-internal data class HomeArtworkPrefetchGeometry(val url: String, val width: Dp, val height: Dp)
+/** Rendering and decoded prefetch use the same cover, crop and physical dimensions. */
+internal data class HomeArtworkPresentation(
+    val track: Track,
+    val width: Dp,
+    val height: Dp,
+    val aspect: Float,
+) {
+    val portrait: Boolean get() = aspect < 1f
+    val posterUrl: String? get() = track.posterForAspect(aspect)
+}
 
-internal fun homeArtworkPrefetchGeometry(track: Track, featured: Boolean, layout: HomeShelfLayout): HomeArtworkPrefetchGeometry? {
+internal fun homeArtworkPresentation(track: Track, featured: Boolean, layout: HomeShelfLayout): HomeArtworkPresentation {
     val width = if (featured) layout.showcaseWidth else layout.cardWidth
     val portraitAspect = layout.showcaseWidth.value / layout.showcaseHeight.value
     val artwork = track.forHomePlaylistArtwork()
     val portrait = !layout.classic && featured && track.catalogKind != dev.amatv.model.CatalogKind.Playlist && artwork.motionForAspect(
         portraitAspect,
     )?.aspectRatio?.let { it < 0.9f } == true
-    val url = artwork.posterForAspect(if (portrait) portraitAspect else 1f) ?: return null
     val height = when {
         layout.classic && featured -> 184.dp
         portrait -> layout.showcaseHeight
         else -> width
     }
-    return HomeArtworkPrefetchGeometry(url, width, height)
+    return HomeArtworkPresentation(artwork, width, height, if (portrait) portraitAspect else 1f)
 }
 
 private data class HomeArtworkPrefetchRequest(val url: String, val width: Int, val height: Int)
@@ -127,10 +135,10 @@ internal fun rememberHomeArtworkPrefetch(
                 positions.mapNotNull { position ->
                     val shelf = shelves[position.shelf]
                     val track = shelf.items[position.item]
-                    val geometry = homeArtworkPrefetchGeometry(track, shelf.featured, layout)
-                        ?: return@mapNotNull null
-                    with(density) { HomeArtworkPrefetchRequest(geometry.url,
-                        geometry.width.roundToPx(), geometry.height.roundToPx()) }
+                    val artwork = homeArtworkPresentation(track, shelf.featured, layout)
+                    val url = artwork.posterUrl ?: return@mapNotNull null
+                    with(density) { HomeArtworkPrefetchRequest(url,
+                        artwork.width.roundToPx(), artwork.height.roundToPx()) }
                 }.distinctBy { it.url }
             }
         }.collectLatest { requests ->

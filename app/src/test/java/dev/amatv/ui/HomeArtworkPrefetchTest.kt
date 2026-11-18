@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import dev.amatv.model.Track
 import dev.amatv.model.EditorialMotionAsset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 class HomeArtworkPrefetchTest {
@@ -16,10 +17,14 @@ class HomeArtworkPrefetchTest {
             "https://example.test/background.jpg", 2048, 2732)
         val playlist = Track("playlist", "Playlist", "Artist", "", 0L, emptyList(), emptyList(),
             catalogKind = dev.amatv.model.CatalogKind.Playlist, motionArtworkVariants = listOf(background, square))
-        assertEquals(HomeArtworkPrefetchGeometry(square.previewUrl!!, 200.dp, 200.dp),
-            homeArtworkPrefetchGeometry(playlist, true, HomeShelfLayout(classic = false)))
-        assertEquals(HomeArtworkPrefetchGeometry(square.previewUrl!!, 210.dp, 184.dp),
-            homeArtworkPrefetchGeometry(playlist, true, HomeShelfLayout(classic = true)))
+        for (classic in listOf(false, true)) {
+            val artwork = assertCover(playlist, true, classic, square.previewUrl,
+                if (classic) 210.dp else 200.dp, if (classic) 184.dp else 200.dp)
+            assertFalse(artwork.portrait)
+            assertEquals(listOf(square), artwork.track.motionArtworkVariants)
+            assertEquals(playlist.id, artwork.track.id)
+            assertEquals(listOf(background, square), playlist.motionArtworkVariants)
+        }
     }
 
     @Test fun prefetchUsesTheActualStyleCoverAndChosenPosterGeometry() {
@@ -27,12 +32,23 @@ class HomeArtworkPrefetchTest {
         val portrait = EditorialMotionAsset("portrait", "https://example.test/portrait.m3u8", "https://example.test/portrait.jpg", 600, 800)
         val track = Track("123", "Album", "Artist", "", 0L, emptyList(), emptyList(),
             motionArtworkVariants = listOf(square, portrait))
-        assertEquals(HomeArtworkPrefetchGeometry(square.previewUrl!!, 168.dp, 168.dp),
-            homeArtworkPrefetchGeometry(track, false, HomeShelfLayout(classic = true)))
-        assertEquals(HomeArtworkPrefetchGeometry(square.previewUrl!!, 210.dp, 184.dp),
-            homeArtworkPrefetchGeometry(track, true, HomeShelfLayout(classic = true)))
-        assertEquals(HomeArtworkPrefetchGeometry(portrait.previewUrl!!, 200.dp, 278.dp),
-            homeArtworkPrefetchGeometry(track, true, HomeShelfLayout(classic = false)))
+        assertFalse(assertCover(track, false, true, square.previewUrl, 168.dp, 168.dp).portrait)
+        assertFalse(assertCover(track, false, false, square.previewUrl, 124.dp, 124.dp).portrait)
+        assertFalse(assertCover(track, true, true, square.previewUrl, 210.dp, 184.dp).portrait)
+        assertTrue(assertCover(track, true, false, portrait.previewUrl, 200.dp, 278.dp).portrait)
+    }
+
+    @Test fun playlistWithoutASquareMotionCoverKeepsItsStaticCoverAndNeverUsesTheBackground() {
+        val background = EditorialMotionAsset("backgroundTall", "https://example.test/background.m3u8",
+            "https://example.test/background.jpg", 600, 800)
+        val playlist = Track("playlist", "Playlist", "Artist", "", 0L, emptyList(), emptyList(),
+            catalogKind = dev.amatv.model.CatalogKind.Playlist, artworkUrl = "https://example.test/static.jpg",
+            motionArtworkUrl = background.videoUrl, motionPreviewUrl = background.previewUrl,
+            motionArtworkVariants = listOf(background))
+        val artwork = assertCover(playlist, true, false, playlist.artworkUrl, 200.dp, 200.dp)
+        assertFalse(artwork.portrait)
+        assertTrue(artwork.track.motionArtworkVariants.isEmpty())
+        assertEquals(null, artwork.track.motionArtworkUrl)
     }
 
     @Test fun visibleCoversPrecedeSpeculationEvenWhenTheAllowanceIsSmall() {
@@ -93,4 +109,11 @@ class HomeArtworkPrefetchTest {
     }
 
     private fun p(shelf: Int, item: Int) = HomeArtworkPosition(shelf, item)
+
+    private fun assertCover(track: Track, featured: Boolean, classic: Boolean, posterUrl: String?, width: Dp, height: Dp): HomeArtworkPresentation =
+        homeArtworkPresentation(track, featured, HomeShelfLayout(classic)).also {
+            assertEquals(posterUrl, it.posterUrl)
+            assertEquals(width, it.width)
+            assertEquals(height, it.height)
+        }
 }

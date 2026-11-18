@@ -1,5 +1,7 @@
 package dev.amatv.ui
 
+import java.util.Locale
+import androidx.core.os.ConfigurationCompat
 import androidx.compose.ui.unit.sp
 
 import androidx.compose.foundation.layout.widthIn
@@ -191,7 +193,8 @@ internal fun BrowseShell(
     LaunchedEffect(tabSessions, tab, libraryRevision) {
         tabSessions.values.forEach { it.invalidateLibrary(libraryRevision) }
     }
-    val localeTag = androidx.compose.ui.platform.LocalConfiguration.current.locales[0].toLanguageTag()
+    val locales = ConfigurationCompat.getLocales(androidx.compose.ui.platform.LocalConfiguration.current)
+    val localeTag = remember(locales.toLanguageTags()) { (locales[0] ?: Locale.getDefault()).toLanguageTag() }
     LaunchedEffect(tabSessions, tab, browseRefreshRevision, localeTag) {
         tabSessions.values.forEach { it.inlineBrowse.invalidate("$browseRefreshRevision:$localeTag") }
     }
@@ -263,8 +266,6 @@ internal fun BrowseShell(
     val collectionState = detail?.collection?.state?.collectAsState()?.value ?: CollectionBrowserState()
     val collection = collectionState.collection
     val artist = detail?.takeIf { it.artistKey != null }?.source
-    val currentArtistVisit = artistVisits.firstOrNull { it.key == detail?.artistKey }
-    val resourceState = detail?.page?.state?.collectAsState()?.value
     val rootStateHolder = key(services, connectionState, accountScopeKey) { rememberSaveableStateHolder() }
     // Navigation visits are remember-only. Keep their saved UI state in this
     // session too, so recreated ordinal visit keys cannot restore another item.

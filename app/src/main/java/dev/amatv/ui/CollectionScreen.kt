@@ -80,8 +80,10 @@ internal fun CollectionScreen(
     val focusEntry = LocalContentFocusEntry.current
     var savedSongFocus by rememberSaveable { mutableIntStateOf(-1) }
     var savedControlFocus by rememberSaveable { mutableStateOf("play") }
-    val songFocus = remember(collection.id) { mutableListOf<FocusRequester>() }
-    while (songFocus.size < state.tracks.size) songFocus += FocusRequester()
+    val retainedSongFocus = remember(collection.id) { mutableListOf<FocusRequester>() }
+    val songFocus = remember(retainedSongFocus, state.tracks.size) {
+        retainedSongFocus.apply { while (size < state.tracks.size) add(FocusRequester()) }
+    }
     val continuationFocus = remember { FocusRequester() }
     var wantsContinuationFocus by remember { mutableStateOf(false) }
     var continuationIndex by remember { mutableIntStateOf(-1) }
@@ -303,7 +305,7 @@ internal fun CollectionScreen(
     }
     val description = remember(collection.description) {
         collection.description?.let {
-            android.text.Html.fromHtml(it, android.text.Html.FROM_HTML_MODE_COMPACT).toString().trim()
+            androidx.core.text.HtmlCompat.fromHtml(it, androidx.core.text.HtmlCompat.FROM_HTML_MODE_COMPACT).toString().trim()
         }?.takeIf(String::isNotBlank)
     }
     val backdropController = LocalBrowseBackdropController.current
@@ -324,7 +326,7 @@ internal fun CollectionScreen(
                 Modifier.fillMaxWidth().padding(top = 4.dp), state = artistRowState, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 itemsIndexed(state.artists, key = { _, artist -> "${artist.resourceType}:${artist.resourceId ?: artist.id}" }) { index, artist ->
                     val artistKey = "artist:${artist.resourceType}:${artist.resourceId ?: artist.id}"
-                    val artistFocus = artistRequesters.getOrPut(artistKey) { FocusRequester() }
+                    val artistFocus = artistRequesters.retainedFocusRequester(artistKey)
                     if (savedSongFocus < 0 && savedControlFocus == artistKey) SideEffect { focusEntry?.requester = artistFocus }
                     FocusSurface({
                         savedSongFocus = -1; savedControlFocus = artistKey; lastArtistKey = artistKey; focusEntry?.requester = artistFocus

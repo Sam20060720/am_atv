@@ -12,8 +12,6 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.Shader
 import android.util.LruCache
 import kotlin.math.roundToInt
-import kotlin.math.ceil
-import kotlin.math.max
 
 /**
  * A small, cached alpha texture uses the ordinary bitmap shader path. Lyric
@@ -33,8 +31,6 @@ class TextureAlphaMask {
     )
     private var textureKey = -1
     private var shader: BitmapShader? = null
-    private var edgeKey: List<Any>? = null
-    private var edgeShader: BitmapShader? = null
 
     fun draw(
         canvas: Canvas,
@@ -68,34 +64,16 @@ class TextureAlphaMask {
             } else {
                 paint.color = Color.argb(if (end <= start && start <= edge) last else first, 255, 255, 255)
             }
-        } else if (!canvas.isHardwareAccelerated &&
-            end - start < max(2f, (if (vertical) bottom - top else right - left) * RAMP_SIZE / 16_384f)
-        ) {
-            // Skia's Android 12 software sampler uses fixed-point coordinates.
-            // A tiny clipped feather can overflow those coordinates far beyond
-            // the ramp, so rasterize just this 1-D edge at destination pixels.
-            // HWUI samples the existing ramp with floating-point coordinates;
-            // rerasterizing this moving edge there creates/uploads a bitmap on
-            // every lyric frame instead of updating the shader's matrix.
+        } else if (!canvas.isHardwareAccelerated) {
+            // Software canvases have no GPU colorizer cost. Keep their original
+            // gradient rasterization instead of quantizing alpha through a texture.
             val origin = if (vertical) top else left
-            val count = ceil((if (vertical) bottom - top else right - left).toDouble()).toInt().coerceAtLeast(1)
-            val key = listOf(first, last, start, end, origin, count, vertical)
-            if (key != edgeKey) {
-                val pixels = IntArray(count) { index ->
-                    val fraction = ((origin + index + .5f - start) / (end - start)).coerceIn(0f, 1f)
-                    Color.argb((first + (last - first) * fraction).roundToInt(), 0, 0, 0)
-                }
-                val bitmap = Bitmap.createBitmap(pixels, if (vertical) 1 else count,
-                    if (vertical) count else 1, Bitmap.Config.ARGB_8888)
-                bitmap.prepareToDraw()
-                edgeShader = BitmapShader(bitmap, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
-                edgeKey = key
-            }
-            matrix.setScale(if (vertical) right - left else 1f, if (vertical) 1f else bottom - top)
-            matrix.postTranslate(left, top)
-            edgeShader?.setLocalMatrix(matrix)
-            paint.isFilterBitmap = false
-            paint.shader = edgeShader
+            val extent = if (vertical) bottom - top else right - left
+            val a = Color.argb(first, 0, 0, 0)
+            val b = Color.argb(last, 0, 0, 0)
+            paint.shader = LinearGradient(left, top, if (vertical) left else right,
+                if (vertical) bottom else top, intArrayOf(a, a, b, b),
+                floatArrayOf(0f, (start - origin) / extent, (end - origin) / extent, 1f), Shader.TileMode.CLAMP)
             paint.color = Color.WHITE
         } else {
             val key = (first shl 8) or last

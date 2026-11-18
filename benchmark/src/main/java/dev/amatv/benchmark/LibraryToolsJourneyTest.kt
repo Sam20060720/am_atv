@@ -45,11 +45,16 @@ class LibraryToolsJourneyTest {
             !original.isSelected && !original.isChecked && !ui.has("library-tools-cancel")
     }, 12_000L)
 
+    private fun artifactDirectory(scenario: String): File {
+        val run = InstrumentationRegistry.getArguments().getString("run_id")
+            ?: "library-tools-${SystemClock.elapsedRealtimeNanos()}"
+        require(run != "." && run != ".." && run.matches(Regex("[A-Za-z0-9_.-]+")))
+        return File(checkNotNull(instrumentation.context.getExternalFilesDir(null)), "shared-input/$run/$scenario")
+            .also { check(!it.exists() && it.mkdirs()) }
+    }
+
     @Test fun filterBackCancelsTheDraftAfterAVisibleKeyboard() {
-        val run = InstrumentationRegistry.getArguments().getString("run_id") ?: "ime-back"
-        require(run.matches(Regex("[A-Za-z0-9_.-]+")))
-        val out = File(checkNotNull(instrumentation.context.getExternalFilesDir(null)), "shared-input/$run")
-        check(!out.exists() && out.mkdirs())
+        val out = artifactDirectory("ime-back")
         val result = JSONObject().put("account_mutations", false).put("audio_operations", false)
         try {
             launch(0)
@@ -75,10 +80,7 @@ class LibraryToolsJourneyTest {
     }
 
     @Test fun sharedFilterHighlightsFocusAndHoverWithoutStealingTheEditor() {
-        val run = InstrumentationRegistry.getArguments().getString("run_id") ?: "shared-input"
-        require(run.matches(Regex("[A-Za-z0-9_.-]+")))
-        val out = File(checkNotNull(instrumentation.context.getExternalFilesDir(null)), "shared-input/$run")
-        check(!out.exists() && out.mkdirs())
+        val out = artifactDirectory("focus-hover")
         val result = JSONObject().put("account_mutations", false).put("audio_operations", false)
         fun hover(action: Int) {
             val bounds = ui.id("library-filter").visibleBounds

@@ -151,7 +151,7 @@ internal fun CatalogCollectionBody(
     }
     @Composable fun itemModifier(key: String, automation: String, firstRow: Boolean, firstColumn: Boolean,
         lastColumn: Boolean = false): Modifier {
-        val requester = requesters.getOrPut(key) { FocusRequester() }
+        val requester = requesters.retainedFocusRequester(key)
         if (contentActive && bodyHasFocus && retainedKey == key) SideEffect { entry?.requester = requester }
         return Modifier.automationId(automation).focusRequester(requester)
             .then(if (retainedKey == key) Modifier.focusRequester(firstFocus) else Modifier)

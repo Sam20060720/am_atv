@@ -65,18 +65,24 @@ class NavigationRaceFixtureTest {
     @Test fun insightsLoadingCanBeWithdrawnByUpLeftAndBack() {
         for (key in listOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_BACK)) {
             runCase("insights-$key", "insights") { ui, http, report ->
-                ui.await("Direct Insights entry did not focus its loading anchor", 3_000L) {
-                    "catalog-collection-empty" in ui.snapshot().focused
+                ui.await("Loading Insights did not retain its actual navigation owner", 3_000L) {
+                    val snapshot = ui.snapshot()
+                    "catalog-collection-empty" in snapshot.ids && "fixture-menu" in snapshot.focused
                 }
+                val loading = ui.snapshot()
+                val placeholder = loading.nodes.single { it.id == "catalog-collection-empty" }
+                check(!placeholder.focusable && !placeholder.clickable) {
+                    "Loading text must not become an artificial input target"
+                }
+                check("catalog-collection-item-0-song" !in loading.ids) { "Fixture response escaped its gate" }
+                report.put("loading_navigation_owner", loading.json(true)).put("withdrawal_key", key)
                 ui.inject(key)
-                // Home now enters the collection directly. With no source
-                // rail, Up/Left leave its waiting anchor for the actual menu.
-                val allowed = if (key == KeyEvent.KEYCODE_BACK) setOf("fixture-closed")
-                    else setOf("fixture-menu")
-                ui.await("Withdrawal did not leave the pending body", 3_000L) {
-                    ui.snapshot().focused.any { it in allowed }
+                // Loading has no actionable body. Up/Left keep the real menu;
+                // Back closes the visit before its pending HTTP response.
+                val expected = if (key == KeyEvent.KEYCODE_BACK) "fixture-closed" else "fixture-menu"
+                ui.await("Withdrawal did not retain the expected navigation owner", 3_000L) {
+                    expected in ui.snapshot().focused
                 }
-                val expected = ui.snapshot().focused.single { it in allowed }
                 report.put("before_response", ui.snapshot().json(true))
                 http.releaseFirst.countDown()
                 check(http.firstFinished.await(3, TimeUnit.SECONDS))

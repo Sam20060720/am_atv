@@ -2,9 +2,11 @@ package dev.amatv.ui
 
 import android.content.Context
 import android.net.Uri
+import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.Util
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSink
 import androidx.media3.datasource.DataSource
@@ -24,6 +26,7 @@ import dev.amatv.integration.PublicEditorialMotionClient
 import java.io.File
 
 /** Only anonymous decorative video bytes; never the protected music player. */
+@OptIn(UnstableApi::class)
 internal object MotionVideoCache {
     private const val CAPACITY = 96L * 1024 * 1024
     private val lock = Any()

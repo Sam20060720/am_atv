@@ -52,7 +52,6 @@
     <string name="browse_play">Play</string>
     <string name="browse_shuffle">Shuffle</string>
     <string name="browse_tracks_empty">No songs available</string>
-    <string name="browse_back">Back</string>
     <string name="browse_track_index">%1$d</string>
     <string name="browse_song_duration">%1$d:%2$02d</string>
     <string name="browse_duration_hours">%1$d hr %2$d min</string>

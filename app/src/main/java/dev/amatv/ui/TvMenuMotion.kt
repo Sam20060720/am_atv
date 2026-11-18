@@ -1,7 +1,9 @@
 package dev.amatv.ui
 
-import android.animation.ValueAnimator
 import android.os.Build
+import androidx.annotation.ChecksSdkIntAtLeast
+import androidx.annotation.RequiresApi
+import androidx.compose.ui.platform.LocalContext
 import android.view.WindowManager
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -122,7 +124,8 @@ internal class TvMenuMotion(
 
 @Composable
 internal fun rememberTvMenuMotion(lowPerformanceMode: Boolean): TvMenuMotion {
-    val systemMotionEnabled = remember { ValueAnimator.areAnimatorsEnabled() }
+    val context = LocalContext.current
+    val systemMotionEnabled = remember(context) { systemAnimationsEnabled(context) }
     val scope = rememberCoroutineScope()
     val motion = remember(scope, lowPerformanceMode, systemMotionEnabled) {
         TvMenuMotion(!lowPerformanceMode && systemMotionEnabled, scope)
@@ -163,11 +166,13 @@ internal fun Modifier.tvMenuPane(motion: TvMenuMotion): Modifier = graphicsLayer
 }
 
 @Composable
+@ChecksSdkIntAtLeast(api = 31)
 internal fun tvMenuMaterialAvailable(source: GraphicsLayer?, lowPerformanceMode: Boolean): Boolean =
     LocalInterfaceStyle.current != InterfaceStyle.Classic && source != null &&
         Build.VERSION.SDK_INT >= 31 && !lowPerformanceMode
 
 @Composable
+@RequiresApi(31)
 internal fun TvMenuBackdrop(source: GraphicsLayer, placement: CatalogMenuPlacement, motion: TvMenuMotion) {
     val density = LocalDensity.current
     val radius = tvMenuMetrics().radius

@@ -44,7 +44,6 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathParser
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -141,7 +140,7 @@ internal fun CatalogSearchScreen(
     val historyRequesters = remember(state.cacheRevision) { mutableMapOf<String, FocusRequester>() }
     val clearHistoryFocus = remember { FocusRequester() }
     var lastHistory by remember(state.cacheRevision) { mutableStateOf<String?>(null) }
-    val firstHistory = state.history.firstOrNull()?.let { historyRequesters.getOrPut(it) { FocusRequester() } }
+    val firstHistory = state.history.firstOrNull()?.let { historyRequesters.retainedFocusRequester(it) }
     val items = remember(state.items, recentTracks, showingRecent, capabilities) {
         capabilities.filterTracks(if (showingRecent) recentTracks else state.items)
     }
@@ -159,7 +158,7 @@ internal fun CatalogSearchScreen(
     val hintFocus = remember(state.query.trim()) { mutableMapOf<String, FocusRequester>() }
     val hintRow = rememberLazyListState()
     var lastHint by remember(state.query.trim()) { mutableStateOf<String?>(null) }
-    val firstHint = if (showSuggestions) hintFocus.getOrPut(choices.first().key) { FocusRequester() } else null
+    val firstHint = if (showSuggestions) hintFocus.retainedFocusRequester(choices.first().key) else null
     val selectedScopeFocus = scopeFocus.getValue(state.scope)
     val selectedCategory = categoryFocus.getValue(state.type)
     val categoryList = retained.categories.getOrPut(state.scope) { LazyListState() }
@@ -437,7 +436,7 @@ internal fun CatalogSearchScreen(
                 contentPadding = PaddingValues(vertical = 7.dp, horizontal = 5.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                 itemsIndexed(state.history, key = { _, query -> "query:$query" }) { index, query ->
-                    val requester = historyRequesters.getOrPut(query) { FocusRequester() }
+                    val requester = historyRequesters.retainedFocusRequester(query)
                     FocusSurface({
                         cancelFocusIntent(); leaveEditing()
                         // The history chip disappears synchronously when the query changes.
@@ -481,7 +480,7 @@ internal fun CatalogSearchScreen(
             horizontalArrangement = Arrangement.spacedBy(10.dp), contentPadding = PaddingValues(vertical = 7.dp, horizontal = 5.dp),
             verticalAlignment = Alignment.CenterVertically) {
             itemsIndexed(choices, key = { _, choice -> choice.key }) { index, choice ->
-                val requester = hintFocus.getOrPut(choice.key) { FocusRequester() }
+                val requester = hintFocus.retainedFocusRequester(choice.key)
                 FocusSurface({
                     cancelFocusIntent(); leaveEditing()
                     if (choice.term != null) { runCatching { selectedScopeFocus.requestFocus() }; browser.submit(choice.term.searchTerm) }
@@ -579,7 +578,7 @@ internal fun CatalogSearchScreen(
                 } else {
                     fun modifier(index: Int, item: Track, columns: Int): Modifier {
                         val itemKey = rowKey(index, item)
-                        val requester = if (index == 0) firstResult else requesters.getOrPut(itemKey) { FocusRequester() }
+                        val requester = if (index == 0) firstResult else requesters.retainedFocusRequester(itemKey)
                         requesters[itemKey] = requester
                         return Modifier.automationId("search-result-$index").focusRequester(requester)
                             .onFocusChanged { if (it.isFocused) { zone = SearchZone.Results; retained.zone = zone; savedKeys[key] = itemKey; entry?.requester = requester } }

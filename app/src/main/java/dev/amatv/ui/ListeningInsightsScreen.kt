@@ -86,7 +86,7 @@ internal fun ListeningInsightsScreen(
     LaunchedEffect(visit.key, items.firstOrNull()?.artworkUrl) { items.firstOrNull()?.let { backdrop?.select(it) } }
     val summaryFocus = remember(visit.key) { mutableMapOf<String, FocusRequester>() }
     val viewFocus = remember(visit.key) { ReplayView.entries.associateWith { FocusRequester() } }
-    val selectedSummaryFocus = visit.selectedSummary?.let { summaryFocus.getOrPut(it.id) { FocusRequester() } }
+    val selectedSummaryFocus = visit.selectedSummary?.let { summaryFocus.retainedFocusRequester(it.id) }
     val selectedViewFocus = viewFocus.getValue(visit.replayView)
     val replay = visit.source == ListeningInsightsSource.Replay && visit.summaries.isNotEmpty()
     val title = visit.entryTitle?.takeIf(String::isNotBlank)
@@ -107,7 +107,7 @@ internal fun ListeningInsightsScreen(
             FocusTrackingRow(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 itemsIndexed(visit.summaries, key = { _, summary -> summary.id }) { index, summary ->
-                    val requester = summaryFocus.getOrPut(summary.id) { FocusRequester() }
+                    val requester = summaryFocus.retainedFocusRequester(summary.id)
                     ArtistTextAction(summaryLabel(summary), { browser.selectReplay(summary, visit.replayView) },
                         Modifier.background(if (summary == visit.selectedSummary) Color.White.copy(alpha = 0.08f) else Color.Transparent, RoundedCornerShape(18.dp))
                             .focusRequester(requester).automationId("insights-summary-$index")

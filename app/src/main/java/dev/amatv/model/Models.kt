@@ -233,8 +233,6 @@ object LyricTimeline {
      */
     val excludedEmphasisScriptBlocks: Set<Character.UnicodeBlock> = setOf(
         Character.UnicodeBlock.ARABIC,
-        Character.UnicodeBlock.ARABIC_EXTENDED_A,
-        Character.UnicodeBlock.ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS,
         Character.UnicodeBlock.ARABIC_PRESENTATION_FORMS_A,
         Character.UnicodeBlock.ARABIC_PRESENTATION_FORMS_B,
         Character.UnicodeBlock.ARABIC_SUPPLEMENT,
@@ -264,6 +262,9 @@ object LyricTimeline {
         Character.UnicodeBlock.HANGUL_SYLLABLES,
         Character.UnicodeBlock.HANGUL_JAMO_EXTENDED_A,
         Character.UnicodeBlock.HANGUL_JAMO_EXTENDED_B,
+    ) + listOfNotNull(
+        runCatching { Character.UnicodeBlock.forName("ARABIC_EXTENDED_A") }.getOrNull(),
+        runCatching { Character.UnicodeBlock.forName("ARABIC_MATHEMATICAL_ALPHABETIC_SYMBOLS") }.getOrNull(),
     )
 
     const val DEFAULT_LINE_OFFSET_MS = -500L
@@ -274,7 +275,6 @@ object LyricTimeline {
     const val LINE_LOOKAHEAD_MS = 180L
     const val INSTRUMENTAL_MIN_GAP_MS = 7_000L
     const val INSTRUMENTAL_DURATION_TRIM_MS = 800L
-    const val INSTRUMENTAL_DOT_FINAL_SEGMENT_MS = 750L
 
     data class CharacterEmphasisTiming(
         val animationDurationMs: Long,
@@ -311,21 +311,16 @@ object LyricTimeline {
     }
 
     fun containsExcludedEmphasisScript(text: CharSequence): Boolean {
-        for (i in 0 until text.length) {
-            val block = Character.UnicodeBlock.of(text[i])
-            if (block in splitOnCharsBlocks || block in excludedEmphasisScriptBlocks) return true
+        var index = 0
+        while (index < text.length) {
+            val codePoint = Character.codePointAt(text, index)
+            val block = Character.UnicodeBlock.of(codePoint)
+            // Android 7's Character API omits these two named constants.
+            if (codePoint in 0x08A0..0x08FF || codePoint in 0x1EE00..0x1EEFF ||
+                block in splitOnCharsBlocks || block in excludedEmphasisScriptBlocks) return true
+            index += Character.charCount(codePoint)
         }
         return false
-    }
-
-    /**
-     * Mirrors `PlayerLyricsViewFragment.f.invoke` (lines 420-431):
-     * Clamps the inter-line gap `[currentLine.endMs, nextLine.startMs]` to `[200, 750]`
-     * and linearly interpolates `[480, 750]` ms. Kept as a reference for the
-     * source animation; it is deliberately not used for early line activation.
-     */
-    fun dynamicKaraokeLineAdvanceMs(lines: List<LyricLine>, lineIndex: Int): Int {
-        return dynamicKaraokeClusterAdvanceMs(lines, lineIndex, lineIndex + 1)
     }
 
     /** Scroll duration from the end of every singer in one cluster to the next. */
@@ -473,35 +468,11 @@ object LyricTimeline {
         }
     }
 
-    /** Index after a genuine overlap group, allowing brief sequential tail overlaps. */
-    fun nextClusterStartIndex(lines: List<LyricLine>, clusterStartIndex: Int): Int {
-        if (clusterStartIndex !in lines.indices) return -1
-        return vocalClusters(lines).firstOrNull { it.startIndex > clusterStartIndex }?.startIndex ?: -1
-    }
-
     private fun clusterLeadOffsetMs(startMs: Long, previousEndMs: Long?): Long {
         if (previousEndMs == null || startMs - previousEndMs >= INSTRUMENTAL_MIN_GAP_MS) {
             return -DEFAULT_LINE_OFFSET_MS
         }
         return startMs - maxOf(previousEndMs, startMs - LINE_LOOKAHEAD_MS)
-    }
-
-    /**
-     * Effective lead for a new vocal cluster. Overlapping lines share the same
-     * scroll focus, so an additional singer has no separate handoff. The first
-     * cluster and long instrumental gaps retain their 500 ms cue. Other clusters
-     * hand off at `max(previous cluster main vocal end, next start - 180 ms)`.
-     */
-    fun lineLeadOffsetMs(lines: List<LyricLine>, lineIndex: Int): Long {
-        if (lineIndex !in lines.indices) return -DEFAULT_LINE_OFFSET_MS
-        if (lines[lineIndex].isStatic) return 0L
-        val clusters = vocalClusters(lines)
-        val clusterIndex = clusters.indexOfFirst { it.startIndex == lineIndex }
-        if (clusterIndex < 0) return 0L
-        return clusterLeadOffsetMs(
-            lines[lineIndex].startMs,
-            clusters.getOrNull(clusterIndex - 1)?.endMs,
-        )
     }
 
     /**
