@@ -24,6 +24,9 @@ secrets.properties
 /dist/
 /work/
 
+# Local diagnostics, test scripts and release helpers.
+/tools/
+
 # Local release planning notes.
 /README-update-preview.md
 

@@ -17,7 +17,7 @@
 
 ## 模擬器連線與既有證據
 
-模擬器的區網轉發使用`tools/phone_auth_forward.py`；`advertisedAuthority`必須是手機真正可連到的主機LAN位址與短期port。原實驗的`phoneAuthority`／`phonePort`設定及配對結果已保留在忽略版控的`work/phone-login/20261101/`。一次性啟動測試已歸檔，不再作為日常登入的程式入口。
+模擬器的區網轉發測試使用本機腳本 `tools/phone_auth_forward.py`。`tools/` 是本機診斷目錄，Git 會忽略它。`advertisedAuthority` 必須是手機可連到的主機區網位址與臨時連接埠。原實驗的 `phoneAuthority`／`phonePort` 設定及配對結果已保留在忽略版控的 `work/phone-login/20261101/`。一次性啟動測試已歸檔，不再作為日常登入的程式入口。
 
 轉發只應維持本次配對期間，完成後關閉relay並移除對應ADB forward；工具不解析或記錄HTTP流量。手機端僅回報ready／authorize及有限錯誤階段，不回傳Apple登入欄位、帳號或token到診斷紀錄。
 
