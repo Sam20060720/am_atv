@@ -46,7 +46,6 @@ class ContentCache private constructor(context: Context) {
     ))
     val settings = mutableSettings.asStateFlow()
     val generation: Long get() = epoch.get()
-    val artworkDirectory = File(appContext.cacheDir, "artwork")
     internal val metadataDirectory = File(appContext.cacheDir, "catalog-feeds-v1")
     internal val metadataMutations = Mutex()
 

@@ -32,7 +32,8 @@ class CatalogFailurePresentationTest {
             val more = catalogFailurePresentation(reason, continuation = true)
             assertNotEquals(first.message, more.message)
             assertEquals(first.action, more.action)
-            assertEquals(reason == CatalogFailureReason.Authorization, first.requiresSignIn)
+            assertEquals(if (reason == CatalogFailureReason.Authorization) R.string.recovery_sign_in
+                else R.string.recovery_retry, first.action)
         }
         assertEquals(R.string.recovery_content_unavailable,
             catalogFailurePresentation(CatalogFailureReason.Unavailable).message)

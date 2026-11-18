@@ -6,7 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** HTTP catalog failures carry service meaning, unlike MusicKit's native component codes. */
-internal enum class CatalogFailureReason { Unavailable, Authorization, Transient }
+enum class CatalogFailureReason { Unavailable, Authorization, Transient }
 
 internal class CatalogRequestException(
     val reason: CatalogFailureReason,
@@ -55,19 +55,28 @@ internal fun Throwable.catalogFailureReason(): CatalogFailureReason? {
 internal suspend fun <T> retryCatalogRequest(
     fetch: suspend () -> T,
     wait: suspend (Long) -> Unit = { delay(it) },
-): T {
+): T = retryRequest(fetch, wait) { error ->
+    classifyPlaybackFailure(null, null, null, error) == PlaybackFailureKind.Network
+}.getOrThrow()
+
+/** Share a bounded retry budget while callers retain their service semantics. */
+internal suspend fun <T> retryRequest(
+    fetch: suspend () -> T,
+    wait: suspend (Long) -> Unit,
+    isTransient: (Exception) -> Boolean,
+): Result<T> {
     val delays = longArrayOf(2_000L, 5_000L)
-    for (attempt in 0..delays.size) {
+    var attempt = 0
+    while (true) {
         try {
-            return fetch()
+            return Result.success(fetch())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (error: Exception) {
-            if (classifyPlaybackFailure(null, null, null, error) != PlaybackFailureKind.Network ||
-                attempt == delays.size
-            ) throw error
-            wait(delays[attempt])
+            if (!isTransient(error) || attempt == delays.size) return Result.failure(error)
         }
+        wait(delays[attempt++])
     }
-    error("Catalog retry loop did not complete")
 }
 
 internal fun requireEquivalentCatalogSongId(

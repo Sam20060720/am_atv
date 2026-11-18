@@ -9,7 +9,6 @@ import dev.amatv.integration.catalogFailureReason
 internal data class CatalogFailurePresentation(
     @param:StringRes val message: Int,
     @param:StringRes val action: Int,
-    val requiresSignIn: Boolean,
 )
 
 internal fun Throwable.catalogUiFailureReason(): CatalogFailureReason =
@@ -21,15 +20,15 @@ internal fun catalogFailurePresentation(
 ): CatalogFailurePresentation = when (reason ?: CatalogFailureReason.Transient) {
     CatalogFailureReason.Authorization -> CatalogFailurePresentation(
         if (continuation) R.string.recovery_more_sign_in_required else R.string.recovery_sign_in_required,
-        R.string.recovery_sign_in, true,
+        R.string.recovery_sign_in,
     )
     CatalogFailureReason.Unavailable -> CatalogFailurePresentation(
         if (continuation) R.string.recovery_more_unavailable else R.string.recovery_content_unavailable,
-        R.string.recovery_retry, false,
+        R.string.recovery_retry,
     )
     CatalogFailureReason.Transient -> CatalogFailurePresentation(
         if (continuation) R.string.recovery_more_connection_failed else R.string.recovery_connection_failed,
-        R.string.recovery_retry, false,
+        R.string.recovery_retry,
     )
 }
 

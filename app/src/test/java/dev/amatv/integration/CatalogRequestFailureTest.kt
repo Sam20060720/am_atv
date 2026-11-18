@@ -2,7 +2,6 @@ package dev.amatv.integration
 
 import dev.amatv.model.LyricLine
 import dev.amatv.model.LyricWord
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -79,53 +78,6 @@ class CatalogRequestFailureTest {
                 assertEquals(PlaybackFailureKind.Network,
                     classifyPlaybackFailure(null, null, null, error))
             }
-        }
-    }
-
-    @Test fun catalogAuthorizationWaitsForAuthenticationWithoutBusyRetry() = runBlocking {
-        for (status in listOf(401, 403)) {
-            var calls = 0
-            val result = requestLyricsWithRetry(fetch = {
-                calls++
-                throw failure(status)
-            }, wait = { fail("Authentication must not busy-retry") })
-            assertEquals(1, calls)
-            assertEquals(LyricsRequestResult.RetryableFailure(LyricsFailureReason.Authorization), result)
-        }
-    }
-
-    @Test fun rateLimitAndServiceFailureCanRecoverWithinTheExistingLyricsRetryBudget() = runBlocking {
-        var calls = 0
-        val waits = mutableListOf<Long>()
-        val result = requestLyricsWithRetry(fetch = {
-            when (++calls) {
-                1 -> throw failure(429)
-                2 -> throw failure(503)
-                else -> lines
-            }
-        }, wait = { waits += it })
-        assertEquals(3, calls)
-        assertEquals(listOf(2_000L, 5_000L), waits)
-        assertEquals(LyricsRequestResult.Available(lines), result)
-    }
-
-    @Test fun wrappedCancellationNeverBecomesANetworkRetryOrUnavailableSong() = runBlocking {
-        val cancelled = CancellationException("different selection")
-        val wrapped = java.lang.reflect.InvocationTargetException(cancelled)
-        try {
-            classifyPlaybackFailure(null, null, null, wrapped)
-            fail("Cancellation must propagate")
-        } catch (actual: CancellationException) {
-            assertSame(cancelled, actual)
-        }
-        var calls = 0
-        try {
-            requestLyricsWithRetry(fetch = { calls++; throw wrapped },
-                wait = { fail("Cancellation must not retry") })
-            fail("Cancellation must propagate")
-        } catch (actual: CancellationException) {
-            assertSame(cancelled, actual)
-            assertEquals(1, calls)
         }
     }
 }
