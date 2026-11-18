@@ -6,7 +6,6 @@
     <string name="browse_refresh_apple">Refresh Apple Music</string>
     <string name="browse_sign_in_tv">Sign In on This TV</string>
     <string name="browse_sign_out_tv">Sign Out of This TV</string>
-    <string name="browse_retry_connection">Retry Connection</string>
     <string name="browse_ytm_connected">YouTube Music account connected</string>
     <string name="browse_ytm_recommendations">YouTube Music Recommendations</string>
     <string name="browse_pairing_instructions">Open %1$s on your phone and enter %2$s.</string>
@@ -15,10 +14,13 @@
     <string name="browse_ytm_sign_out">Sign Out of YouTube Music</string>
     <string name="browse_ytm_pair">Pair YouTube Music</string>
     <string name="browse_lyrics_sync">Lyrics Sync</string>
-    <string name="browse_lyrics_sync_hint">Delay lyrics if they appear early, or advance them if they appear late.</string>
-    <string name="browse_offset_value">%1$+d ms</string>
-    <string name="browse_offset_default">0 ms (Default)</string>
-    <string name="browse_reset">Reset</string>
+    <string name="browse_lyrics_sync_zero">0 ms</string>
+    <string name="browse_lyrics_sync_delta">%1$+d ms</string>
+    <string name="browse_lyrics_sync_earlier">Earlier</string>
+    <string name="browse_lyrics_sync_later">Later</string>
+    <string name="browse_lyrics_sync_default">Default</string>
+    <string name="browse_lyrics_sync_earlier_step">Show lyrics %1$d ms earlier</string>
+    <string name="browse_lyrics_sync_later_step">Show lyrics %1$d ms later</string>
     <string name="browse_autoplay_source">Autoplay Source</string>
     <string name="browse_performance_mode">Performance Mode</string>
     <string name="browse_performance_mode_hint">Disable animated artwork video to ensure smooth playback on older TV hardware.</string>

@@ -6,7 +6,6 @@
     <string name="browse_refresh_apple">刷新 Apple Music 内容</string>
     <string name="browse_sign_in_tv">在这台电视登录</string>
     <string name="browse_sign_out_tv">从这台电视退出登录</string>
-    <string name="browse_retry_connection">重试连接</string>
     <string name="browse_ytm_connected">YouTube Music 账号已关联</string>
     <string name="browse_ytm_recommendations">YouTube Music 推荐</string>
     <string name="browse_pairing_instructions">用手机打开 %1$s，输入代码 %2$s。</string>
@@ -15,10 +14,13 @@
     <string name="browse_ytm_sign_out">退出 YouTube Music</string>
     <string name="browse_ytm_pair">配对 YouTube Music</string>
     <string name="browse_lyrics_sync">歌词同步</string>
-    <string name="browse_lyrics_sync_hint">歌词比音乐早就延后，较慢则提前。</string>
-    <string name="browse_offset_value">%1$+d 毫秒</string>
-    <string name="browse_offset_default">0 毫秒（默认）</string>
-    <string name="browse_reset">重置</string>
+    <string name="browse_lyrics_sync_zero">0 毫秒</string>
+    <string name="browse_lyrics_sync_delta">%1$+d 毫秒</string>
+    <string name="browse_lyrics_sync_earlier">提前</string>
+    <string name="browse_lyrics_sync_later">延后</string>
+    <string name="browse_lyrics_sync_default">默认</string>
+    <string name="browse_lyrics_sync_earlier_step">歌词提前 %1$d 毫秒</string>
+    <string name="browse_lyrics_sync_later_step">歌词延后 %1$d 毫秒</string>
     <string name="browse_autoplay_source">连续播放来源</string>
     <string name="browse_performance_mode">性能模式</string>
     <string name="browse_performance_mode_hint">停用动态封面视频以提升老旧电视盒硬件的流畅度与稳定性。</string>

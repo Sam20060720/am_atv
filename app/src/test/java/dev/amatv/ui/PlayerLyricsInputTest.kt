@@ -10,6 +10,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlayerLyricsInputTest {
+    @Test fun timingButtonsAdjustInFiveMillisecondStepsAlongTheDisplayTimeline() {
+        val earlier = offsetAfterLyricsTimingStep(0L, -LyricsTimingStepMs)
+        val later = offsetAfterLyricsTimingStep(0L, LyricsTimingStepMs)
+        assertEquals(1_005L, effectiveLyricsPosition(1_000L, earlier))
+        assertEquals(995L, effectiveLyricsPosition(1_000L, later))
+        assertEquals(0L, offsetAfterLyricsTimingStep(earlier, LyricsTimingStepMs))
+        assertEquals(3_000L, offsetAfterLyricsTimingStep(2_998L, -LyricsTimingStepMs))
+        assertEquals(-3_000L, offsetAfterLyricsTimingStep(-2_998L, LyricsTimingStepMs))
+    }
+
     @Test fun selectionClockUsesTheDisplayedOffsetAndClampsAtZero() {
         val lines = listOf(
             LyricLine(listOf(LyricWord("One", 1_000L, 2_000L))),

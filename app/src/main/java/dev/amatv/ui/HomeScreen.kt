@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.layout.LazyLayoutCacheWindow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -259,12 +260,12 @@ internal fun HomeScreen(
     onYtmSignOut: () -> Unit = {},
     onSignOut: () -> Unit = {},
     onRetry: () -> Unit = {},
+    lyricOffsetMs: Long = 0L,
+    onLyricOffsetChange: (Long) -> Unit = {},
     onOpenTrack: (Track, List<Track>) -> Unit = { _, _ -> },
     onOpenInsights: ((HomeInsightsLink) -> Unit)? = null,
     onOpenGenres: (() -> Unit)? = null,
     onRegisterReturnToTop: ((() -> Boolean)?) -> Unit = {},
-    lyricOffsetMs: Long = 0L,
-    onLyricOffsetChange: (Long) -> Unit = {},
     autoplaySource: dev.amatv.integration.AutoplaySource = dev.amatv.integration.AutoplaySource.AppleMusic,
     onAutoplaySourceChange: (dev.amatv.integration.AutoplaySource) -> Unit = {},
     lowPerformanceMode: Boolean = false,
@@ -392,11 +393,9 @@ private fun AccountScreen(
     val controlHeight = if (classic) 46.dp else 48.dp
     val controlRadius = if (classic) 23.dp else 12.dp
     val demo = connectionState == MusicConnectionState.Demo
-    val phoneFocus = firstContentFocusRequester ?: remember { FocusRequester() }
-    val primaryFocus = if (onPhoneSignIn == null) phoneFocus else remember { FocusRequester() }
-    val demoFirstFocus = firstContentFocusRequester ?: remember { FocusRequester() }
+    val phoneSignIn = onPhoneSignIn?.takeUnless { connected || demo }
+    val primaryFocus = firstContentFocusRequester ?: remember { FocusRequester() }
     val secondaryFocus = remember { FocusRequester() }
-    val offsetFocus = remember { List(5) { FocusRequester() } }
     val autoplayFocus = remember { List(2) { FocusRequester() } }
     val performanceFocus = remember { List(2) { FocusRequester() } }
 
@@ -432,84 +431,45 @@ private fun AccountScreen(
             }
         }
         Spacer(Modifier.height(6.dp))
-        if (onPhoneSignIn != null && connectionState != MusicConnectionState.Demo) {
-            FocusSurface(
-                onClick = onPhoneSignIn,
-                modifier = Modifier.width(280.dp).height(if (classic) 54.dp else 52.dp).focusRequester(phoneFocus)
-                    .automationId("account-phone-sign-in").focusProperties {
-                        if (navigationFocusRequester != null) up = navigationFocusRequester
-                        if (navigationFocusRequester != null) left = navigationFocusRequester
-                        right = FocusRequester.Cancel; down = primaryFocus
-                    },
-                cornerRadius = if (classic) 27.dp else 12.dp, focusedScale = if (classic) 1.03f else 1.025f,
-                background = Color.White.copy(alpha = .10f), focusedBackground = Color.White.copy(alpha = .90f),
-                padding = PaddingValues(horizontal = 20.dp),
-            ) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(stringResource(R.string.phone_sign_in_title),
-                        color = focusSurfaceContentColor(Color.White, Color(0xFF171717)),
-                        fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                }
+        if (!demo) {
+            val secondaryAction = when {
+                connected -> onSignOut
+                phoneSignIn != null -> onSignIn
+                else -> null
             }
-        }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (!demo) {
-                FocusSurface(
-                    onClick = if (connected) onRetry else onSignIn,
-                    modifier = Modifier
-                        .width(280.dp)
-                        .height(if (classic) 54.dp else 52.dp)
-                        .focusRequester(primaryFocus)
+            Row(
+                modifier = Modifier.widthIn(max = if (secondaryAction != null) 576.dp else 280.dp).fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AccountActionButton(
+                    label = stringResource(when {
+                        connected -> R.string.browse_refresh_apple
+                        phoneSignIn != null -> R.string.phone_sign_in_title
+                        else -> R.string.browse_sign_in_tv
+                    }),
+                    primary = true,
+                    onClick = if (connected) onRetry else phoneSignIn ?: onSignIn,
+                    modifier = Modifier.weight(1f).focusRequester(primaryFocus)
+                        .automationId(if (phoneSignIn != null) "account-phone-sign-in" else "account-primary-action")
                         .focusProperties {
-                            if (onPhoneSignIn != null) up = phoneFocus
-                            else if (navigationFocusRequester != null) up = navigationFocusRequester
-                            if (navigationFocusRequester != null) left = navigationFocusRequester
-                            right = secondaryFocus
+                            navigationFocusRequester?.let { up = it; left = it }
+                            right = if (secondaryAction != null) secondaryFocus else FocusRequester.Cancel
                         },
-                    cornerRadius = if (classic) 27.dp else 12.dp,
-                    focusedScale = if (classic) 1.03f else 1.025f,
-                    background = Color.White.copy(alpha = if (classic) 0.90f else 0.10f),
-                    focusedBackground = Color.White.copy(alpha = if (classic) 1f else 0.90f),
-                    padding = PaddingValues(horizontal = 20.dp),
-                ) { focused ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (connected) stringResource(R.string.browse_refresh_apple) else stringResource(R.string.browse_sign_in_tv),
-                            color = if (classic) Color(0xFF111713) else focusSurfaceContentColor(Color.White, Color(0xFF171717)),
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
-                }
-                FocusSurface(
-                    onClick = if (connected) onSignOut else onRetry,
-                    modifier = Modifier
-                        .width(240.dp)
-                        .height(if (classic) 54.dp else 52.dp)
-                        .focusRequester(secondaryFocus)
-                        .focusProperties {
-                            if (onPhoneSignIn != null) up = phoneFocus
-                            else if (navigationFocusRequester != null) up = navigationFocusRequester
-                            left = primaryFocus
-                            right = FocusRequester.Cancel
-                        },
-                    cornerRadius = if (classic) 27.dp else 12.dp,
-                    focusedScale = if (classic) 1.03f else 1.025f,
-                    background = surface,
-                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
-                    padding = PaddingValues(horizontal = 20.dp),
-                ) { focused ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (connected) stringResource(R.string.browse_sign_out_tv) else stringResource(R.string.browse_retry_connection),
-                            color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)),
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
+                )
+                if (secondaryAction != null) {
+                    AccountActionButton(
+                        label = stringResource(if (connected) R.string.browse_sign_out_tv else R.string.browse_sign_in_tv),
+                        primary = false,
+                        onClick = secondaryAction,
+                        modifier = Modifier.weight(1f).focusRequester(secondaryFocus)
+                            .automationId(if (connected) "account-sign-out" else "account-primary-action")
+                            .focusProperties {
+                                if (navigationFocusRequester != null) up = navigationFocusRequester
+                                left = primaryFocus
+                                right = FocusRequester.Cancel
+                            },
+                    )
                 }
             }
         }
@@ -535,7 +495,7 @@ private fun AccountScreen(
                 FocusSurface(
                     onClick = { if (ytmSignedIn) onYtmSignOut() else if (ytmPairing == null) onYtmSignIn() },
                     modifier = Modifier.width(280.dp).height(controlHeight)
-                        .then(if (demo) Modifier.focusRequester(demoFirstFocus) else Modifier).focusProperties {
+                        .then(if (demo) Modifier.focusRequester(primaryFocus) else Modifier).focusProperties {
                         if (navigationFocusRequester != null) left = navigationFocusRequester
                         right = FocusRequester.Cancel
                     },
@@ -554,118 +514,30 @@ private fun AccountScreen(
             }
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(18.dp))
             Text(
                 text = stringResource(R.string.browse_lyrics_sync),
                 color = Color.White,
                 fontSize = 22.sp,
                 fontWeight = FontWeight.SemiBold,
             )
-            Text(
-                text = stringResource(R.string.browse_lyrics_sync_hint),
-                color = Color.White.copy(alpha = 0.72f),
-                fontSize = 16.sp,
-            )
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                FocusSurface(
-                    onClick = { onLyricOffsetChange((lyricOffsetMs - 100L).coerceAtLeast(-3000L)) },
-                    modifier = Modifier.width(96.dp).height(controlHeight).focusRequester(offsetFocus[0])
-                        .then(if (demo && !ytmPairingConfigured) Modifier.focusRequester(demoFirstFocus) else Modifier).focusProperties {
+            val earlierFocus = remember { FocusRequester() }
+            val laterFocus = remember { FocusRequester() }
+            LyricsTimingStepper(
+                lyricOffsetMs = lyricOffsetMs,
+                onLyricOffsetChange = onLyricOffsetChange,
+                earlierModifier = Modifier.focusRequester(earlierFocus)
+                    .then(if (demo && !ytmPairingConfigured) Modifier.focusRequester(primaryFocus) else Modifier)
+                    .focusProperties {
                         if (navigationFocusRequester != null) left = navigationFocusRequester
-                        right = offsetFocus[1]
+                        right = laterFocus
                     },
-                    cornerRadius = controlRadius,
-                    background = surface,
-                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
-                ) { focused ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, -100), color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-                FocusSurface(
-                    onClick = { onLyricOffsetChange((lyricOffsetMs - 50L).coerceAtLeast(-3000L)) },
-                    modifier = Modifier.width(90.dp).height(controlHeight).focusRequester(offsetFocus[1]).focusProperties {
-                        left = offsetFocus[0]; right = offsetFocus[2]
-                    },
-                    cornerRadius = controlRadius,
-                    background = surface,
-                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
-                ) { focused ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, -50), color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-                Box(
-                    modifier = Modifier
-                        .height(controlHeight)
-                        .clip(RoundedCornerShape(controlRadius))
-                        .background(Color.White.copy(alpha = 0.06f))
-                        .padding(horizontal = 20.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = when {
-                            lyricOffsetMs > 0L -> stringResource(R.string.browse_offset_value, lyricOffsetMs)
-                            lyricOffsetMs < 0L -> stringResource(R.string.browse_offset_value, lyricOffsetMs)
-                            else -> stringResource(R.string.browse_offset_default)
-                        },
-                        color = Color.White,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
-                FocusSurface(
-                    onClick = { onLyricOffsetChange((lyricOffsetMs + 50L).coerceAtMost(3000L)) },
-                    modifier = Modifier.width(90.dp).height(controlHeight).focusRequester(offsetFocus[2]).focusProperties {
-                        left = offsetFocus[1]; right = offsetFocus[3]
-                    },
-                    cornerRadius = controlRadius,
-                    background = surface,
-                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
-                ) { focused ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, 50), color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-                FocusSurface(
-                    onClick = { onLyricOffsetChange((lyricOffsetMs + 100L).coerceAtMost(3000L)) },
-                    modifier = Modifier.width(96.dp).height(controlHeight).focusRequester(offsetFocus[3]).focusProperties {
-                        left = offsetFocus[2]
-                        right = if (lyricOffsetMs != 0L) offsetFocus[4] else FocusRequester.Cancel
-                    },
-                    cornerRadius = controlRadius,
-                    background = surface,
-                    focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
-                ) { focused ->
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(stringResource(R.string.browse_offset_value, 100), color = if (classic) Color.White else focusSurfaceContentColor(Color.White, Color(0xFF171717)), fontSize = 15.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-                if (lyricOffsetMs != 0L) {
-                    FocusSurface(
-                        onClick = {
-                            // Reset removes itself; retain an existing control
-                            // before that recomposition rather than losing focus.
-                            runCatching { offsetFocus[3].requestFocus() }
-                            onLyricOffsetChange(0L)
-                        },
-                        modifier = Modifier.height(controlHeight).focusRequester(offsetFocus[4]).focusProperties {
-                            left = offsetFocus[3]; right = FocusRequester.Cancel
-                        },
-                        cornerRadius = controlRadius,
-                        background = surface,
-                        focusedBackground = Color.White.copy(alpha = if (classic) 0.28f else 0.9f),
-                        padding = PaddingValues(horizontal = 16.dp),
-                    ) { focused ->
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(stringResource(R.string.browse_reset), color = if (classic) Color.White.copy(alpha = 0.85f) else focusSurfaceContentColor(Color.White.copy(alpha = 0.85f), Color(0xFF171717)), fontSize = 14.sp)
-                        }
-                    }
-                }
-            }
+                laterModifier = Modifier.focusRequester(laterFocus).focusProperties {
+                    left = earlierFocus
+                    right = FocusRequester.Cancel
+                },
+                modifier = Modifier.widthIn(max = 280.dp),
+            )
             Spacer(Modifier.height(18.dp))
             Text(
                 text = stringResource(R.string.browse_autoplay_source),
@@ -733,6 +605,100 @@ private fun AccountScreen(
             }
         }
         cacheSettingsContent()
+    }
+}
+
+@Composable
+private fun lyricsTimingValue(offsetMs: Long): String = if (offsetMs == 0L) {
+    stringResource(R.string.browse_lyrics_sync_zero)
+} else {
+    stringResource(R.string.browse_lyrics_sync_delta, -offsetMs)
+}
+
+@Composable
+private fun LyricsTimingStepper(
+    lyricOffsetMs: Long,
+    onLyricOffsetChange: (Long) -> Unit,
+    earlierModifier: Modifier,
+    laterModifier: Modifier,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier.fillMaxWidth().padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LyricsTimingStep(-LyricsTimingStepMs, earlierModifier.automationId("lyrics-timing-earlier")) {
+            onLyricOffsetChange(offsetAfterLyricsTimingStep(lyricOffsetMs, -LyricsTimingStepMs))
+        }
+        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                lyricsTimingValue(lyricOffsetMs), color = Color.White, fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold, modifier = Modifier.automationId("lyrics-timing-value"),
+            )
+            Text(
+                stringResource(when {
+                    lyricOffsetMs > 0 -> R.string.browse_lyrics_sync_earlier
+                    lyricOffsetMs < 0 -> R.string.browse_lyrics_sync_later
+                    else -> R.string.browse_lyrics_sync_default
+                }),
+                color = Color.White.copy(alpha = .68f), fontSize = 12.sp,
+            )
+        }
+        LyricsTimingStep(LyricsTimingStepMs, laterModifier.automationId("lyrics-timing-later")) {
+            onLyricOffsetChange(offsetAfterLyricsTimingStep(lyricOffsetMs, LyricsTimingStepMs))
+        }
+    }
+}
+
+@Composable
+private fun LyricsTimingStep(delayStepMs: Long, modifier: Modifier, onClick: () -> Unit) {
+    val description = stringResource(if (delayStepMs < 0) R.string.browse_lyrics_sync_earlier_step
+        else R.string.browse_lyrics_sync_later_step, LyricsTimingStepMs)
+    FocusSurface(
+        onClick,
+        modifier.width(60.dp).height(44.dp).semantics { contentDescription = description },
+        cornerRadius = 14.dp,
+        background = Color.White.copy(alpha = .10f),
+        focusedBackground = Color(0xFFEBEBEB),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(stringResource(R.string.browse_lyrics_sync_delta, delayStepMs),
+                color = focusSurfaceContentColor(Color.White, Color(0xFF1E1E22)),
+                fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun AccountActionButton(label: String, primary: Boolean, onClick: () -> Unit, modifier: Modifier) {
+    val classic = LocalInterfaceStyle.current == InterfaceStyle.Classic
+    FocusSurface(
+        onClick = onClick,
+        modifier = modifier.height(if (classic) 54.dp else 52.dp),
+        cornerRadius = if (classic) 27.dp else 12.dp,
+        focusedScale = if (classic) 1.03f else 1.025f,
+        background = Color.White.copy(alpha = when {
+            primary && classic -> .90f
+            primary -> .18f
+            classic -> .14f
+            else -> .10f
+        }),
+        focusedBackground = Color.White.copy(alpha = if (classic && !primary) .28f else 1f),
+        padding = PaddingValues(horizontal = 20.dp),
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                label,
+                color = when {
+                    classic && primary -> Color(0xFF111713)
+                    classic -> Color.White
+                    else -> focusSurfaceContentColor(Color.White, Color(0xFF171717))
+                },
+                fontSize = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
     }
 }
 
