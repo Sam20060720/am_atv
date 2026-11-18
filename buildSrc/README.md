@@ -1,18 +1,23 @@
-# MusicKit SDK compatibility
+# Build patches
 
-The build supports the official MusicKit Android playback SDK 1.1.1. It validates
-the supplied AAR and applies a narrowly scoped 64-bit catalog-ID compatibility
-adjustment during compilation. The original SDK file remains unchanged and is
-not included in source control.
+## MusicKit Android SDK 1.1.1
 
-The supplied playback and authentication AARs also omit JVM stack-map frames in
-methods with branches. The build selects only affected classes present in those
-AARs and uses AGP's `COMPUTE_FRAMES_FOR_INSTRUMENTED_CLASSES` mode to reconstruct
-their verification metadata. It does not alter other SDK instructions, suppress
-R8 warnings, or transform application classes.
+Gradle checks the playback AAR before building. It updates the SDK's song
+metadata parser during compilation so it can read 64-bit catalog IDs. Gradle
+also regenerates missing JVM stack-map frames in affected playback and
+authentication SDK classes. Both changes apply to build output.
 
-After downloading the SDK, compatibility tests can be run with:
+After downloading the SDK, run the compatibility test.
 
 ```sh
 ./gradlew -p buildSrc test --tests dev.amatv.build.MusicKitSongIdPatchTest
 ```
+
+## Compose Foundation 1.11.4
+
+`HomePrefetchBudgetPatch` changes the idle-time branch of
+`AndroidPrefetchScheduler.availableTimeNanos()` to call
+`HomePrefetchBudget.remainingIdleBudgetNanos()`. This gives idle prefetch
+requests a shared 3 ms budget per frame. Gradle stops if the expected method
+changes. When upgrading Foundation, check whether the new version limits idle
+prefetch time before deciding if the patch is still needed.

@@ -1,22 +1,24 @@
 # AM for TV
 
-**Android TV 上最流畅的 Apple Music 客户端**
-
-提供接近 Apple TV 原生 Apple Music 的使用体验。
+在 Android TV 上用遥控器听 Apple Music、找歌和看逐字歌词。
 
 [English](README.md) · [繁體中文](README.zh-TW.md) · 简体中文
 
 ## 功能
 
-- 资料库、搜索、歌单、播放队列与播放记录
+- 资料库、搜索、歌单、电台、播放队列与播放记录
 - 逐字歌词（和声、长音、间奏、时间偏移）
 - 封面取色背景与音乐频谱动画
 - 自动接播推荐（Apple Music／YouTube Music）
-- 封面／歌词缓存，英文／繁中／简中界面
+- 支持英语、繁体中文和简体中文
 
 ## 安装
 
-Android 7 及以上选择标准版。Android 6 或想使用内置 Noto Sans CJK TC 字体时，选择内置字体版。两版均支持手机扫码或在电视上登录，需要 Apple Music 订阅。Android 6、7 的真机流媒体播放仍待验证。
+[下载最新版 APK](https://github.com/Sam20060720/am_atv/releases/latest)。
+
+Android 7 及以上可以下载标准版。Android 6 或想使用 Noto Sans CJK TC 字体，请下载内置字体版。Android 6、7 的真机播放仍待确认。
+
+播放需要 Apple Music 订阅。手机和电视连上同一个 Wi-Fi 后即可扫码登录，也可以直接在电视上登录。
 
 ## 界面
 
@@ -32,18 +34,11 @@ Android 7 及以上选择标准版。Android 6 或想使用内置 Noto Sans CJK 
 
 ## 麦克风权限
 
-`RECORD_AUDIO` 用于播放音频的频谱分析，不使用实体麦克风。
+音乐律动使用 `RECORD_AUDIO` 权限读取正在播放的音频频谱。
 
 ## 构建
 
-需要 JDK 17、Android SDK 36 及官方 [MusicKit Android SDK](https://developer.apple.com/musickit/android/)。凭证设置见 [MusicKit 设置](docs/musickit-setup.md)。
-
-```sh
-./gradlew :app:assembleDebug
-./gradlew :app:distApks
-```
-
-独立版 APK 输出至 `dist/`。签名与打包方式见 [APK 与源码分发](docs/standalone-distribution.md)。
+SDK 设置、签名和打包步骤见 [构建指南](docs/build.md)。
 
 ## 许可
 

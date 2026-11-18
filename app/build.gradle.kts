@@ -44,8 +44,8 @@ android {
         applicationId = "dev.amatv"
         minSdk = 23
         targetSdk = 36
-        versionCode = 16
-        versionName = "0.6.3"
+        versionCode = 17
+        versionName = "0.7.0"
 
         buildConfigField("boolean", "BUNDLED_FONTS", "true")
         val nativePlayerBackdrop = providers.gradleProperty("amatv.nativeBackdrop").getOrElse("true")

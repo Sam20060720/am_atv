@@ -1,8 +1,8 @@
 # Apple MusicKit Android SDK
 
-Download the official MusicKit Android SDK while signed in to the Apple
-Developer site and place its `.aar` files in this directory. AAR files are
-ignored by Git and must not be redistributed from this repository.
+Sign in to Apple Developer, download the official MusicKit Android SDK, and
+place the `.aar` files in this directory. Keep the AARs in your local checkout.
 
-The app discovers the documented MusicKit classes at runtime. Without the
-AARs it remains fully buildable and runs against the demo catalog.
+The app loads MusicKit at runtime. You can build the app and use its demo
+catalog without the AARs. See the [build guide](../../docs/build.md) to set up
+Apple Music playback.
