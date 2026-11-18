@@ -24,6 +24,7 @@ import dev.amatv.R
 class PlaybackService : Service() {
     private var runtime: PlaybackRuntimeOwner? = null
     private var runtimeLease: Long? = null
+    private var foregroundStarted = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -40,22 +41,26 @@ class PlaybackService : Service() {
         val action = intent?.action
         when (action) {
             ACTION_START, ACTION_UPDATE -> {
+                // A late metadata update must not restart a service stopped by Pause.
+                if (action == ACTION_UPDATE && !foregroundStarted) {
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
                 val title = intent.getStringExtra(EXTRA_TITLE) ?: getString(R.string.app_name)
                 val artist = intent.getStringExtra(EXTRA_ARTIST) ?: ""
                 val notification = buildNotification(title, artist)
-                if (action == ACTION_START) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        startForeground(
-                            NOTIFICATION_ID,
-                            notification,
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
-                        )
-                    } else {
-                        startForeground(NOTIFICATION_ID, notification)
-                    }
+                // The same ID updates the required foreground notification. This path
+                // remains valid without the optional POST_NOTIFICATIONS permission.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        NOTIFICATION_ID,
+                        notification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+                    )
                 } else {
-                    getSystemService(NotificationManager::class.java)?.notify(NOTIFICATION_ID, notification)
+                    startForeground(NOTIFICATION_ID, notification)
                 }
+                foregroundStarted = true
             }
         }
         return START_NOT_STICKY

@@ -19,5 +19,11 @@
             android:name="dev.amatv.ui.LibraryFixtureActivity"
             android:exported="true"
             android:screenOrientation="landscape" />
+        <activity
+            android:name="dev.amatv.playback.RuntimeControlProbeActivity"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:process=":runtime_control_probe"
+            android:screenOrientation="landscape" />
     </application>
 </manifest>

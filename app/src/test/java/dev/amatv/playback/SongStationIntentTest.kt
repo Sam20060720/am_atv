@@ -3,7 +3,6 @@ package dev.amatv.playback
 import dev.amatv.integration.AutoplaySource
 import dev.amatv.integration.MusicServices
 import dev.amatv.integration.PlaybackRepeatMode
-import dev.amatv.integration.QueuePreferences
 import dev.amatv.integration.RecommendationProvider
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.Track
@@ -19,13 +18,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SongStationIntentTest {
-    private class Preferences : QueuePreferences {
-        override var repeatMode = PlaybackRepeatMode.All
-        override var shuffleEnabled = true
-        override var autoplayEnabled = true
-        override var autoplaySource = AutoplaySource.YouTubeMusic
-        override var lowPerformanceMode = false
-    }
     private class Recommendations : RecommendationProvider {
         val appleSeeds = mutableListOf<String>()
         val youtubeSeeds = mutableListOf<String>()
@@ -41,13 +33,13 @@ class SongStationIntentTest {
             return MusicServices.ResolvedRadioPage(emptyList(), null, null)
         }
     }
-    private fun song(id: String) = Track(id, id, "Artist", "Album", 180_000L,
-        emptyList(), emptyList(), catalogId = id, catalogKind = CatalogKind.Song)
+    private fun song(id: String) = queueTestSong(id)
 
     @Test fun selectingSongStationPublishesOneNewContextWithItsOwnSeedAndAppleModes() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val prefs = Preferences()
+            val prefs = TestQueuePreferences(repeatMode = PlaybackRepeatMode.All, shuffleEnabled = true,
+                autoplayEnabled = true, autoplaySource = AutoplaySource.YouTubeMusic)
             val recommendations = Recommendations()
             val played = mutableListOf<Track>()
             val controller = PlaybackQueueController(scope, recommendations, prefs, { played += it }, Dispatchers.Unconfined)
@@ -77,7 +69,8 @@ class SongStationIntentTest {
     @Test fun nonSongCannotReplaceTheQueueOrStartAnyStationRequest() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val prefs = Preferences()
+            val prefs = TestQueuePreferences(repeatMode = PlaybackRepeatMode.All, shuffleEnabled = true,
+                autoplayEnabled = true, autoplaySource = AutoplaySource.YouTubeMusic)
             val recommendations = Recommendations()
             val controller = PlaybackQueueController(scope, recommendations, prefs, {}, Dispatchers.Unconfined)
             controller.playContext(listOf(song("old")), 0)

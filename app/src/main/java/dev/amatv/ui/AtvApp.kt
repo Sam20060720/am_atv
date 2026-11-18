@@ -1,5 +1,7 @@
 package dev.amatv.ui
 
+import java.util.Locale
+import androidx.core.os.ConfigurationCompat
 import android.Manifest
 import android.content.Intent
 import android.net.Uri
@@ -17,40 +19,21 @@ import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Search
-import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.SideEffect
-import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import dev.amatv.integration.PhoneMusicAuthorization
 import dev.amatv.integration.PhoneMusicAuthStatus
 import dev.amatv.integration.PhoneMusicAuthorizationExpired
 import dev.amatv.integration.withEditorialArtwork
 import dev.amatv.integration.CatalogPresentationCapabilities
 import dev.amatv.model.CatalogResourceRef
-import dev.amatv.model.CatalogResourceProfile
 import dev.amatv.model.CatalogResourceSection
-import dev.amatv.model.CatalogResourcePage
-import dev.amatv.model.CatalogResourceLink
-import dev.amatv.model.ArtistProfile
-import dev.amatv.model.ArtistSection
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.CompositionLocalProvider
@@ -66,50 +49,38 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameNanos
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.amatv.R
 import dev.amatv.data.MockCatalog
 import dev.amatv.i18n.AppText
-import dev.amatv.i18n.destinationLabel
 import dev.amatv.integration.AutoplaySource
 import dev.amatv.integration.MusicConnectionState
-import dev.amatv.integration.MusicServices
 import dev.amatv.integration.AuthLaunchGate
 import dev.amatv.integration.retryCatalogRequest
 import dev.amatv.integration.LibraryPage
 import dev.amatv.integration.RadioCatalogSection
 import dev.amatv.integration.mergeLibraryPage
 import dev.amatv.integration.GoogleTvPairing
-import dev.amatv.integration.PlaybackPreferences
 import dev.amatv.integration.PlaybackSession
 import dev.amatv.integration.PlaybackRepeatMode
 import dev.amatv.integration.LyricsRequestResult
 import dev.amatv.integration.LyricsLocalizationRequest
 import dev.amatv.integration.requestLyricsWithRetry
 import dev.amatv.integration.PlaybackFailureKind
-import dev.amatv.integration.NativeResumeRecovery
 import dev.amatv.integration.classifyPlaybackFailure
 import dev.amatv.integration.PlaybackSnapshot
 import dev.amatv.integration.PlaybackMediaSession
@@ -128,7 +99,6 @@ import dev.amatv.playback.PlaybackContext
 import dev.amatv.playback.PlaybackQueueController
 import dev.amatv.playback.PlaybackRuntimeOwner.PreparationPhase
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -191,8 +161,9 @@ fun AmAtvApp() {
     val probeHomeFixture = homeLoadProbe?.getBooleanExtra("dev.amatv.testHomeFixture", false) == true
     val probeColdHome = probeHomeFixture || homeLoadProbe?.getBooleanExtra("dev.amatv.testColdHomeFeed", false) == true
     val probeLeadingDelayMs = homeLoadProbe?.getLongExtra("dev.amatv.testHomePrimaryDelayMs", 0L)?.coerceIn(0, 5_000L) ?: 0L
-    val contentLanguageTag = LocalConfiguration.current.locales.toLanguageTags()
-    val lyricsLanguageTag = LocalConfiguration.current.locales[0].toLanguageTag()
+    val locales = ConfigurationCompat.getLocales(LocalConfiguration.current)
+    val contentLanguageTag = locales.toLanguageTags()
+    val lyricsLanguageTag = remember(contentLanguageTag) { (locales[0] ?: Locale.getDefault()).toLanguageTag() }
     val scope = rememberCoroutineScope()
     val application = context.applicationContext as dev.amatv.AmAtvApplication
     val interfacePreferences = remember(application) { InterfaceStylePreferences(application) }
@@ -266,10 +237,11 @@ fun AmAtvApp() {
     }
     // Startup restores metadata and cursor only. An explicit user action owns playback.
     var isPlaying by remember { mutableStateOf(retainedSnapshot?.isPlaying == true && runtime.desiredPlay.value) }
-    var playWhenReady by remember { mutableStateOf(retainedRuntimeSession && runtime.desiredPlay.value) }
+    val playWhenReady = runtime.desiredPlay
+    val wantsPlayback by playWhenReady.collectAsState()
 
     val currentView = androidx.compose.ui.platform.LocalView.current
-    val shouldKeepScreenOn = isPlaying || playWhenReady
+    val shouldKeepScreenOn = isPlaying || wantsPlayback
     DisposableEffect(shouldKeepScreenOn) {
         currentView.keepScreenOn = shouldKeepScreenOn
         onDispose {
@@ -286,8 +258,6 @@ fun AmAtvApp() {
     var playbackMessage by remember { mutableStateOf<String?>(null) }
     var waitingQueueEntryId by remember { mutableStateOf<Long?>(null) }
     var lastPlaybackFailure by remember { mutableStateOf<PlaybackFailureKind?>(null) }
-    var failureHandledSelection by remember { mutableLongStateOf(-1L) }
-    val nativeResumeRecovery = remember { NativeResumeRecovery() }
     var connectionState by remember { mutableStateOf(services.connectionState) }
     var serviceMessage by remember { mutableStateOf<String?>(null) }
     var reloadNonce by remember { mutableIntStateOf(0) }
@@ -346,7 +316,6 @@ fun AmAtvApp() {
     var recentTracksLoadedAt by remember { mutableLongStateOf(0L) }
     val recentTracksJob = remember { arrayOfNulls<Job>(1) }
     val currentContentLanguage by rememberUpdatedState(contentLanguageTag)
-    var advancingEndedTrackId by remember { mutableStateOf<String?>(null) }
     var ytmPairing by remember { mutableStateOf<GoogleTvPairing?>(null) }
     val ytmAuthorization by services.ytmAuthorizationState.collectAsState()
     val ytmSignedIn = ytmAuthorization.signedIn
@@ -694,7 +663,7 @@ fun AmAtvApp() {
         else runtime.resetSession()
         selectionGeneration++
         isPlaying = false
-        playWhenReady = false
+        runtime.setDesiredPlayIntent(false)
         playbackPrepared = false
         hasUserPlaybackRequest = false
         playbackMessage = null
@@ -755,24 +724,27 @@ fun AmAtvApp() {
     }
 
     fun launchNativePlayback(resumePositionMs: Long = 0L) {
-        nativeResumeRecovery.cancel()
         hasUserPlaybackRequest = true
         playbackPrepared = false
         nativeCanSeek = false
         playbackMessage = null
         lastPlaybackFailure = null
-        runtime.setDesiredPlayIntent(playWhenReady)
-        runtime.prepareCurrent(resumePositionMs)
+        runtime.play(resumePositionMs)
     }
 
     fun pausePlayback() {
-        runtime.setDesiredPlayIntent(false)
-        nativeResumeRecovery.cancel()
         positionAnchorMs = currentPositionMs()
-        playWhenReady = false
+        runtime.pause()
         audioBuffering = false
-        if (!MockCatalog.isDemoTrack(track)) services.pause()
         isPlaying = false
+    }
+
+    LaunchedEffect(wantsPlayback) {
+        if (!playWhenReady.value) {
+            positionAnchorMs = currentPositionMs()
+            isPlaying = false
+            audioBuffering = false
+        }
     }
 
     fun requestPlayback() {
@@ -789,62 +761,32 @@ fun AmAtvApp() {
             playbackSignIn[0]?.invoke()
             return
         }
-        val continuationQueue = queueController.state.value
-        val continuationSnapshot = runtime.snapshot.value
-        val endedContinuation = continuationSnapshot?.isEnded == true &&
-            (continuationSnapshot.appQueueEntryId == null ||
-                continuationSnapshot.appQueueEntryId == continuationQueue.current?.entryId) &&
-            continuationSnapshot.currentTrack?.catalogId == track.catalogId &&
-            continuationSnapshot.currentTrack?.catalogKind == track.catalogKind
-        if (runtime.hasPendingNextIntent || endedContinuation && continuationQueue.contextContinuationPending &&
-            (continuationQueue.contextContinuationFailed || waitingQueueEntryId != null)) {
-            waitingQueueEntryId = continuationQueue.current?.entryId
-            playWhenReady = true
-            isPlaying = false
-            playbackPrepared = false
-            lastPlaybackFailure = null
-            playbackMessage = null
-            nativeResumeRecovery.cancel()
-            if (if (runtime.hasPendingNextIntent) runtime.retryPendingNext()
-                else runtime.retryContextContinuation(advanceWhenAvailable = true)) return
-            waitingQueueEntryId = null
-            playWhenReady = false
-            runtime.setDesiredPlayIntent(false)
-            return
-        }
-        runtime.setDesiredPlayIntent(true)
-        nativeResumeRecovery.arm(selectionGeneration, track.catalogId, runtime.playbackGeneration,
-            positionAnchorMs, prepared = playbackPrepared, paused = !isPlaying && !playWhenReady)
-        playWhenReady = true
         if (activeLyrics.trackIdentity == track.lyricsIdentity() &&
             activeLyrics.phase == LyricsLoadPhase.Failed
         ) lyricsRetryNonce++
-        if (!startupSessionLoaded && selectionGeneration == 0L) return
-        // Play while Next is resolving belongs to the incoming entry, not
-        // the old song still used as the queue's continuation anchor.
-        if (waitingQueueEntryId != null) return
-        if (!MockCatalog.isDemoTrack(track)) {
-            val ended = runtime.snapshot.value?.isEnded == true
-            if (!runtime.hasPendingPrepare && (lastPlaybackFailure != null || ended ||
-                    runtime.preparation.value.phase != PreparationPhase.Ready)) {
-                selectionGeneration++
-                launchNativePlayback(if (ended) 0L else positionAnchorMs)
-            } else if (runtime.playbackGeneration != 0L) services.play()
-        } else {
+        if (!startupSessionLoaded && selectionGeneration == 0L) {
+            runtime.setDesiredPlayIntent(true)
+            return
+        }
+        lastPlaybackFailure = null
+        playbackMessage = null
+        if (MockCatalog.isDemoTrack(track)) {
+            runtime.setDesiredPlayIntent(true)
             playStartedRealtimeMs = android.os.SystemClock.elapsedRealtime()
             isPlaying = true
+        } else {
+            hasUserPlaybackRequest = true
+            runtime.play(positionAnchorMs)
         }
-        playbackMessage = null
     }
 
     fun togglePlayback() {
-        if (playWhenReady) pausePlayback() else requestPlayback()
+        if (playWhenReady.value) pausePlayback() else requestPlayback()
     }
 
     fun playFromLyric(positionMs: Long) {
         if (!hasCurrentTrack || track.catalogKind != CatalogKind.Song) return
         val target = positionMs.coerceAtLeast(0L).let { if (track.durationMs > 0L) it.coerceAtMost(track.durationMs) else it }
-        nativeResumeRecovery.cancel()
         positionAnchorMs = target
         startupCursorEdited = true
         playStartedRealtimeMs = SystemClock.elapsedRealtime()
@@ -857,20 +799,18 @@ fun AmAtvApp() {
             playbackSignIn[0]?.invoke()
             return
         }
-        playWhenReady = true
+        runtime.setDesiredPlayIntent(true)
         playbackMessage = null
         lastPlaybackFailure = null
         // Full session hydration already preserves startupCursorEdited. Do not
         // start a checkpoint-only queue before that owner has finished restoring.
         if (!startupSessionLoaded && selectionGeneration == 0L && !retainedRuntimeSession) {
             hasUserPlaybackRequest = false
-            runtime.setDesiredPlayIntent(true)
             return
         }
         waitingQueueEntryId = null
         hasUserPlaybackRequest = true
         if (MockCatalog.isDemoTrack(track)) {
-            runtime.setDesiredPlayIntent(true)
             isPlaying = true
         } else {
             selectionGeneration++
@@ -880,15 +820,13 @@ fun AmAtvApp() {
                     audioBuffering = started && !playbackPrepared
                     if (!playbackPrepared) isPlaying = false
                     if (!started) {
-                        playWhenReady = false
                         runtime.setDesiredPlayIntent(false)
                         playbackMessage = AppText.text(R.string.app_choose_content_before_playback)
                     }
                 }
                 .onFailure {
-                    playWhenReady = false
-                    isPlaying = false
                     runtime.setDesiredPlayIntent(false)
+                    isPlaying = false
                     playbackMessage = AppText.text(R.string.app_seek_failed)
                 }
         }
@@ -904,7 +842,6 @@ fun AmAtvApp() {
     }
 
     fun seekPlaybackBy(delta: Long) {
-        nativeResumeRecovery.cancel()
         if (track.durationMs <= 0L || (!MockCatalog.isDemoTrack(track) && !nativeCanSeek)) return
         positionAnchorMs = (currentPositionMs() + delta).coerceIn(0L, track.durationMs.coerceAtLeast(0L))
         playStartedRealtimeMs = android.os.SystemClock.elapsedRealtime()
@@ -913,7 +850,7 @@ fun AmAtvApp() {
         if (playbackPrepared) {
             runCatching { runtime.seekTo(positionAnchorMs) }
                 .onFailure { playbackMessage = AppText.text(R.string.app_seek_failed) }
-        } else if (hasUserPlaybackRequest && playWhenReady) {
+        } else if (hasUserPlaybackRequest && playWhenReady.value) {
             selectionGeneration++
             launchNativePlayback(positionAnchorMs)
         }
@@ -1041,11 +978,11 @@ fun AmAtvApp() {
     }
 
     fun executeTrackPlayback(nextTrack: Track) {
-        runtime.setDesiredPlayIntent(playWhenReady)
         waitingQueueEntryId = null
         nativeCanSeek = false
         selectionGeneration++
-        if (playWhenReady && !MockCatalog.isDemoTrack(nextTrack) && connectionState != MusicConnectionState.SignedIn) {
+        if (playWhenReady.value && !MockCatalog.isDemoTrack(nextTrack) && connectionState != MusicConnectionState.SignedIn) {
+            runtime.setDesiredPlayIntent(false)
             serviceMessage = AppText.text(R.string.app_apple_sign_in_required)
             startSignIn()
             return
@@ -1065,22 +1002,14 @@ fun AmAtvApp() {
             )
         }
         track = initialTrack
-        advancingEndedTrackId = null
         hasCurrentTrack = true
         playStartedRealtimeMs = android.os.SystemClock.elapsedRealtime()
-        isPlaying = MockCatalog.isDemoTrack(nextTrack) && playWhenReady
+        isPlaying = MockCatalog.isDemoTrack(nextTrack) && playWhenReady.value
         playbackMessage = null
         playbackPrepared = false
 
-        if (!MockCatalog.isDemoTrack(nextTrack)) {
-            // Stop the previous song while authorization/preparation is pending.
-            services.pause()
-            if (playWhenReady) {
-                launchNativePlayback()
-            } else {
-                lastPlaybackFailure = null
-            }
-        }
+        lastPlaybackFailure = null
+        if (playWhenReady.value) hasUserPlaybackRequest = true
     }
 
     val latestTrackPlayback by rememberUpdatedState<(Track) -> Unit>(::executeTrackPlayback)
@@ -1100,24 +1029,26 @@ fun AmAtvApp() {
     val timelineTracks = remember(timelineEntries) { timelineEntries.map { it.track } }
     val timelineEntryIds = remember(timelineEntries) { timelineEntries.map { it.entryId } }
 
-    fun waitForNextQueueEntry(entryId: Long?) {
+    fun showQueueWait(entryId: Long?) {
         if (entryId == null) return
         waitingQueueEntryId = entryId
-        // Consume the startup Play gate even when only metadata navigation was
-        // replayed. The next entry's callback will honor the latest user intent.
         hasUserPlaybackRequest = true
         positionAnchorMs = currentPositionMs()
         isPlaying = false
         playbackPrepared = false
-        services.pauseForReplacement()
+        nativeCanSeek = false
         playbackMessage = null
+    }
+
+    LaunchedEffect(queueState.awaitingNext, queueState.current?.entryId) {
+        if (queueState.awaitingNext) showQueueWait(queueState.current?.entryId)
     }
 
     fun applyQueueAction(action: StartupQueueAction): Boolean {
         if (track.catalogKind == CatalogKind.Station) {
             when (action) {
-                StartupQueueAction.Next -> { if (canSkipNext) services.skipToNext(); return true }
-                StartupQueueAction.Previous -> { if (canSkipPrevious) services.skipToPrevious(); return true }
+                StartupQueueAction.Next -> { runtime.skip(1); return true }
+                StartupQueueAction.Previous -> { runtime.skip(-1); return true }
                 StartupQueueAction.CycleRepeat, StartupQueueAction.ToggleShuffle,
                 StartupQueueAction.ToggleInfinite, StartupQueueAction.ToggleSource -> return false
                 else -> Unit
@@ -1127,19 +1058,15 @@ fun AmAtvApp() {
             StartupQueueAction.Next -> {
                 val next = runtime.requestNext()
                 val live = queueController.state.value
-                if (next == null && live.awaitingNext) {
-                    waitForNextQueueEntry(live.current?.entryId)
-                } else if (next == null) {
-                    positionAnchorMs = currentPositionMs()
-                    services.pause()
-                    isPlaying = false
-                    playWhenReady = false
-                    runtime.setDesiredPlayIntent(false)
+                // Claim presentation synchronously: a fast failed lookup may
+                // finish before Compose observes its intermediate waiting state.
+                if (next == null && (live.awaitingNext || live.contextContinuationFailed ||
+                        live.autoplayStatus is dev.amatv.playback.AutoplayStatus.Error)) {
+                    showQueueWait(live.current?.entryId)
                 }
             }
             StartupQueueAction.Previous -> {
-                runtime.cancelPendingNext()
-                queueController.advancePrevious(currentPositionMs())
+                runtime.skip(-1, currentPositionMs())
             }
             is StartupQueueAction.Select -> {
                 if (!queueController.selectTimelineEntry(action.entryId)) return false
@@ -1187,7 +1114,7 @@ fun AmAtvApp() {
             val cursor = if (startupCursorEdited && track.matchesPlaybackQueueEntry(fullSession.queue[fullSession.currentIndex])) {
                 positionAnchorMs
             } else fullSession.positionMs
-            val restored = fullSession.copy(positionMs = cursor, wasPlaying = playWhenReady)
+            val restored = fullSession.copy(positionMs = cursor, wasPlaying = playWhenReady.value)
             queueController.restoreFromSession(restored)
             runtime.restoreMetadataCursor(restored)
             runtime.restorePendingCollection(restored)
@@ -1199,25 +1126,24 @@ fun AmAtvApp() {
             // Replay metadata-only against the full rail, then honor the latest
             // Play/Pause choice once. No intermediate item prepares native audio.
             startupQueueActions.replayHydrated(
-                requestedPlayIntent = playWhenReady,
-                setPlayIntent = { playWhenReady = it; runtime.setDesiredPlayIntent(it) },
+                requestedPlayIntent = playWhenReady.value,
+                setPlayIntent = { runtime.setDesiredPlayIntent(it) },
                 apply = ::applyQueueAction,
             )
         } else {
             startupQueueActions.drain()
         }
         if (services.isCatalogConfigured && queueController.state.value.current == null) {
-            if (playWhenReady) playbackMessage = AppText.text(R.string.app_choose_content_before_playback)
-            playWhenReady = false
-            isPlaying = false
+            if (playWhenReady.value) playbackMessage = AppText.text(R.string.app_choose_content_before_playback)
             runtime.setDesiredPlayIntent(false)
+            isPlaying = false
         }
         startupSessionLoaded = true
     }
 
     // A Play press during metadata IO is deferred until the full queue/cursor is hydrated.
-    LaunchedEffect(startupSessionLoaded, playWhenReady, track.id) {
-        if (startupSessionLoaded && playWhenReady && !hasUserPlaybackRequest &&
+    LaunchedEffect(startupSessionLoaded, wantsPlayback, track.id) {
+        if (startupSessionLoaded && playWhenReady.value && !hasUserPlaybackRequest &&
             waitingQueueEntryId == null && !queueState.awaitingNext && runtime.playbackGeneration == 0L && !runtime.hasPendingPrepare
         ) {
             if (!MockCatalog.isDemoTrack(track)) {
@@ -1264,7 +1190,7 @@ fun AmAtvApp() {
         }
 
         val trackIndex = fullQueue.indexOfFirst { it.matchesPlaybackQueueEntry(nextTrack) }.coerceAtLeast(0)
-        playWhenReady = true
+        runtime.setDesiredPlayIntent(true)
         if (startStation) queueController.playSongStation(fullQueue.first()) else queueController.playContext(
             tracks = fullQueue,
             startIndex = trackIndex,
@@ -1292,7 +1218,7 @@ fun AmAtvApp() {
         pendingAuthentication.clear()
         supersedeStartupQueueWithNewContext()
         if (destination != Destination.NowPlaying) previousDestination = destination
-        playWhenReady = true
+        runtime.setDesiredPlayIntent(true)
         queueController.playContext(
             tracks = tracks.map(::withCachedLyrics),
             startIndex = index,
@@ -1333,30 +1259,17 @@ fun AmAtvApp() {
         }
     }
 
-    fun advanceNextTrack(isAuto: Boolean = true) {
-        val next = queueController.advanceNext(manual = !isAuto)
-        val live = queueController.state.value
-        if (next == null && live.awaitingNext) {
-            waitForNextQueueEntry(live.current?.entryId)
-        } else if (next == null) {
-            isPlaying = false
-            playWhenReady = false
-            runtime.setDesiredPlayIntent(false)
-        }
-    }
-
     fun selectQueueTrack(index: Int) {
         timelineEntries.getOrNull(index)?.let { entry ->
-            val previousIntent = playWhenReady
-            playWhenReady = true
-            if (!dispatchQueueAction(StartupQueueAction.Select(entry.entryId))) playWhenReady = previousIntent
+            val previousIntent = playWhenReady.value
+            runtime.setDesiredPlayIntent(true)
+            if (!dispatchQueueAction(StartupQueueAction.Select(entry.entryId))) runtime.setDesiredPlayIntent(previousIntent)
         }
     }
 
     fun skip(relative: Int) {
         if (track.catalogKind == CatalogKind.Station) {
-            if (relative > 0 && canSkipNext) services.skipToNext()
-            else if (relative < 0 && canSkipPrevious) services.skipToPrevious()
+            runtime.skip(relative)
             return
         }
         dispatchQueueAction(if (relative > 0) StartupQueueAction.Next else StartupQueueAction.Previous)
@@ -1377,24 +1290,13 @@ fun AmAtvApp() {
         destination = Destination.NowPlaying
     }
 
-    fun handlePlaybackFailure(selection: Long, kind: PlaybackFailureKind, message: String) {
-        if (selection != selectionGeneration || failureHandledSelection == selection) return
-        val resumePosition = nativeResumeRecovery.consumeFailure(selection, track.catalogId,
-            runtime.playbackGeneration, kind, playWhenReady)
-        failureHandledSelection = selection
+    fun showPlaybackFailure(kind: PlaybackFailureKind, message: String) {
         lastPlaybackFailure = kind
         isPlaying = false
         audioBuffering = false
         playbackPrepared = false
         nativeCanSeek = false
-        if (track.catalogKind != CatalogKind.Station && resumePosition != null) {
-            // One failed explicit native resume may reprepare this occurrence.
-            selectionGeneration++
-            launchNativePlayback(resumePosition)
-        } else {
-            playWhenReady = false
-            playbackMessage = message
-        }
+        playbackMessage = message
     }
 
     LaunchedEffect(preparation) {
@@ -1408,11 +1310,10 @@ fun AmAtvApp() {
                 lastPlaybackFailure = null
                 playbackMessage = null
             }
-            PreparationPhase.Failed -> handlePlaybackFailure(selectionGeneration,
+            PreparationPhase.Failed -> showPlaybackFailure(
                 preparation.failureKind ?: PlaybackFailureKind.Unexpected,
                 preparation.errorMessage ?: AppText.text(R.string.app_song_load_failed))
             PreparationPhase.Retrying -> {
-                nativeResumeRecovery.cancel()
                 isPlaying = false
                 playbackPrepared = false
                 nativeCanSeek = false
@@ -1427,7 +1328,6 @@ fun AmAtvApp() {
                 }
             }
             PreparationPhase.Preparing -> {
-                nativeResumeRecovery.cancel()
                 playbackMessage = null
                 audioBuffering = true
             }
@@ -1450,10 +1350,9 @@ fun AmAtvApp() {
         }
         if (queueState.contextContinuationFailed) {
             waitingQueueEntryId = null
-            playWhenReady = false
             isPlaying = false
             lastPlaybackFailure = PlaybackFailureKind.Network
-            playbackMessage = context.getString(R.string.services_collection_next_page_failed)
+            playbackMessage = AppText.text(R.string.services_collection_next_page_failed)
             runtime.setDesiredPlayIntent(false, preservePendingNext = true)
             return@LaunchedEffect
         }
@@ -1466,13 +1365,11 @@ fun AmAtvApp() {
             // The failed wait is terminal. A later explicit Play may retry the
             // displayed item, but hydration must never replay it automatically.
             waitingQueueEntryId = null
-            playWhenReady = false
+            runtime.setDesiredPlayIntent(false)
             isPlaying = false
             playbackMessage = message
-            runtime.setDesiredPlayIntent(false)
         } else if (!queueState.awaitingNext && queueState.autoplayStatus is dev.amatv.playback.AutoplayStatus.Idle) {
             waitingQueueEntryId = null
-            playWhenReady = false
             runtime.setDesiredPlayIntent(false)
         }
     }
@@ -1488,12 +1385,11 @@ fun AmAtvApp() {
         if (snapshot.nativeQueueHandoff && snapshot.appQueueEntryId != null &&
             snapshot.appQueueEntryId != previousOccurrence) {
             selectionGeneration++
-            nativeResumeRecovery.cancel()
             lastPlaybackFailure = null
             playbackMessage = null
         }
         publishSystemSnapshot(snapshot)
-        audioBuffering = playWhenReady && snapshot.isBuffering
+        audioBuffering = playWhenReady.value && snapshot.isBuffering
         // A live reconnect clears the previous song before it is prepared.
         // Show the current station fallback while waiting for fresh metadata.
         if (!snapshot.isPrepared && snapshot.errorMessage == null) {
@@ -1515,22 +1411,13 @@ fun AmAtvApp() {
             if (!snapshot.isPlaying) isPlaying = false
             return
         }
-        nativeResumeRecovery.observePlaying(selectionGeneration, snapshot.currentTrack?.catalogId,
-            snapshot.requestGeneration, snapshot.positionMs, snapshot.isPlaying)
         playbackPrepared = true
         nativeCanSeek = snapshot.canSeek && snapshot.durationMs > 0L
-        val endedEntryKey = queueController.state.value.current?.entryId?.toString() ?: track.id
-        if (!snapshot.isEnded && snapshot.currentTrack?.catalogId == track.catalogId) advancingEndedTrackId = null
-        if (snapshot.isEnded && snapshot.currentTrack?.catalogId == track.catalogId &&
-            advancingEndedTrackId != endedEntryKey
-        ) {
-            advancingEndedTrackId = endedEntryKey
+        if (snapshot.isEnded) {
+            if (playWhenReady.value && track.catalogKind != CatalogKind.Station) {
+                showQueueWait(queueController.state.value.current?.entryId)
+            }
             isPlaying = false
-            if (!playWhenReady || track.catalogKind == CatalogKind.Station) {
-                playWhenReady = false
-                runtime.setDesiredPlayIntent(false)
-                services.pause()
-            } else advanceNextTrack(isAuto = true)
             return
         }
         val trackChanged = snapshot.currentTrack != null && (
@@ -1642,7 +1529,7 @@ fun AmAtvApp() {
                         queue = currentQueue,
                         currentIndex = currentIdx,
                         positionMs = currentPositionMs().coerceIn(0L, track.durationMs.takeIf { it > 0L } ?: Long.MAX_VALUE),
-                        wasPlaying = playWhenReady,
+                        wasPlaying = playWhenReady.value,
                         destination = destination,
                         previousDestination = previousDestination,
                         radioActive = queueState.infinite,
@@ -1683,7 +1570,7 @@ fun AmAtvApp() {
         }
     }
     LaunchedEffect(
-        destination, previousDestination, track.id, queueState, isPlaying, playWhenReady,
+        destination, previousDestination, track.id, queueState, isPlaying, wantsPlayback,
     ) {
         delay(350L)
         saveCurrentSession(false)
@@ -1716,7 +1603,8 @@ fun AmAtvApp() {
         while (isPlaying) {
             val currentMs = currentPositionMs()
             if (currentMs >= track.durationMs - 250L) {
-                if (!runtime.consumeSimulatedPlaybackEnd()) advanceNextTrack(isAuto = true)
+                showQueueWait(queueController.state.value.current?.entryId)
+                runtime.completeSimulatedPlayback()
                 break
             }
             delay(250L)
@@ -2484,7 +2372,7 @@ fun AmAtvApp() {
                             playbackPrefs.clearSession()
                             scope.launch { cancellableResult { services.contentCache.clear { ArtworkImages.clear(context) } } }
                             isPlaying = false
-                            playWhenReady = false
+                            runtime.setDesiredPlayIntent(false)
                             waitingQueueEntryId = null
                             playbackPrepared = false
                             hasUserPlaybackRequest = false
@@ -2573,11 +2461,11 @@ fun AmAtvApp() {
                         positionAnchorMs = positionAnchorMs,
                         playStartedRealtimeMs = playStartedRealtimeMs,
                         isPlaying = isPlaying,
-                        playWhenReady = playWhenReady,
+                        playWhenReady = wantsPlayback,
                         audioSpectrum = services::audioSpectrum,
                         feedbackInput = PlaybackFeedbackInput(
                             requestKey = selectionGeneration,
-                            playRequested = playWhenReady,
+                            playRequested = wantsPlayback,
                             isPlaying = isPlaying,
                             isPrepared = playbackPrepared,
                             isBuffering = audioBuffering,
@@ -2690,7 +2578,7 @@ fun AmAtvApp() {
                 catalogActionItem?.let { item ->
                     val enqueueSession = remember(item) { queueController.state.value.sessionId }
                     val queueEntry = catalogQueueActionEntryId?.let { id ->
-                        queueController.state.value.sessionEntries.firstOrNull { it.entryId == id }
+                        queueState.sessionEntries.firstOrNull { it.entryId == id }
                     }
                     if (queueEntry != null) QueueEntryActionSheet(
                         queueEntry, queueState, services, connectionState == MusicConnectionState.SignedIn,
@@ -2794,7 +2682,7 @@ fun AmAtvApp() {
                     onDismiss = { pendingAuthentication.clear(); pendingAuthAttempt = null; closePhoneSignIn() },
                 )
                 if (exitConfirmationVisible) AppExitDialog(
-                    backgroundPlayback = playWhenReady || isPlaying,
+                    backgroundPlayback = wantsPlayback || isPlaying,
                     inputGate = catalogModalInput,
                     onStay = ::dismissExitConfirmation,
                     onExit = { exitApplication(stopPlayback = false) },

@@ -6,7 +6,6 @@ import dev.amatv.integration.PlaybackRepeatMode
 import dev.amatv.integration.PlaybackSession
 import dev.amatv.integration.autoplaySourceFromStoredValue
 import dev.amatv.model.Destination
-import dev.amatv.integration.QueuePreferences
 import dev.amatv.integration.RecommendationProvider
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.Track
@@ -26,15 +25,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlaybackQueueControllerTest {
-
-    private class FakeQueuePreferences : QueuePreferences {
-        override var repeatMode: PlaybackRepeatMode = PlaybackRepeatMode.Off
-        override var shuffleEnabled: Boolean = false
-        override var autoplayEnabled: Boolean = false
-        // Existing radio scenarios exercise an explicitly chosen YTM provider.
-        override var autoplaySource: AutoplaySource = AutoplaySource.YouTubeMusic
-        override var lowPerformanceMode: Boolean = false
-    }
 
     private class FakeRecommendationProvider : RecommendationProvider {
         var amStationTracks: List<Track> = emptyList()
@@ -74,20 +64,12 @@ class PlaybackQueueControllerTest {
         }
     }
 
-    private fun testTrack(id: String, title: String, artist: String): Track = Track(
-        id = id,
-        title = title,
-        artist = artist,
-        album = "Test Album",
-        durationMs = 210_000L,
-        palette = emptyList(),
-        lyrics = emptyList(),
-        catalogId = id,
-        catalogKind = CatalogKind.Song,
-    )
+    private fun testTrack(id: String, title: String, artist: String): Track =
+        queueTestSong(id, title, artist, album = "Test Album", durationMs = 210_000L)
 
     private val scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
-    private val prefs = FakeQueuePreferences()
+    // Existing radio scenarios exercise an explicitly chosen YTM provider.
+    private val prefs = TestQueuePreferences(autoplaySource = AutoplaySource.YouTubeMusic)
     private val fakeRecommendations = FakeRecommendationProvider()
     private var playedTracks = mutableListOf<Track>()
 

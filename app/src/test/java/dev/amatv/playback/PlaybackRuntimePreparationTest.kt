@@ -2,6 +2,7 @@ package dev.amatv.playback
 
 import dev.amatv.model.CatalogKind
 import dev.amatv.model.Track
+import dev.amatv.integration.PlaybackSnapshot
 import dev.amatv.playback.PlaybackRuntimeOwner.PreparationPhase
 import dev.amatv.playback.PlaybackRuntimeOwner.PreparationRequest
 import dev.amatv.playback.PlaybackRuntimeOwner.PreparationState
@@ -213,5 +214,39 @@ class PlaybackRuntimePreparationTest {
         }
         assertNull(ready.cancelled(clearReady = true).request)
         assertEquals(0L, ready.cancelled(clearReady = true).generation)
+    }
+
+    private fun pausedSnapshot(entryId: Long? = 20L) = PlaybackSnapshot(
+        currentTrack = song, positionMs = 37_000L, durationMs = song.durationMs,
+        isPlaying = false, isBuffering = false, canSkipNext = true, canSkipPrevious = false,
+        capturedAtElapsedRealtimeMs = 0L, requestGeneration = 7L, appQueueEntryId = entryId,
+    )
+
+    @Test fun pausedReadyEngineCanSeekWithoutReusingItsCancelledCommandSerial() {
+        val paused = PreparationState(PreparationPhase.Ready, request(serial = 1L), generation = 7L)
+            .cancelled(clearReady = false)
+        assertFalse(checkNotNull(paused.request).matches(2L, 10L, 20L))
+        assertTrue(paused.canSeek(10L, 20L, pausedSnapshot()))
+        assertTrue(paused.canSeek(10L, 20L, pausedSnapshot(entryId = null)))
+    }
+
+    @Test fun aNativeQueueHandoffCanSeekItsObservedOccurrenceOnTheSameEngine() {
+        val prepared = PreparationState(PreparationPhase.Ready, request(entry = 20L), generation = 7L)
+        assertTrue(prepared.canSeek(10L, 21L, pausedSnapshot(entryId = 21L)))
+        assertFalse(prepared.canSeek(10L, 21L, pausedSnapshot(entryId = null)))
+    }
+
+    @Test fun coldOrReplacedEnginesStillRequirePreparationForALyricSeek() {
+        val prepared = PreparationState(PreparationPhase.Ready, request(), generation = 7L)
+        val snapshot = pausedSnapshot()
+        assertFalse(prepared.canSeek(11L, 20L, snapshot))
+        assertFalse(prepared.canSeek(10L, 21L, snapshot))
+        assertFalse(prepared.canSeek(10L, 20L, snapshot.copy(requestGeneration = 8L)))
+        assertFalse(prepared.canSeek(10L, 20L, snapshot.copy(isPrepared = false)))
+        assertFalse(prepared.canSeek(10L, 20L, snapshot.copy(canSeek = false)))
+        assertFalse(prepared.canSeek(10L, 20L, snapshot.copy(isEnded = true)))
+        assertFalse(prepared.canSeek(10L, 20L, snapshot.copy(errorMessage = "unavailable")))
+        assertFalse(prepared.canSeek(10L, 20L, null))
+        assertFalse(prepared.copy(phase = PreparationPhase.Preparing).canSeek(10L, 20L, snapshot))
     }
 }

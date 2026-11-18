@@ -1,7 +1,6 @@
 package dev.amatv.playback
 
 import dev.amatv.integration.*
-import dev.amatv.model.CatalogKind
 import dev.amatv.model.Destination
 import dev.amatv.model.Track
 import kotlinx.coroutines.*
@@ -9,26 +8,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BufferedShuffleQueueTest {
-    private class Preferences : QueuePreferences {
-        override var repeatMode = PlaybackRepeatMode.Off
-        override var shuffleEnabled = false
-        override var autoplayEnabled = false
-        override var autoplaySource = AutoplaySource.AppleMusic
-        override var lowPerformanceMode = false
-    }
     private val recommendations = object : RecommendationProvider {
         override suspend fun createAmStation(songId: String): Pair<String?, List<Track>> = error("No autoplay before a complete population")
         override suspend fun amStationNextTracks(stationId: String): List<Track> = emptyList()
         override suspend fun ytmRadio(seed: Track, continuation: String?, excludedCatalogIds: Set<String>,
             continuationSeedVideoId: String?) = MusicServices.ResolvedRadioPage(emptyList(), null, null)
     }
-    private fun song(id: String) = Track(id, id, "Artist", "Album", 180_000L, emptyList(), emptyList(), catalogId = id, catalogKind = CatalogKind.Song)
+    private fun song(id: String) = queueTestSong(id)
     private val context = PlaybackContext(ContextKind.Playlist, "playlist", "Playlist")
 
     @Test fun atomicPopulationKeepsTheSampleDuplicateManualPriorityAndRestorableSourceOrder() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val prefs = Preferences()
+            val prefs = TestQueuePreferences()
             val played = mutableListOf<Track>()
             val controller = PlaybackQueueController(scope, recommendations, prefs, { played += it }, Dispatchers.Unconfined)
             controller.playContext(listOf(song("A")), 0, context, shuffle = true, pendingTail = true)
@@ -55,7 +47,7 @@ class BufferedShuffleQueueTest {
                 contextQueue = state.contextEntries.map { it.track }, contextEntryIds = state.contextEntries.map { it.entryId },
                 containerEntryIds = state.containerEntryIds, playbackContext = state.context,
                 unshuffledEntryIds = state.unshuffledUpNext!!.map { it.entryId })
-            val restoredPrefs = Preferences().apply { shuffleEnabled = true }
+            val restoredPrefs = TestQueuePreferences().apply { shuffleEnabled = true }
             val restored = PlaybackQueueController(scope, recommendations, restoredPrefs, {}, Dispatchers.Unconfined)
             restored.restoreFromSession(checkNotNull(PlaybackSessionCodec.decode(PlaybackSessionCodec.encode(saved))))
             restored.setShuffle(false)
@@ -69,7 +61,7 @@ class BufferedShuffleQueueTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
             val played = mutableListOf<String>()
-            val controller = PlaybackQueueController(scope, recommendations, Preferences(), { played += it.id }, Dispatchers.Unconfined)
+            val controller = PlaybackQueueController(scope, recommendations, TestQueuePreferences(), { played += it.id }, Dispatchers.Unconfined)
             controller.playContext(listOf(song("B")), 0, context, shuffle = true, pendingTail = true)
             val anchor = controller.state.value.current!!.entryId
             controller.setShuffle(false)

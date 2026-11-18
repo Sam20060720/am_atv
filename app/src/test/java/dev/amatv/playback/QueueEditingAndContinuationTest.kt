@@ -4,9 +4,7 @@ import dev.amatv.integration.AutoplaySource
 import dev.amatv.integration.MusicServices
 import dev.amatv.integration.PlaybackRepeatMode
 import dev.amatv.integration.PlaybackSession
-import dev.amatv.integration.QueuePreferences
 import dev.amatv.integration.RecommendationProvider
-import dev.amatv.model.CatalogKind
 import dev.amatv.model.Destination
 import dev.amatv.model.Track
 import kotlinx.coroutines.CompletableDeferred
@@ -19,13 +17,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class QueueEditingAndContinuationTest {
-    private class Preferences : QueuePreferences {
-        override var repeatMode = PlaybackRepeatMode.Off
-        override var shuffleEnabled = false
-        override var autoplayEnabled = false
-        override var autoplaySource = AutoplaySource.AppleMusic
-        override var lowPerformanceMode = false
-    }
     private class Recommendations : RecommendationProvider {
         var calls = 0
         var pending: CompletableDeferred<Pair<String?, List<Track>>>? = null
@@ -39,13 +30,12 @@ class QueueEditingAndContinuationTest {
             MusicServices.ResolvedRadioPage(emptyList(), null, null)
     }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
-    private val preferences = Preferences()
+    private val preferences = TestQueuePreferences()
     private val recommendations = Recommendations()
     private val played = mutableListOf<String>()
     private val controller = PlaybackQueueController(scope, recommendations, preferences,
         { played += it.id }, Dispatchers.Unconfined)
-    private fun song(id: String) = Track(id, id, "Artist", "Album", 120_000,
-        emptyList(), emptyList(), catalogId = id, catalogKind = CatalogKind.Song)
+    private fun song(id: String) = queueTestSong(id, durationMs = 120_000L)
     @After fun close() = scope.cancel()
 
     @Test fun selectingACurrentLyricCancelsPendingAdvanceButKeepsTheFutureCollectionTail() {

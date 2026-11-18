@@ -1,11 +1,9 @@
 package dev.amatv.playback
 
-import dev.amatv.integration.AutoplaySource
 import dev.amatv.integration.MusicServices
 import dev.amatv.integration.PlaybackRepeatMode
 import dev.amatv.integration.PlaybackSession
 import dev.amatv.integration.PlaybackSessionCodec
-import dev.amatv.integration.QueuePreferences
 import dev.amatv.integration.RecommendationProvider
 import dev.amatv.model.Track
 import dev.amatv.model.Destination
@@ -136,13 +134,6 @@ class ContainerSleepTimerTest {
         assertFalse(timer.canSelectContextEnd(legacy.copy(containerEntryIds = setOf(1, 2), context = PlaybackContext(ContextKind.SongList, "list"))))
     }
 
-    private class Preferences : QueuePreferences {
-        override var repeatMode = PlaybackRepeatMode.Off
-        override var shuffleEnabled = false
-        override var autoplayEnabled = false
-        override var autoplaySource = AutoplaySource.AppleMusic
-        override var lowPerformanceMode = false
-    }
     private class Recommendations : RecommendationProvider {
         var requests = 0
         override suspend fun createAmStation(songId: String): Pair<String?, List<Track>> { requests++; return null to emptyList() }
@@ -155,7 +146,7 @@ class ContainerSleepTimerTest {
     @Test fun queueProvenanceSeparatesDeliberateDuplicatesFromOriginalPagedOccurrences() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val queue = PlaybackQueueController(scope, Recommendations(), Preferences(), {}, Dispatchers.Unconfined)
+            val queue = PlaybackQueueController(scope, Recommendations(), TestQueuePreferences(), {}, Dispatchers.Unconfined)
             val repeated = entry(1).track
             queue.playContext(listOf(repeated, repeated), 0, PlaybackContext(ContextKind.Playlist, "pl.original"), pendingTail = true)
             val original = queue.state.value.containerEntryIds
@@ -176,7 +167,7 @@ class ContainerSleepTimerTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
             val recommendations = Recommendations()
-            val preferences = Preferences().apply { autoplayEnabled = true }
+            val preferences = TestQueuePreferences().apply { autoplayEnabled = true }
             val played = mutableListOf<Track>()
             val queue = PlaybackQueueController(scope, recommendations, preferences, { played += it }, Dispatchers.Unconfined)
             queue.playContext(listOf(entry(1).track), 0, PlaybackContext(ContextKind.Album, "500"), pendingTail = true)
@@ -194,7 +185,7 @@ class ContainerSleepTimerTest {
     @Test fun repeatCyclesMapOnlyOriginalOccurrencesAndNeverPromoteInsertedSongsIntoTheContainer() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val queue = PlaybackQueueController(scope, Recommendations(), Preferences(), {}, Dispatchers.Unconfined)
+            val queue = PlaybackQueueController(scope, Recommendations(), TestQueuePreferences(), {}, Dispatchers.Unconfined)
             queue.playContext(listOf(entry(1).track, entry(2).track), 0, PlaybackContext(ContextKind.Album, "500"))
             queue.enqueueLast(listOf(entry(3).track))
             val original = queue.state.value.containerEntryIds
@@ -214,7 +205,7 @@ class ContainerSleepTimerTest {
     @Test fun sessionRoundTripRestoresTheContainerAndExplicitOccurrenceBoundary() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val queue = PlaybackQueueController(scope, Recommendations(), Preferences(), {}, Dispatchers.Unconfined)
+            val queue = PlaybackQueueController(scope, Recommendations(), TestQueuePreferences(), {}, Dispatchers.Unconfined)
             queue.playContext(listOf(entry(1).track, entry(2).track), 0, PlaybackContext(ContextKind.LibraryPlaylist, "p.original"))
             queue.enqueueLast(listOf(entry(2).track)) // Same recording, deliberately outside the source playlist.
             val before = queue.state.value
@@ -224,7 +215,7 @@ class ContainerSleepTimerTest {
                 contextQueue = before.contextEntries.map { it.track }, contextEntryIds = before.contextEntries.map { it.entryId },
                 containerEntryIds = before.containerEntryIds, playbackContext = before.context)
             val decoded = PlaybackSessionCodec.decode(PlaybackSessionCodec.encode(saved))!!
-            val restored = PlaybackQueueController(scope, Recommendations(), Preferences(), {}, Dispatchers.Unconfined)
+            val restored = PlaybackQueueController(scope, Recommendations(), TestQueuePreferences(), {}, Dispatchers.Unconfined)
             restored.restoreFromSession(decoded)
             val after = restored.state.value
             assertEquals(before.context, after.context)
@@ -238,7 +229,7 @@ class ContainerSleepTimerTest {
     @Test fun aLaterPageCannotInventMissingProvenanceForAnOlderRestoredQueue() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
         try {
-            val queue = PlaybackQueueController(scope, Recommendations(), Preferences(), {}, Dispatchers.Unconfined)
+            val queue = PlaybackQueueController(scope, Recommendations(), TestQueuePreferences(), {}, Dispatchers.Unconfined)
             val older = PlaybackSession(listOf(entry(1).track), 0, 0L, false, Destination.NowPlaying, Destination.Library,
                 false, null, null, queueEntryIds = listOf(1L))
             queue.restoreFromSession(older)
